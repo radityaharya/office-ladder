@@ -4,7 +4,7 @@ Living doc so any agent (or human) picking this up mid-stream has full context. 
 
 ## What this is
 
-Browser-based multiplayer board game (Monopoly-like), office theme. Players roll dice, move around a 28-space board, collect money/reputation/energy, climb a promotion ladder from Intern to Director. 2–6 players per room, real-time, turn-based (30s turn timer). Full gameplay spec lives in the original PRD (pasted into chat history, not yet copied into this repo — consider adding `docs/PRD.md` if it needs to survive outside chat history).
+Browser-based multiplayer board game (Monopoly-like), office theme. Players roll dice, move around a 28-space board, collect money/reputation/energy, climb a promotion ladder from Intern to Director. 2–6 players per room, real-time, turn-based (30s turn timer). Full gameplay spec: [`docs/GAME_DESIGN.md`](docs/GAME_DESIGN.md) — board tiles, promotion ladder requirements, hidden roles, event cards, win condition. That doc's "Technology Stack" section is historical/superseded; this file (PLAN.md) is the source of truth for tech decisions.
 
 ## Tech stack (decided, with reasoning — don't re-litigate without new info)
 
