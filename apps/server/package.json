@@ -1,0 +1,25 @@
+{
+  "name": "@office-ladder/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file=../../.env.local --watch run src/serve.ts",
+    "start": "NODE_ENV=production bun --env-file=../../.env.local run src/serve.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@office-ladder/contracts": "workspace:*",
+    "@office-ladder/content": "workspace:*",
+    "@office-ladder/db": "workspace:*",
+    "@office-ladder/engine": "workspace:*",
+    "better-auth": "^1.6.23",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5",
+    "vitest": "^4.0.0"
+  }
+}

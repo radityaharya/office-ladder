@@ -6,9 +6,10 @@ const eslintConfig = defineConfig([
   js.configs.recommended,
   ...tseslint.configs.recommended,
   globalIgnores([
-    "dist/**",
-    "build/**",
-    "src/routeTree.gen.ts",
+    "**/dist/**",
+    "**/build/**",
+    "**/routeTree.gen.ts",
+    ".nx/**",
     ".agents/**",
     ".claude/**",
     ".cursor/**",

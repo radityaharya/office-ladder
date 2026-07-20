@@ -1,0 +1,21 @@
+{
+  "name": "@office-ladder/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@office-ladder/content": "workspace:*"
+  },
+  "devDependencies": {
+    "fast-check": "^4.3.0",
+    "typescript": "^5",
+    "vitest": "^4.0.0"
+  }
+}
