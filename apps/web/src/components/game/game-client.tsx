@@ -142,6 +142,10 @@ export function GameClient({ roomId }: GameClientProps) {
   if (state.kind === "error") return <GameError message={state.message} onRetry={() => void refresh()} roomId={roomId} />;
   if (!view) return null;
 
+  if (state.bootstrap.publicProjection.status === "ended") {
+    return <GameWinner bootstrap={state.bootstrap} roomId={roomId} />;
+  }
+
   return (
     <main className="min-h-[100dvh] bg-background px-4 py-4 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-[112rem] gap-4 lg:grid-cols-[minmax(0,1fr)_clamp(16rem,22vw,20rem)]">
@@ -239,4 +243,37 @@ function GameAbsent({ roomId }: { readonly roomId: string }) {
 
 function GameError({ message, onRetry, roomId }: { readonly message: string; readonly onRetry: () => void; readonly roomId: string }) {
   return <main className="grid min-h-[100dvh] place-items-center bg-background p-6 text-foreground"><div className="w-full max-w-xl border border-destructive/40 bg-card p-6"><p className="font-sans text-xs font-semibold tracking-widest text-destructive uppercase">Projection unavailable</p><h1 className="mt-3 font-heading text-2xl font-semibold">The board feed dropped.</h1><p className="mt-3 text-sm text-muted-foreground">{message}</p><div className="mt-6 flex flex-wrap gap-3"><Button onClick={onRetry} type="button"><RiRefreshLine aria-hidden="true" />Retry</Button><Link className="inline-flex h-10 items-center gap-2 border border-border px-6 text-xs font-semibold tracking-widest uppercase hover:bg-muted" to="/rooms/$roomId" params={{ roomId }}><RiArrowLeftLine aria-hidden="true" className="size-4" />Back to room</Link></div></div></main>;
+}
+
+function GameWinner({ bootstrap, roomId }: { readonly bootstrap: GameBootstrap; readonly roomId: string }) {
+  const winnerId = bootstrap.publicProjection.winnerPlayerIds[0] ?? null;
+  const winnerName =
+    winnerId === null
+      ? "Someone"
+      : (bootstrap.room.members.find((member) => member.id === winnerId)?.displayName ?? "A coworker");
+  const isSelf = winnerId !== null && winnerId === bootstrap.self.playerId;
+
+  return (
+    <main className="grid min-h-[100dvh] place-items-center bg-background p-6 text-foreground">
+      <div className="w-full max-w-xl border border-primary/40 bg-card p-6 text-center">
+        <p className="font-sans text-xs font-semibold tracking-widest text-primary uppercase">Match complete</p>
+        <h1 className="mt-3 font-heading text-3xl font-semibold">
+          {isSelf ? "You made Director." : `${winnerName} made Director.`}
+        </h1>
+        <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+          {isSelf
+            ? "Every promotion cashed in. The corner office is yours."
+            : "The office scramble is over. Better luck climbing the ladder next round."}
+        </p>
+        <Link
+          className="mt-6 inline-flex items-center gap-2 text-xs font-semibold tracking-widest text-primary uppercase"
+          params={{ roomId }}
+          to="/rooms/$roomId"
+        >
+          <RiArrowLeftLine aria-hidden="true" className="size-4" />
+          Back to room
+        </Link>
+      </div>
+    </main>
+  );
 }

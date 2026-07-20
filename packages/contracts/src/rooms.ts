@@ -84,6 +84,7 @@ export type PublicGameProjection = {
   readonly deadlineAt: string | null;
   readonly players: readonly PublicPlayerProjection[];
   readonly eventSummaries: readonly SafeEventSummary[];
+  readonly winnerPlayerIds: readonly string[];
 };
 
 export type CallerSelfProjection = {

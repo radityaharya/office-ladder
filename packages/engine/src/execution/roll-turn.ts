@@ -1,8 +1,11 @@
 import type { RollTurnCommand } from "../commands";
-import type { GameState, PlayerState } from "../model";
+import { createEventMetadata } from "./events";
+import type { GameEvent, MatchEndedEvent, PlayerPromotedEvent } from "../events";
+import { createStableId, type GameState, type MatchOutcome, type PlayerState } from "../model";
 import { rollDie } from "../random";
 import { moveAroundBoard } from "../rules";
 import { rejectCommand } from "./errors";
+import { resolvePromotion } from "./roll-promotion";
 import { createRollEvents } from "./roll-events";
 import {
   diceCursor,
@@ -138,7 +141,7 @@ export function rollTurn(
     });
   }
 
-  const updatedPlayer: PlayerState = {
+  const movedPlayer: PlayerState = {
     ...player,
     position: movement.destination,
     lapsCompleted: player.lapsCompleted + movement.laps,
@@ -154,13 +157,81 @@ export function rollTurn(
         : player.resources,
   };
 
+  const promotion = resolvePromotion(movedPlayer, context.content, state.modeId);
+  const allEvents: GameEvent[] = [...events];
+  const eventMetadata = () =>
+    createEventMetadata(
+      state,
+      command,
+      context.logicalTimestamp,
+      state.eventSequence + allEvents.length + 1,
+    );
+
+  let updatedPlayer = movedPlayer;
+  let outcome: MatchOutcome | null = null;
+
+  if (promotion.promoted) {
+    const currentReputation = movedPlayer.resources[promotion.reputationKey];
+    const currentMoney = movedPlayer.resources[promotion.moneyKey];
+    if (currentReputation !== undefined && currentMoney !== undefined) {
+      const toRankId = createStableId("RankId", promotion.toRankId);
+      updatedPlayer = {
+        ...movedPlayer,
+        rank: {
+          id: toRankId,
+          kind: promotion.toRankId as PlayerState["rank"]["kind"],
+          index: movedPlayer.rank.index + 1,
+        },
+        resources: {
+          ...movedPlayer.resources,
+          [promotion.moneyKey]: {
+            ...currentMoney,
+            value: currentMoney.value - promotion.cost,
+          },
+        },
+      };
+
+      const promotedEvent: PlayerPromotedEvent = {
+        ...eventMetadata(),
+        type: "PlayerPromoted",
+        payload: {
+          playerId: updatedPlayer.id,
+          fromRankId: createStableId("RankId", movedPlayer.rank.kind ?? promotion.toRankId),
+          toRankId,
+          cost: promotion.cost,
+        },
+      };
+      allEvents.push(promotedEvent);
+
+      if (promotion.isFinalRank) {
+        outcome = {
+          reason: "director-reached",
+          winnerPlayerIds: [updatedPlayer.id],
+          winningRole: null,
+          endedAt: context.logicalTimestamp,
+          data: {},
+        };
+        const matchEndedEvent: MatchEndedEvent = {
+          ...eventMetadata(),
+          type: "MatchEnded",
+          payload: { outcome },
+        };
+        allEvents.push(matchEndedEvent);
+      }
+    }
+  }
+
+  const lastEvent = allEvents[allEvents.length - 1] ?? finalEvent;
+
   return {
     ok: true,
     value: {
       state: {
         ...state,
         revision,
-        eventSequence: finalEvent.sequence,
+        eventSequence: lastEvent.sequence,
+        status: outcome !== null ? "ended" : state.status,
+        outcome: outcome ?? state.outcome,
         players: { ...state.players, [player.id]: updatedPlayer },
         turn: {
           number: nextTurnNumber,
@@ -176,7 +247,7 @@ export function rollTurn(
         lastCommandId: command.commandId,
         stateHash: null,
       },
-      events,
+      events: allEvents,
     },
   };
 }

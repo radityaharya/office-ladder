@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "dev": "bun --env-file=.env.local run --cwd apps/web dev",
+    "dev": "bun --env-file=.env.local run scripts/dev.ts",
     "build": "nx run-many -t build",
     "start": "bun --env-file=.env.local run --cwd apps/server start",
     "lint": "eslint",

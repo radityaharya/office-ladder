@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 
 import tailwindcss from "@tailwindcss/vite";
-import devServer, { defaultOptions } from "@hono/vite-dev-server";
-import bunAdapter from "@hono/vite-dev-server/bun";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+
+const apiPort = process.env.API_PORT ?? "3073";
 
 export default defineConfig({
   envDir: fileURLToPath(new URL("../../", import.meta.url)),
@@ -17,15 +17,14 @@ export default defineConfig({
   build: {
     outDir: "dist/client",
   },
-  plugins: [
-    tanstackRouter({ target: "react", autoCodeSplitting: true }),
-    react(),
-    tailwindcss(),
-    devServer({
-      entry: "../server/src/index.ts",
-      adapter: bunAdapter,
-      exclude: [...defaultOptions.exclude, /^\/(?!api\/|ws\/).*/],
-      injectClientScript: false,
-    }),
-  ],
+  server: {
+    proxy: {
+      "/api": `http://localhost:${apiPort}`,
+      "/ws": {
+        target: `ws://localhost:${apiPort}`,
+        ws: true,
+      },
+    },
+  },
+  plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
 });

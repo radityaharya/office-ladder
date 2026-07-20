@@ -75,6 +75,7 @@ function publicProjection(room: StoredRoom): PublicGameProjection {
       statusIds: player.statuses.map((status) => status.id),
     })),
     eventSummaries: room.eventSummaries,
+    winnerPlayerIds: view.outcome?.winnerPlayerIds ?? [],
   };
 }
 

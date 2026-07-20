@@ -1,91 +1,75 @@
 # Office Ladder — Working Plan
 
-Living doc so any agent (or human) picking this up mid-stream has full context. Update it as work progresses — especially the "Current state" and "Next step" sections.
+Living doc so any agent (or human) picking this up mid-stream has full context. Update it as work progresses — especially the "Current state" and "Next step" sections. For durable, less-frequently-changing context (exact commands, env vars, architecture rationale), see [`AGENTS.md`](AGENTS.md) — this file is the status dashboard, AGENTS.md is the reference.
 
-Detailed second-pass plans for the complete game, including the engine, content pipeline, assets, card artwork, frontend, backend, security, testing, operations, and physical edition, live in [`plans/README.md`](plans/README.md). This file remains the concise working-status dashboard.
+Detailed second-pass plans for the complete game, including the engine, content pipeline, assets, card artwork, frontend, backend, security, testing, operations, and physical edition, live in [`plans/README.md`](plans/README.md). Note: those plans were written against the original Next.js architecture and use Next.js-era terminology in places (Server Components, Route Handlers) that should be read as their Hono/TanStack Router equivalents — see `plans/02-repository-architecture.md` for the updated mapping.
 
 ## What this is
 
-Browser-based multiplayer board game (Monopoly-like), office theme. Players roll dice, move around a 28-space board, collect money/reputation/energy, climb a promotion ladder from Intern to Director. 2–6 players per room, real-time, turn-based (30s turn timer). Full gameplay spec: [`docs/GAME_DESIGN.md`](docs/GAME_DESIGN.md) — board tiles, promotion ladder requirements, hidden roles, event cards, win condition. That doc's "Technology Stack" section is historical/superseded; this file (PLAN.md) is the source of truth for tech decisions.
+Browser-based multiplayer board game (Monopoly-like), office theme. Players roll dice, move around a board, collect money/reputation, climb a promotion ladder from Intern to Director. 2–6 players per room, real-time, turn-based. Full gameplay spec: [`docs/GAME_DESIGN.md`](docs/GAME_DESIGN.md) — that doc's "Technology Stack" section is historical/superseded; this file and AGENTS.md are the source of truth for tech decisions.
 
 ## Tech stack (decided, with reasoning — don't re-litigate without new info)
 
-**2026-07-20: pivoted off Next.js.** Explicit call from the user — "Next is super heavy" — made before the Next.js-based work (engine/content/contracts aside) got committed. See "Rejected approaches."
-
 | Layer | Choice | Why |
 |---|---|---|
-| Backend framework | Hono, mounted in a Node process | Minimal, fast, no bundler/RSC machinery; small enough to reason about the whole request path |
-| Frontend framework | TanStack Router + React, built with Vite (TS, Tailwind 4) | File/type-safe routing without a metaframework; Vite build is far lighter than Next's |
-| App shape | Single deployable, no monorepo — Hono serves the API under `/api/*` and serves the built Vite SPA (static assets + index.html fallback) for everything else. Dev: `@hono/vite-dev-server` (or equivalent) runs Hono inside Vite's dev server so there's one dev command, not two processes to coordinate. | Preserves the "everything in one deployable, no monorepo" decision from the Next.js era — the framework changed, that constraint didn't |
-| Realtime | Supabase Realtime (broadcast / postgres_changes) — unchanged | Managed websockets — no custom Node server or Socket.io. Auth stays on Better Auth (Supabase Auth unused). |
-| Auth | Better Auth — anonymous plugin + email/password, both enabled. No OAuth, no email verification, no 2FA (bare minimum for POC) — unchanged, Better Auth has a Hono handler mount (same shape as its Next.js route handler, `auth.handler` mounted on `/api/auth/*`) | Room-based party game — guest join by name is the primary flow; email/password exists so identity can persist/link later |
-| ORM | Drizzle + `pg` (node-postgres) — unchanged | Swapped from Prisma: no native binary/build-approval friction, no separate codegen step, thinner runtime |
-| DB | Postgres via Supabase project **office-ladder** (ref `vdhumwwdgwuhtyurijtp`, region `ap-southeast-1`) — unchanged | Railway Postgres was tried and abandoned — see below |
-| Hosting (target) | Any Node host (Hono is not tied to a specific platform's edge runtime) | Realtime is offloaded to Supabase; the app is a plain long-running Node server, no serverless-specific constraints to design around |
-| Backend language | TypeScript only, no Go | Better Auth is TS-only; no need for a separate game socket process |
-
-### What carries over from the Next.js work vs. what doesn't
-The engine (`src/engine/`), content pipeline (`src/content/`), and contracts (`src/contracts/`) are framework-agnostic pure TS — they carry over untouched. The room service business logic (`src/server/rooms/service/`) also carries over; only its HTTP entry points change shape. **Framework-specific and needing a rewrite:** the Next.js route handlers under `src/app/api/`, the App Router pages/layouts under `src/app/`, and any component relying on Next.js conventions (Server Components, `next/navigation`, async `params`). The room/game React components themselves (`src/components/room/`, `src/components/game/`) are largely portable since they're client-side already — they'll need their data-fetching glue swapped from Next.js patterns to TanStack Router loaders, but the JSX/logic bodies mostly survive.
+| Monorepo | bun workspaces + Nx (package-based, no `project.json` — targets come from each package's own `package.json` scripts) | Explicit ask for a "proper monorepo... preferably NX" after the app outgrew a single package |
+| Backend | Hono on Bun (`apps/server`) | Minimal, fast, no bundler/RSC machinery |
+| Frontend | TanStack Router + React 19 + Vite + Tailwind 4 + shadcn/ui (`apps/web`) | File/type-safe routing without a metaframework |
+| Shared packages | `@office-ladder/engine`, `@office-ladder/content`, `@office-ladder/contracts`, `@office-ladder/db` | Real package boundaries instead of a flat `src/` — see AGENTS.md for the exact dependency rules |
+| Realtime | Native WebSockets via `hono/bun`'s `upgradeWebSocket`, not Supabase Realtime | Explicit instruction to drop Supabase Realtime in favor of Hono's own WS helper |
+| Auth | Better Auth (username + email/password), mounted directly on Hono (`auth.handler`) | No OAuth/2FA/email verification — bare minimum for a room-join party game |
+| ORM/driver | Drizzle + `drizzle-orm/bun-sql` (Bun's native Postgres driver, not `pg`) | "Use bun as much as possible" |
+| DB | Postgres via Supabase project **office-ladder** (ref `vdhumwwdgwuhtyurijtp`, region `ap-southeast-1`), used only as a plain Postgres host | Supabase's own SDK/Auth/Realtime are unused |
+| Dev servers | Two real processes (`apps/server` on Bun, `apps/web` on Vite), Vite proxies `/api` and `/ws` to the server. Production: one process — `apps/server` serves the built `apps/web` static output + API together. | `@hono/vite-dev-server`'s Bun adapter was tried and didn't work reliably in-process (Node vs Bun module execution conflict) — see AGENTS.md for the full story |
 
 ### Rejected approaches (don't re-suggest these)
-- **Next.js (App Router)** — rejected 2026-07-20 as too heavy for this project; replaced by Hono (API) + TanStack Router (frontend) on Vite. Do not re-propose Next.js without new instruction from the user.
-- **Custom `server.js` + Socket.io** — removed; replaced by Supabase Realtime.
-- **Separate `apps/realtime` Socket.io service + monorepo split** — built once, then reverted.
-- **Pure Next.js API route Socket.io hack** (`res.socket.server` in `pages/api/socket.ts`) — was broken on Next.js 16; moot now that Next.js itself is gone.
-- **Go backend** — Better Auth can't run in it; would require a separate Node auth sidecar for no real gain on a game this size.
-- **Prisma** — works, but heavier than needed; team explicitly prefers Drizzle.
-- **Railway Postgres** (`trolley.proxy.rlwy.net:20187`) — abandoned; Supabase is the DB.
-- **Supabase Auth** — not used; Better Auth owns sessions/users.
+- **Next.js (App Router)** — rejected 2026-07-20, "too heavy." Replaced by Hono + TanStack Router.
+- **Supabase Realtime** — rejected in favor of native `hono/bun` WebSockets.
+- **`@hono/vite-dev-server` for a single unified dev process** — tried, hit a Node/Bun module-execution conflict (`Bun is not defined` inside Vite's SSR module runner even with the Bun adapter). Replaced by two processes + Vite proxy. Don't re-attempt without checking whether that package's Bun compatibility has changed upstream first.
+- **Flat single-package layout** — replaced by the Nx monorepo (apps/web, apps/server, packages/engine|content|contracts|db) per explicit instruction.
+- **Custom `server.js` + Socket.io**, **separate `apps/realtime` Socket.io service**, **Go backend**, **Prisma**, **Railway Postgres**, **Supabase Auth** — all previously tried and abandoned; see AGENTS.md if the reasoning is needed again.
 
 ### Environment gotcha (matters for whoever runs migrations next)
-**This sandboxed dev environment cannot make raw TCP connections** — only HTTPS through the pre-configured proxy works. Confirmed by: `psql`/`/dev/tcp` timing out against Railway, against Supabase's direct host (which is also IPv6-only — a separate, additional problem), and against Supabase's IPv4 session pooler. None of that is a DB provider issue — it's this environment's egress policy.
+**This sandboxed dev environment cannot make raw TCP connections** — only HTTPS through a pre-configured proxy works. Confirmed against Railway, Supabase's direct host, and Supabase's session pooler — this is the sandbox's egress policy, not a DB provider issue. Workaround: the Supabase MCP tools (`execute_sql`, `apply_migration`) go over the Management API (HTTPS). `drizzle-kit generate` doesn't need a DB connection, only `push`/`migrate` do. **From a normal machine/CI/VPS, raw TCP works fine** and `drizzle-kit push` is simpler — no MCP workaround needed there.
 
-**Workaround used:** the Supabase MCP tools (`mcp__Supabase__execute_sql`, `mcp__Supabase__apply_migration`) go over the Supabase Management API (HTTPS), not raw Postgres wire protocol, so they work from here. Drizzle migrations were generated locally with `drizzle-kit generate` (no DB connection needed for `generate`, only for `push`/`migrate`), then the resulting SQL was meant to be applied via `apply_migration`.
+## Current state (updated 2026-07-20)
 
-**If running from a normal machine/CI/VPS** (not this sandbox), raw TCP will work fine and `drizzle-kit push` or a real `psql` connection is simpler — no need for the MCP-tool workaround there.
+The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring are both **done and committed**. Verified this session: `bun run typecheck`, `bun run lint`, and `bun run test` all pass clean across every package/app via `nx run-many` (120 tests, same count as before either migration — nothing was lost). See [`AGENTS.md`](AGENTS.md) for the full architecture, commands, and env var reference — it won't be duplicated here.
 
-## Current state (updated 2026-07-20 — mid-pivot from Next.js to Hono + TanStack Router)
+**What's real and working** (verified by direct testing this session, not just typechecking):
+- `apps/server` standalone: boots, Better Auth sign-up/sign-in works against the live Supabase Postgres, room creation works through the full stack (Hono route → room service → engine).
+- `apps/web` standalone: Vite boots and serves the SPA shell.
+- Full room lifecycle API (create/join/get/start/roll) ported to Hono, auth-gated, same-origin-checked.
+- Lobby and game UI ported off Next.js (`next/navigation` → TanStack Router's `useNavigate`/`Link`, session-gated routes via `beforeLoad`).
+- Realtime: WebSocket hub (`apps/server/src/realtime/ws-hub.ts`) + client (`apps/web/src/realtime/room-channel.ts`), same invalidation-only contract as before (`ProjectionUpdated`), transport swapped from Supabase to native WS.
+- **New this session**: the engine's `turn.roll` transition now auto-attempts promotion (if a player affords the next rank) and detects the win condition (reaching Director ends the match, `GameState.outcome.winnerPlayerIds` populated). Threaded through to the client — `GameBootstrap.publicProjection.winnerPlayerIds` and a winner screen in `apps/web/src/components/game/game-client.tsx`.
 
-Substantial engine/backend/frontend work exists as **uncommitted, untracked files** (see `git status`), built against Next.js. As of just before the pivot decision: `pnpm test` → 120/120 passing, `pnpm typecheck` clean, `pnpm lint` clean — i.e. the framework-agnostic pieces (engine, content, contracts, room service) are solid and should not be thrown away, only re-hosted.
-
-**Framework-agnostic, carries over as-is:**
-- **Game engine** (`src/engine/`) — deterministic via seeded/scripted random sources (`src/engine/random/`): setup (`src/engine/setup/`, incl. `deadline-dash.ts`), commands/execution/apply-command pipeline (roll-turn, roll-salary, roll-events, roll-random, start-game), rules (movement, salary), legal-actions, projections (public/player views), serialization. Covered by `tests/engine/*`.
-- **Content pipeline** (`src/content/`) — Zod-validated schema (`src/content/schema/`) plus the "Deadline Dash" content pack (`src/content/deadline-dash/`): board, characters, ranks/promotion ladder, game modes.
-- **Contracts** (`src/contracts/`) — request/response parsing + validation (`rooms.ts`, `realtime.ts`), reusable by a Hono handler exactly as it was reusable by a Next.js route handler.
-- **Server layer** (`src/server/`) — `rooms/service` (create-room-service, game-setup, projections), `auth/require-session.ts`, `realtime/publish-room-update.ts`. This is plain TS with no Next.js imports — it becomes what Hono handlers call into.
-  - ⚠️ **Rooms are currently backed by an in-memory repository, not Postgres** (`src/server/rooms/default-service.ts` instantiates `InMemoryRoomRepository`). The DB schema exists (`src/db/game-schema.ts` + migrations `drizzle/0001`/`0002`) but isn't wired in yet — state won't survive a restart. Worth fixing as part of the rewrite rather than porting the gap forward.
-- Drizzle: `src/db/index.ts`, `src/db/auth-schema.ts`, `src/db/game-schema.ts`, `drizzle.config.ts`. Migrations `0000`–`0002` generated, **not confirmed applied to the live Supabase project**.
-
-**Next.js-specific, needs a rewrite:**
-- `src/app/api/rooms/**` (create, join, get, start, roll route handlers) → becomes Hono routes calling the same `src/server/rooms/service`.
-- `src/app/api/auth/[...all]/route.ts` → becomes `auth.handler` mounted on a Hono route.
-- `src/app/rooms/[roomId]/page.tsx`, `src/app/rooms/[roomId]/game/page.tsx`, `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/sign-in`, `src/app/sign-up` → become TanStack Router route files under a Vite app.
-- `src/components/room/*` and `src/components/game/*` are mostly portable (client-side already) but their data loading needs to move from whatever Next.js pattern they used to TanStack Router loaders; `src/realtime/room-channel.ts` (`subscribeRoomUpdates`) should be unaffected since it's just a Supabase client subscription.
-- `next.config.ts`, `next-env.d.ts`, Next.js-specific eslint config entries — deleted, replaced by Vite config + a Hono entrypoint.
-- `.env.local` / `.env.example` — same secrets, just no more Next.js-specific env var conventions (e.g. `NEXT_PUBLIC_*` prefixes become whatever Vite's convention is, `VITE_*`).
-- Fixed this session (before the pivot decision, still relevant post-pivot): root `vitest.config.ts` was missing the `@/` → `src/` path alias; fixed by adding it to the root config and deleting a stray duplicate config under `src/components/room/`.
-- Not yet verified/likely missing regardless of framework: event-card resolution wired end-to-end, hidden-role reveal flow, winner screen, DB persistence for rooms/games, sign-in exercised live against Supabase.
+**What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
+- Rooms are **in-memory, not Postgres-backed** (schema + migrations exist, service isn't wired to them).
+- Event cards, tile effects beyond salary, prompts/decisions, hidden-role abilities are **not implemented** — the content pack carries the data (`BoardTile.effects`) but the engine doesn't interpret most of it yet. Only `turn.roll` and (new) auto-promotion exist as real transitions.
+- Combined `bun run dev` (both processes together) wasn't interactively verified this session — the sandbox couldn't reliably run two long-lived background processes at once. Each half was verified independently; the Vite proxy config itself is standard and low-risk, but hasn't been smoke-tested combined.
+- No manual browser playthrough was done — no browser in this environment.
+- No new engine test for the promotion/win-condition logic (existing 83 engine tests still pass unchanged).
 
 ## Next step
 
-1. Scaffold the Hono + Vite + TanStack Router app shape (single deployable, see tech stack table above) — pick and wire the dev-server integration (e.g. `@hono/vite-dev-server`) so `pnpm dev` stays one command.
-2. Port `src/app/api/**` route handlers to Hono routes, calling the existing `src/server/rooms/service` and `auth.handler` unchanged.
-3. Port `src/app/**` pages to TanStack Router route files; move Server-Component-style data loading to route `loader`s.
-4. Decide whether to wire the room service to Postgres now (schema + migrations already exist) or keep in-memory for longer — do this as part of the rewrite, not after.
-5. Once the app boots on the new stack: commit (large uncommitted tree — split into logical commits), then audit gameplay completeness (event cards, hidden roles, winner screen) and exercise sign-in end-to-end against Supabase.
+1. Manually run `bun run dev` and click through create room → join → start → roll → promote → win, in a real browser.
+2. Decide DB persistence timing: wire `packages/db`'s schema into the room service now, or explicitly defer.
+3. Scope the next chunk of gameplay: either build a generic tile-effect interpreter (content already has the data) or trim the content pack's effect vocabulary to match what's implemented — right now the two disagree about how rich the game is, and that gap should be closed deliberately rather than accumulate further.
+4. Add an engine test for promotion + win-condition.
 
 ## MVP scope (from PRD)
 
-- [x] Lobby (create/join room, ready-up) — `src/components/room/`, `src/app/api/rooms/{route,join}.ts`
-- [x] Realtime transport (Supabase Realtime, wired for room + game updates)
-- [x] Auth (guest + email/password)
-- [x] Dice roll + player movement — engine `rules/movement.ts`, `execution/roll-turn.ts`, API `rooms/[roomId]/roll`
-- [x] Board (28 spaces, tile effects) — `src/content/deadline-dash/board.ts`
-- [ ] Event cards — content/schema exists (`schema/effects.ts`), end-to-end resolution not confirmed
-- [ ] Hidden character roles — character content exists (`content/deadline-dash/characters.ts`), reveal/role-assignment flow not confirmed
-- [x] Promotion system (ladder, requirements) — `content/deadline-dash/ranks.ts`, `engine/rules/salary.ts`
-- [ ] Winner screen — not located this session, needs check
-- [x] Shared game-engine module (board/dice/cards/promotion/turn logic) — `src/engine/`, server-authoritative, projections synced via Supabase Realtime
+- [x] Lobby (create/join room, ready-up)
+- [x] Realtime transport (native WebSockets)
+- [x] Auth (username + email/password)
+- [x] Dice roll + player movement
+- [x] Board (44 spaces, tile data modeled — not all tile effects interpreted, see gaps above)
+- [ ] Event cards — content/schema exists, resolution not implemented
+- [ ] Hidden character roles — characters assigned/shown, no unique ability resolution beyond a salary multiplier
+- [x] Promotion system — now auto-attempted on affordability, no player-driven prompt/choice yet
+- [x] Winner screen — implemented this session, tied to the new win-condition
+- [x] Shared game-engine module — `packages/engine`, server-authoritative, projections synced via WebSocket
 
 ## Future (post-MVP, per PRD)
 AI bots, chat, spectator mode, replay, leaderboard, daily challenges, avatars, mobile support.
