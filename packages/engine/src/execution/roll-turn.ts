@@ -1,11 +1,17 @@
 import type { RollTurnCommand } from "../commands";
 import { createEventMetadata } from "./events";
-import type { GameEvent, MatchEndedEvent, PlayerPromotedEvent } from "../events";
+import type {
+  GameEvent,
+  MatchEndedEvent,
+  PlayerPromotedEvent,
+  ResourceChangedEvent,
+} from "../events";
 import { createStableId, type GameState, type MatchOutcome, type PlayerState } from "../model";
-import { rollDie } from "../random";
+import { createSeededRandomSource, rollDie } from "../random";
 import { moveAroundBoard } from "../rules";
 import { rejectCommand } from "./errors";
 import { resolvePromotion } from "./roll-promotion";
+import { resolveTileEffects } from "./resolve-tile-effects";
 import { createRollEvents } from "./roll-events";
 import {
   diceCursor,
@@ -94,9 +100,9 @@ export function rollTurn(
     receptionistIndex,
   });
   const nextOrderIndex = (currentOrderIndex + 1) % state.playerOrder.length;
-  const nextPlayerId = state.playerOrder[nextOrderIndex];
+  const naturalNextPlayerId = state.playerOrder[nextOrderIndex];
   const tileId = state.tileIds[movement.destination];
-  if (nextPlayerId === undefined || tileId === undefined) {
+  if (naturalNextPlayerId === undefined || tileId === undefined) {
     return rejectCommand(state, command, {
       code: "INVARIANT_VIOLATION",
       message: "Movement resolved outside canonical turn or board state",
@@ -111,14 +117,49 @@ export function rollTurn(
     });
   }
 
-  const updatedMoney = salary.moneyResource.value + salary.amount;
+  const landedTile = context.content.board.spaces.find((tile) => tile.id === tileId);
   const revision = state.revision + 1;
-  const nextTurnNumber = state.turn.number + 1;
+  const updatedMoney = salary.moneyResource.value + salary.amount;
+
+  const movedPlayer: PlayerState = {
+    ...player,
+    position: movement.destination,
+    lapsCompleted: player.lapsCompleted + movement.laps,
+    resources:
+      salary.amount > 0
+        ? {
+            ...player.resources,
+            [salary.moneyKey]: {
+              ...salary.moneyResource,
+              value: updatedMoney,
+            },
+          }
+        : player.resources,
+  };
+
+  // Tile effects draw from a dedicated, ephemeral source seeded by the
+  // command id — deterministic and replay-safe (the same command always
+  // re-derives the same seed) without perturbing the persisted "dice"
+  // stream's cursor, which only ever advances once per die roll.
+  const tileEffectRandom = createSeededRandomSource(command.commandId);
+  const tileOutcome =
+    landedTile === undefined
+      ? { player: movedPlayer, changes: [], grantedExtraRoll: false }
+      : resolveTileEffects(movedPlayer, landedTile.effects, tileEffectRandom);
+
+  const nextPlayerId = tileOutcome.grantedExtraRoll ? command.actorId : naturalNextPlayerId;
+  const nextTurnNumber = tileOutcome.grantedExtraRoll
+    ? state.turn.number
+    : state.turn.number + 1;
   const nextRound =
-    nextPlayerId === state.playerOrder[0] ? state.turn.round + 1 : state.turn.round;
+    !tileOutcome.grantedExtraRoll && nextPlayerId === state.playerOrder[0]
+      ? state.turn.round + 1
+      : state.turn.round;
+
   const consumed = trackedRandom.consumed();
   const rngCursor = diceCursor(random, diceStream, consumed);
   const persistedStream = persistedDiceStream(random, diceStream, consumed);
+
   const events = createRollEvents({
     state,
     command,
@@ -141,23 +182,6 @@ export function rollTurn(
     });
   }
 
-  const movedPlayer: PlayerState = {
-    ...player,
-    position: movement.destination,
-    lapsCompleted: player.lapsCompleted + movement.laps,
-    resources:
-      salary.amount > 0
-        ? {
-            ...player.resources,
-            [salary.moneyKey]: {
-              ...salary.moneyResource,
-              value: updatedMoney,
-            },
-          }
-        : player.resources,
-  };
-
-  const promotion = resolvePromotion(movedPlayer, context.content, state.modeId);
   const allEvents: GameEvent[] = [...events];
   const eventMetadata = () =>
     createEventMetadata(
@@ -167,23 +191,42 @@ export function rollTurn(
       state.eventSequence + allEvents.length + 1,
     );
 
-  let updatedPlayer = movedPlayer;
+  for (const change of tileOutcome.changes) {
+    const resource = tileOutcome.player.resources[change.resource];
+    if (resource === undefined) continue;
+    const resourceChanged: ResourceChangedEvent = {
+      ...eventMetadata(),
+      type: "ResourceChanged",
+      payload: {
+        playerId: tileOutcome.player.id,
+        resourceId: resource.id,
+        previousValue: change.previousValue,
+        newValue: change.newValue,
+        reason: "tile-effect",
+      },
+    };
+    allEvents.push(resourceChanged);
+  }
+
+  const promotion = resolvePromotion(tileOutcome.player, context.content, state.modeId);
+
+  let updatedPlayer = tileOutcome.player;
   let outcome: MatchOutcome | null = null;
 
   if (promotion.promoted) {
-    const currentReputation = movedPlayer.resources[promotion.reputationKey];
-    const currentMoney = movedPlayer.resources[promotion.moneyKey];
+    const currentReputation = tileOutcome.player.resources[promotion.reputationKey];
+    const currentMoney = tileOutcome.player.resources[promotion.moneyKey];
     if (currentReputation !== undefined && currentMoney !== undefined) {
       const toRankId = createStableId("RankId", promotion.toRankId);
       updatedPlayer = {
-        ...movedPlayer,
+        ...tileOutcome.player,
         rank: {
           id: toRankId,
           kind: promotion.toRankId as PlayerState["rank"]["kind"],
-          index: movedPlayer.rank.index + 1,
+          index: tileOutcome.player.rank.index + 1,
         },
         resources: {
-          ...movedPlayer.resources,
+          ...tileOutcome.player.resources,
           [promotion.moneyKey]: {
             ...currentMoney,
             value: currentMoney.value - promotion.cost,
@@ -196,7 +239,7 @@ export function rollTurn(
         type: "PlayerPromoted",
         payload: {
           playerId: updatedPlayer.id,
-          fromRankId: createStableId("RankId", movedPlayer.rank.kind ?? promotion.toRankId),
+          fromRankId: createStableId("RankId", tileOutcome.player.rank.kind ?? promotion.toRankId),
           toRankId,
           cost: promotion.cost,
         },

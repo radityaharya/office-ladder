@@ -42,21 +42,22 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - Full room lifecycle API (create/join/get/start/roll) ported to Hono, auth-gated, same-origin-checked.
 - Lobby and game UI ported off Next.js (`next/navigation` → TanStack Router's `useNavigate`/`Link`, session-gated routes via `beforeLoad`).
 - Realtime: WebSocket hub (`apps/server/src/realtime/ws-hub.ts`) + client (`apps/web/src/realtime/room-channel.ts`), same invalidation-only contract as before (`ProjectionUpdated`), transport swapped from Supabase to native WS.
-- **New this session**: the engine's `turn.roll` transition now auto-attempts promotion (if a player affords the next rank) and detects the win condition (reaching Director ends the match, `GameState.outcome.winnerPlayerIds` populated). Threaded through to the client — `GameBootstrap.publicProjection.winnerPlayerIds` and a winner screen in `apps/web/src/components/game/game-client.tsx`.
+- **New this session**: the engine's `turn.roll` transition now runs a generic tile-effect interpreter (`resolve-tile-effects.ts`) covering `modifyResource`, `payResource`, `restoreResourceToMaximum`, `incrementWorkCounter` (with its milestone reward), `rollCheck` (doubles + total-range outcomes, recursive), `grantExtraRoll` (a real extra turn, not just a flag), and `drawCards` (a synthesized flavor table standing in for unauthored deck content) — every tile kind on the board now does something, not just the receptionist. Also auto-attempts promotion (if a player affords the next rank) and detects the win condition (reaching Director ends the match, `GameState.outcome.winnerPlayerIds` populated). Threaded through to the client — `GameBootstrap.publicProjection.winnerPlayerIds` and a winner screen in `apps/web/src/components/game/game-client.tsx`. Covered by 4 new engine tests (87/87 total, up from 83).
 
 **What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
 - Rooms are **in-memory, not Postgres-backed** (schema + migrations exist, service isn't wired to them).
-- Event cards, tile effects beyond salary, prompts/decisions, hidden-role abilities are **not implemented** — the content pack carries the data (`BoardTile.effects`) but the engine doesn't interpret most of it yet. Only `turn.roll` and (new) auto-promotion exist as real transitions.
+- **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content (no `deck.work`/`deck.meeting`/`deck.event`/`deck.networking` cards exist anywhere in the content pack).
+- `skipTurns`, `applyStatus`, `auditConfinement` tile effects are parsed but are documented no-ops (would need turn-order-skipping and status-duration tracking, respectively — neither is modeled yet).
+- Prompts/decisions (`prompt.respond`, `reaction.play`) and hidden-role abilities beyond a salary multiplier are **not implemented** — `legal-actions.ts` only ever enumerates `game.start` and `turn.roll`, so no player choice is ever surfaced.
 - Combined `bun run dev` **was** verified this session (both processes together, through the Vite proxy): sign-up, session check, room creation, and the WebSocket upgrade all confirmed working end-to-end via curl.
 - No manual browser playthrough was done — no browser in this environment, only HTTP/WS-level verification. The API surface is confirmed; nobody has clicked through the actual React UI yet.
-- No new engine test for the promotion/win-condition logic (existing 83 engine tests still pass unchanged).
 
 ## Next step
 
 1. Manually run `bun run dev` and click through create room → join → start → roll → promote → win, in a real browser.
 2. Decide DB persistence timing: wire `packages/db`'s schema into the room service now, or explicitly defer.
-3. Scope the next chunk of gameplay: either build a generic tile-effect interpreter (content already has the data) or trim the content pack's effect vocabulary to match what's implemented — right now the two disagree about how rich the game is, and that gap should be closed deliberately rather than accumulate further.
-4. Add an engine test for promotion + win-condition.
+3. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table) — this is the biggest remaining gap between what the content pack implies and what's implemented.
+4. Implement `skipTurns` (self-contained, only touches the current player's own next-turn logic) as the next tile-effect increment.
 
 ## MVP scope (from PRD)
 
@@ -64,8 +65,8 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - [x] Realtime transport (native WebSockets)
 - [x] Auth (username + email/password)
 - [x] Dice roll + player movement
-- [x] Board (44 spaces, tile data modeled — not all tile effects interpreted, see gaps above)
-- [ ] Event cards — content/schema exists, resolution not implemented
+- [x] Board (44 spaces, tile effects interpreted for most effect types — `skipTurns`/`applyStatus`/`auditConfinement` still no-ops, see gaps above)
+- [ ] Event cards — tiles trigger `drawCards`, but it's a synthesized flavor table, not real authored card content
 - [ ] Hidden character roles — characters assigned/shown, no unique ability resolution beyond a salary multiplier
 - [x] Promotion system — now auto-attempted on affordability, no player-driven prompt/choice yet
 - [x] Winner screen — implemented this session, tied to the new win-condition
