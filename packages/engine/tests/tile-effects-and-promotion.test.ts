@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { applyCommand } from "../src";
+import { applyCommand, createScriptedRandomSource } from "../src";
+import { resolveTileEffects } from "../src/execution/resolve-tile-effects";
 import { accepted, context, rollCommand, rollState } from "./turn-loop-fixtures";
 import { fixtureIds } from "./fixtures";
 
@@ -47,6 +48,42 @@ describe("tile effects", () => {
 
     const energy = nextState.players[fixtureIds.owner]?.resources.energy;
     expect(energy?.value).toBe(10);
+  });
+});
+
+describe("character passives", () => {
+  it("Given the Workaholic character, when resolving an empty-effects tile of kind 'work', then the passive money bonus applies", () => {
+    const state = rollState(0);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const workaholic = { ...owner, characterId: "character.workaholic" as typeof owner.characterId };
+    const outcome = resolveTileEffects(
+      workaholic,
+      [],
+      createScriptedRandomSource([]),
+      "work",
+      { type: "workLandingMoneyBonus", amount: 50 },
+    );
+
+    expect(outcome.player.resources.money.value).toBe(owner.resources.money.value + 50);
+  });
+
+  it("Given the Workaholic character, when landing on a non-work tile, then the passive does not apply", () => {
+    const state = rollState(0);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const workaholic = { ...owner, characterId: "character.workaholic" as typeof owner.characterId };
+    const outcome = resolveTileEffects(
+      workaholic,
+      [],
+      createScriptedRandomSource([]),
+      "meeting",
+      { type: "workLandingMoneyBonus", amount: 50 },
+    );
+
+    expect(outcome.player.resources.money.value).toBe(owner.resources.money.value);
   });
 });
 

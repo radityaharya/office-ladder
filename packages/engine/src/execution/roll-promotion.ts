@@ -46,7 +46,17 @@ export function resolvePromotion(
     requirement.moneyCost[modeId as keyof typeof requirement.moneyCost] ??
     requirement.moneyCost["mode.quick"];
 
-  if (money[1].value < cost || reputation[1].value < requirement.reputationRequired) {
+  const character = Object.values(content.characters).find(
+    (candidate) => candidate.id === player.characterId,
+  );
+  const reputationAdjustment =
+    character?.passive.type === "modifyPromotionRequirement" &&
+    character.passive.resource === "reputation"
+      ? character.passive.amount
+      : 0;
+  const reputationRequired = Math.max(0, requirement.reputationRequired + reputationAdjustment);
+
+  if (money[1].value < cost || reputation[1].value < reputationRequired) {
     return { promoted: false };
   }
 

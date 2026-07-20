@@ -142,10 +142,19 @@ export function rollTurn(
   // re-derives the same seed) without perturbing the persisted "dice"
   // stream's cursor, which only ever advances once per die roll.
   const tileEffectRandom = createSeededRandomSource(command.commandId);
+  const character = Object.values(context.content.characters).find(
+    (candidate) => candidate.id === movedPlayer.characterId,
+  );
   const tileOutcome =
     landedTile === undefined
       ? { player: movedPlayer, changes: [], grantedExtraRoll: false }
-      : resolveTileEffects(movedPlayer, landedTile.effects, tileEffectRandom);
+      : resolveTileEffects(
+          movedPlayer,
+          landedTile.effects,
+          tileEffectRandom,
+          landedTile.kind,
+          character?.passive,
+        );
 
   const nextPlayerId = tileOutcome.grantedExtraRoll ? command.actorId : naturalNextPlayerId;
   const nextTurnNumber = tileOutcome.grantedExtraRoll
