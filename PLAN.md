@@ -47,8 +47,8 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 **What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
 - Rooms are **in-memory, not Postgres-backed** (schema + migrations exist, service isn't wired to them).
 - Event cards, tile effects beyond salary, prompts/decisions, hidden-role abilities are **not implemented** — the content pack carries the data (`BoardTile.effects`) but the engine doesn't interpret most of it yet. Only `turn.roll` and (new) auto-promotion exist as real transitions.
-- Combined `bun run dev` (both processes together) wasn't interactively verified this session — the sandbox couldn't reliably run two long-lived background processes at once. Each half was verified independently; the Vite proxy config itself is standard and low-risk, but hasn't been smoke-tested combined.
-- No manual browser playthrough was done — no browser in this environment.
+- Combined `bun run dev` **was** verified this session (both processes together, through the Vite proxy): sign-up, session check, room creation, and the WebSocket upgrade all confirmed working end-to-end via curl.
+- No manual browser playthrough was done — no browser in this environment, only HTTP/WS-level verification. The API surface is confirmed; nobody has clicked through the actual React UI yet.
 - No new engine test for the promotion/win-condition logic (existing 83 engine tests still pass unchanged).
 
 ## Next step
