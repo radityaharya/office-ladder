@@ -121,10 +121,34 @@
   * {
     @apply border-border outline-ring/50;
   }
+
+  ::selection {
+    background: color-mix(in oklch, var(--primary) 45%, transparent);
+    color: var(--foreground);
+  }
+
   body {
     @apply bg-background text-foreground;
+    min-height: 100vh;
   }
+
   html {
     @apply font-mono;
+  }
+
+  a,
+  button,
+  input {
+    @apply transition-colors;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
   }
 }

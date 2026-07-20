@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deadline Dash — How to Play</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f1eb; color: #1a1a1a; font-size: 13px; }
+
+  .page { max-width: 900px; margin: 0 auto; padding: 24px; }
+
+  /* Header */
+  .header { background: #1a1a2e; color: white; padding: 20px 24px; border-radius: 10px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { font-size: 26px; color: #FFD700; letter-spacing: 1px; }
+  .header p { font-size: 11px; color: #aaa; margin-top: 4px; }
+  .badge { background: #FFD700; color: #1a1a2e; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 11px; white-space: nowrap; }
+
+  /* Section */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .section { background: white; border-radius: 8px; padding: 14px 16px; border-left: 4px solid #ccc; }
+  .section h2 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #555; margin-bottom: 10px; }
+  .section.goal { border-color: #FFD700; }
+  .section.setup { border-color: #4CAF50; }
+  .section.turn { border-color: #2196F3; }
+  .section.resources { border-color: #FF9800; }
+  .section.tiles { border-color: #9C27B0; }
+  .section.promo { border-color: #E91E63; }
+  .section.cards { border-color: #00BCD4; }
+  .section.mgmt { border-color: #F44336; }
+  .section.win { border-color: #4CAF50; }
+
+  /* Goal boxes */
+  .role-box { display: flex; gap: 10px; }
+  .role { flex: 1; padding: 10px; border-radius: 6px; text-align: center; }
+  .role.worker { background: #e8f5e9; border: 1px solid #4CAF50; }
+  .role.mgmt { background: #fce4ec; border: 1px solid #e91e63; }
+  .role h3 { font-size: 13px; margin-bottom: 4px; }
+  .role p { font-size: 11px; color: #444; line-height: 1.4; }
+
+  /* Turn steps */
+  .steps { display: flex; gap: 0; }
+  .step { flex: 1; text-align: center; padding: 8px 4px; position: relative; }
+  .step:not(:last-child)::after { content: "→"; position: absolute; right: -6px; top: 50%; transform: translateY(-50%); color: #aaa; font-size: 16px; }
+  .step-num { width: 22px; height: 22px; background: #2196F3; color: white; border-radius: 50%; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; margin: 0 auto 4px; }
+  .step p { font-size: 10px; color: #333; line-height: 1.3; }
+  .step strong { font-size: 10px; display: block; margin-bottom: 2px; }
+
+  /* Resource cards */
+  .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .res { padding: 8px 10px; border-radius: 6px; }
+  .res.money { background: #fff9e6; border: 1px solid #f5c400; }
+  .res.rep { background: #f3e5f5; border: 1px solid #9c27b0; }
+  .res.energy { background: #e3f2fd; border: 1px solid #2196f3; }
+  .res.work { background: #e8f5e9; border: 1px solid #4caf50; }
+  .res h3 { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+  .res p { font-size: 10px; color: #555; line-height: 1.4; }
+
+  /* Tile tags */
+  .tile-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tile-tag { padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; }
+  .t-work { background: #eee; color: #333; border: 1px solid #ccc; }
+  .t-meet { background: #ffe0e6; color: #c62828; }
+  .t-event { background: #fff3cd; color: #856404; }
+  .t-net { background: #f3e5f5; color: #6a1b9a; }
+  .t-restore { background: #e8f5e9; color: #2e7d32; }
+  .t-spec { background: #e3f2fd; color: #1565c0; }
+  .t-ceo { background: #1a237e; color: white; }
+  .t-burn { background: #b71c1c; color: white; }
+  .t-corner { border: 2px solid #555; }
+
+  .tile-desc { font-size: 10px; color: #555; margin-top: 4px; line-height: 1.5; }
+
+  /* Promo table */
+  table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  th { background: #E91E63; color: white; padding: 5px 8px; text-align: left; font-size: 10px; }
+  td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }
+  tr:nth-child(even) td { background: #fafafa; }
+  tr.director td { background: #fff8e1; font-weight: bold; }
+  .benefit-text { font-size: 9.5px; color: #555; }
+
+  /* Card types */
+  .card-types { display: flex; flex-direction: column; gap: 6px; }
+  .card-type { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 5px; }
+  .ct-stored { background: #e3f2fd; }
+  .ct-immed { background: #f3e5f5; }
+  .ct-target { background: #fff3e0; }
+  .ct-global { background: #e8f5e9; }
+  .ct-react { background: #fce4ec; }
+  .card-type .icon { font-size: 16px; flex-shrink: 0; }
+  .card-type .info strong { font-size: 10px; display: block; }
+  .card-type .info p { font-size: 10px; color: #444; }
+
+  /* Deck list */
+  .deck-list { display: flex; flex-direction: column; gap: 4px; }
+  .deck-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 10.5px; }
+  .deck-item .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .timer-badge { background: #e53935; color: white; font-size: 9px; padding: 1px 6px; border-radius: 10px; margin-left: auto; }
+
+  /* Mgmt abilities */
+  .ability { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; }
+  .ability.shuffle { background: #fff3e0; border-left: 3px solid #ff9800; }
+  .ability.block { background: #fce4ec; border-left: 3px solid #e91e63; }
+  .ability h3 { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+  .ability p { font-size: 10px; color: #444; line-height: 1.4; }
+
+  /* Win conditions */
+  .win-list { display: flex; flex-direction: column; gap: 6px; }
+  .win-item { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; }
+  .win-item.ind { background: #e8f5e9; border-left: 3px solid #4caf50; }
+  .win-item.mgt { background: #fce4ec; border-left: 3px solid #e91e63; }
+  .win-item .icon { font-size: 18px; flex-shrink: 0; }
+  .win-item .text strong { font-size: 11px; display: block; }
+  .win-item .text p { font-size: 10px; color: #444; line-height: 1.4; }
+
+  /* Misc */
+  .note { background: #fff8e1; border: 1px solid #f5c400; border-radius: 5px; padding: 6px 10px; font-size: 10px; color: #555; margin-top: 8px; }
+  .note strong { color: #333; }
+  .burnout-box { background: #ffebee; border: 1px solid #ef9a9a; border-radius: 5px; padding: 6px 10px; font-size: 10px; margin-top: 6px; }
+
+  .full-width { margin-bottom: 12px; }
+  .section.full { width: 100%; }
+
+  @media print {
+    body { background: white; font-size: 11px; }
+    .page { padding: 10px; max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>🎮 DEADLINE DASH</h1>
+      <p>Corporate Satire Board Game · 2–6 Pemain · 20–120 Menit</p>
+    </div>
+    <div class="badge">HOW TO PLAY</div>
+  </div>
+
+  <!-- Goal + Setup -->
+  <div class="grid-2">
+    <div class="section goal">
+      <h2>🎯 Tujuan Permainan</h2>
+      <div class="role-box">
+        <div class="role worker">
+          <h3>👷 Pekerja</h3>
+          <p>Jadilah <strong>orang pertama</strong> yang mencapai jabatan <strong>Director</strong>.</p>
+        </div>
+        <div class="role mgmt">
+          <h3>🕵️ Manajemen <em>(Hidden)</em></h3>
+          <p>Pastikan <strong>tidak ada yang jadi Director</strong> sebelum semua kartu Meeting & Event habis.</p>
+        </div>
+      </div>
+      <div class="note">⚠️ Kamu <strong>tidak tahu</strong> siapa Manajemen. Rasio: 3 Pekerja : 1 Manajemen.</div>
+    </div>
+
+    <div class="section setup">
+      <h2>🛠️ Persiapan</h2>
+      <ol style="padding-left:16px; line-height:2; font-size:11px;">
+        <li>Letakkan board, 4 corner sudah <strong>fixed</strong></li>
+        <li>Kocok semua 6 deck kartu secara terpisah</li>
+        <li>Letakkan 3 kartu teratas Meeting deck <strong>face-up</strong></li>
+        <li>Bagikan kartu Karakter + Identitas Manajemen (1 per pemain, dilihat sendiri)</li>
+        <li>Semua pion mulai di <strong>Receptionist</strong></li>
+        <li>Setiap pemain mulai dengan <strong>$1.000 · Rep 0 · Energy 5 · 1 MOVE token</strong></li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Turn Structure -->
+  <div class="section turn full-width">
+    <h2>🔄 Urutanmu Setiap Giliran</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <strong>Start of Turn</strong>
+        <p>Cek burnout<br>(Energy = 0?)<br>Bebas dari Audit?</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <strong>Pre-Roll</strong>
+        <p>Main kartu<br>dari tangan<br>Aktifkan ability<br>Manajemen: Shuffle?</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <strong>Roll & Move</strong>
+        <p>Roll 1d6<br>Pakai MOVE token<br>untuk +1 space</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <strong>Tile Effect</strong>
+        <p>Resolve efek<br>kotak tempat<br>kamu berhenti</p>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <strong>End of Turn</strong>
+        <p>Pemain lain<br>boleh main<br>1 Reaction card</p>
+      </div>
+    </div>
+    <div class="burnout-box">😵 <strong>Burnout:</strong> Jika Energy = 0 → skip turn, Energy otomatis refill ke penuh. &nbsp;|&nbsp; 🏢 <strong>CEO's Office:</strong> Attempt promosi kapan saja mendarat di sini.</div>
+  </div>
+
+  <!-- Resources + Tokens -->
+  <div class="grid-2">
+    <div class="section resources">
+      <h2>📊 Resource & Token</h2>
+      <div class="res-grid">
+        <div class="res money">
+          <h3>💰 Uang</h3>
+          <p>Untuk biaya promosi & denda. Dapat dari gaji (lewat Receptionist) & kartu.</p>
+        </div>
+        <div class="res rep">
+          <h3>🌟 Reputasi</h3>
+          <p>Syarat minimum promosi. Tidak berkurang saat promosi. Dapat dari tile & kartu.</p>
+        </div>
+        <div class="res energy">
+          <h3>⚡ Energy</h3>
+          <p>Work tile = -1 Energy. Refill FULL di Pantry/Lunch Break/Employee Lounge/Smoking Area.</p>
+        </div>
+        <div class="res work">
+          <h3>🔢 Work Counter</h3>
+          <p>Hitung berapa kali kamu landing di Work tile. Setiap <strong>5×</strong> = +1 Rep otomatis (akumulatif).</p>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:10px; color:#555;">
+        <strong>4 Token:</strong>
+        <span style="background:#ddeeff;padding:2px 6px;border-radius:10px;margin:2px;">🟦 MOVE (+1 space)</span>
+        <span style="background:#ddf0dd;padding:2px 6px;border-radius:10px;margin:2px;">🟩 MOMENTUM (mundur/reroll)</span>
+        <span style="background:#ffddd0;padding:2px 6px;border-radius:10px;margin:2px;">🟥 REP (+1 Rep)</span>
+        <span style="background:#fff3cc;padding:2px 6px;border-radius:10px;margin:2px;">💰 MONEY (+$200)</span>
+      </div>
+    </div>
+
+    <!-- Tiles Quick Ref -->
+    <div class="section tiles">
+      <h2>🗺️ Jenis Tile</h2>
+      <div class="tile-list">
+        <span class="tile-tag t-work">💼 Work</span>
+        <span class="tile-tag t-meet">📋 Meeting</span>
+        <span class="tile-tag t-event">🎉 Event</span>
+        <span class="tile-tag t-net">💬 Networking</span>
+        <span class="tile-tag t-restore">🍽️ Restore Energy</span>
+        <span class="tile-tag t-spec">⚙️ Special</span>
+        <span class="tile-tag t-ceo">🏢 CEO's Office</span>
+        <span class="tile-tag t-burn">😵 Burnout Tile</span>
+      </div>
+      <p class="tile-desc">
+        <strong>💼 Work</strong> → -1 Energy + draw 1 Work Card<br>
+        <strong>📋 Meeting</strong> → Draw 1 Meeting Card &nbsp;|&nbsp; <strong>🎉 Event</strong> → Draw 1 Event Card<br>
+        <strong>💬 Networking</strong> → Draw 1 Networking Card (baca wording keras!)<br>
+        <strong>🍽️ Restore</strong> → Energy refill ke penuh &nbsp;|&nbsp; <strong>😵 Burnout Tile</strong> → Skip 2 turn<br>
+        <strong>📚 Training</strong> → Roll 2d6: 2–6 = +1 Rep, 7–12 = +2 Rep<br>
+        <strong>👔 HR</strong> → Roll 2d6: Doubles = aman, lainnya = -1 Rep<br>
+        <strong>💸 Finance</strong> → Bayar $300 &nbsp;|&nbsp; <strong>📣 Marketing</strong> → +1 Rep<br>
+        <strong>⭐ CEO's Fav</strong> → +2 Rep &nbsp;|&nbsp; <strong>🏆 Best Employee</strong> → +$500 +3 Rep
+      </p>
+      <div style="margin-top:6px;font-size:10px;color:#555;border-top:1px solid #eee;padding-top:6px;">
+        <strong>4 Corner:</strong> 🟢 Receptionist (START · dapat gaji)&nbsp; 🔵 Board Meeting (draw kartu global)&nbsp; 🔴 Audit (terjebak: roll doubles <em>masing-masing dadu sama</em> atau bayar $500)&nbsp; 🟡 Annual Event (draw kartu global)
+      </div>
+    </div>
+  </div>
+
+  <!-- Promotion + Cards -->
+  <div class="grid-2">
+    <div class="section promo">
+      <h2>📈 Promosi Jabatan (di CEO's Office)</h2>
+      <table>
+        <tr><th>Jabatan</th><th>💰 Biaya</th><th>🌟 Min. Rep</th><th>Benefit</th></tr>
+        <tr><td>Staff</td><td>$500</td><td>3</td><td class="benefit-text">+$100 tiap lewat Receptionist</td></tr>
+        <tr><td>Senior Staff</td><td>$1.200</td><td>5</td><td class="benefit-text">Work ke-5× → +1 Rep ekstra</td></tr>
+        <tr><td>Supervisor</td><td>$2.000</td><td>7</td><td class="benefit-text">Max Energy +2 (jadi 10)</td></tr>
+        <tr><td>Asst. Manager</td><td>$3.000</td><td>9</td><td class="benefit-text">1× per lap: tolak roll, reroll</td></tr>
+        <tr><td>Manager</td><td>$4.500</td><td>11</td><td class="benefit-text">Meeting tile → +1 Rep bonus</td></tr>
+        <tr><td>Senior Manager</td><td>$6.000</td><td>13</td><td class="benefit-text">2× reward dari Annual Event</td></tr>
+        <tr><td>General Manager</td><td>$8.000</td><td>15</td><td class="benefit-text">1× per lap: ignore efek negatif</td></tr>
+        <tr class="director"><td>👑 Director</td><td>$10.000</td><td>17</td><td class="benefit-text">🏆 MENANG — game selesai!</td></tr>
+      </table>
+      <div class="note">Reputasi <strong>tidak berkurang</strong> saat promosi · Mode Cepat: biaya 50%</div>
+    </div>
+
+    <div class="section cards">
+      <h2>🃏 Sistem Kartu</h2>
+      <div class="deck-list">
+        <div class="deck-item"><div class="dot" style="background:#eee;border:1px solid #999"></div> 💼 Work Cards (50) — ditarik di Work tile</div>
+        <div class="deck-item"><div class="dot" style="background:#FFB3BA"></div> 📋 Meeting Cards (50) — ditarik di Meeting tile <span class="timer-badge">⏱ TIMER</span></div>
+        <div class="deck-item"><div class="dot" style="background:#FFDDA0"></div> 🎉 Event Cards (50) — ditarik di Event tile <span class="timer-badge">⏱ TIMER</span></div>
+        <div class="deck-item"><div class="dot" style="background:#FFB3FF"></div> 💬 Networking Cards (47) — Coffee/Gossip/Seminar</div>
+        <div class="deck-item"><div class="dot" style="background:#3399FF"></div> 🏛️ Board Meeting Cards (25) — corner Board Meeting</div>
+        <div class="deck-item"><div class="dot" style="background:#CCCC00"></div> 🎊 Annual Event Cards (25) — corner Annual Event</div>
+      </div>
+      <div class="note" style="margin-top:8px;">⏱ Kalau deck Meeting <strong>+</strong> Event habis → <strong>Manajemen menang</strong>. Deck lain dikocok ulang saat habis.</div>
+      <div class="card-types" style="margin-top:8px;">
+        <div class="card-type ct-immed"><span class="icon">⚡</span><div class="info"><strong>Immediate</strong><p>Efek langsung, lalu buang kartu.</p></div></div>
+        <div class="card-type ct-stored"><span class="icon">🗂️</span><div class="info"><strong>Stored / Consumable</strong><p>Simpan di tangan, mainkan kapan saja — termasuk saat giliran orang lain.</p></div></div>
+        <div class="card-type ct-react"><span class="icon">⚔️</span><div class="info"><strong>[REACTION]</strong><p>Stored card khusus yang bisa dimainkan saat Fase 5 giliran orang lain (max 1).</p></div></div>
+        <div class="card-type ct-target"><span class="icon">🎯</span><div class="info"><strong>Target Player</strong><p>Pilih 1 pemain yang terkena efek.</p></div></div>
+        <div class="card-type ct-global"><span class="icon">🌐</span><div class="info"><strong>Global</strong><p>Efek mengenai <em>semua</em> pemain.</p></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manajemen + Win -->
+  <div class="grid-2">
+    <div class="section mgmt">
+      <h2>🕵️ Kemampuan Manajemen (Rahasia)</h2>
+      <div class="ability shuffle">
+        <h3>🔀 Shuffle Deck — 3× per Manajemen</h3>
+        <p>Kocok ulang salah satu deck pilihan. Semua orang tahu ada shuffle, tapi <strong>tidak tahu siapa</strong> yang melakukannya. Identitas tetap aman.</p>
+      </div>
+      <div class="ability block">
+        <h3>🚫 Block Promosi — 1× per Manajemen</h3>
+        <p>Batalkan 1 attempt promosi siapapun, 100% efektif. <strong>Tapi identitas Manajemen langsung terbuka!</strong> Gunakan di momen yang tepat.</p>
+      </div>
+      <div class="note">Setelah Block: Manajemen masih bisa bermain normal & shuffle. Pemain lain sudah tahu siapa dia — gunakan ini untuk lindungi Manajemen ke-2 yang masih hidden.</div>
+    </div>
+
+    <div class="section win">
+      <h2>🏆 Cara Menang</h2>
+      <div class="win-list">
+        <div class="win-item ind">
+          <div class="icon">👑</div>
+          <div class="text">
+            <strong>Individu Menang (Pekerja atau Manajemen)</strong>
+            <p>Pemain pertama yang mencapai jabatan <strong>Director</strong> langsung menang. Game selesai saat itu juga.</p>
+          </div>
+        </div>
+        <div class="win-item mgt">
+          <div class="icon">🕵️</div>
+          <div class="text">
+            <strong>Manajemen Menang (Kolektif)</strong>
+            <p>Deck Meeting + Event habis sebelum ada yang jadi Director → <strong>semua Manajemen menang bersama</strong> (walau tidak saling tahu satu sama lain).</p>
+          </div>
+        </div>
+      </div>
+      <div class="note" style="margin-top:8px;">
+        <strong>6 Karakter:</strong> The Workaholic · Social Butterfly · Sales Star · Tech Genius · Office Politician · Lucky Employee<br>
+        Tiap karakter punya <strong>Passive</strong> (selalu aktif) dan <strong>Active</strong> (ada cooldown).
+      </div>
+      <div class="note" style="margin-top:6px; background:#f3e5f5; border-color:#9c27b0;">
+        <strong>💡 Strategi kunci:</strong> Perhatikan siapa yang tidak menyerang pemain leading. Siapa yang sering melewati Meeting tile saat deck terlihat bagus? Itu mungkin Manajemen.
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center; font-size:10px; color:#888; margin-top:12px; padding-top:10px; border-top:1px solid #ddd;">
+    Deadline Dash · How to Play Guide · v3.2 &nbsp;|&nbsp; <em>"Intern hari ini, Director entah kapan."</em>
+  </div>
+
+</div>
+</body>
+</html>

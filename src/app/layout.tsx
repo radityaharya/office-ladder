@@ -21,7 +21,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Office Ladder",
-  description: "Better Auth username scaffold",
+  description: "The fastest way for a group to jump into a funny office-themed board game.",
 };
 
 export default function RootLayout({
@@ -33,7 +33,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={cn(
-        "h-full antialiased",
+        "dark h-full antialiased",
         geistSans.variable,
         geistMono.variable,
         instrumentSansHeading.variable,

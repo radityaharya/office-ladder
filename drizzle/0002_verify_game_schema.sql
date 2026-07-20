@@ -1,0 +1,1 @@
+ALTER TABLE "game_events" ALTER COLUMN "logical_timestamp" SET DATA TYPE text;

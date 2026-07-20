@@ -2,6 +2,14 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { signIn, signUp } from "@/lib/auth-client";
 
 type AuthFormProps = {
@@ -13,6 +21,8 @@ export function AuthForm({ mode }: AuthFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  const isSignUp = mode === "sign-up";
+
   function onSubmit(formData: FormData) {
     setError(null);
 
@@ -22,7 +32,7 @@ export function AuthForm({ mode }: AuthFormProps) {
       const password = String(formData.get("password") || "");
 
       const result =
-        mode === "sign-up"
+        isSignUp
           ? await signUp.email({
               name: username,
               username,
@@ -44,61 +54,70 @@ export function AuthForm({ mode }: AuthFormProps) {
   }
 
   return (
-    <form action={onSubmit} className="mt-8 space-y-4">
-      <label className="block text-sm font-medium text-zinc-200">
-        {mode === "sign-up" ? "Username" : "Username or email"}
-        <input
-          className="mt-2 w-full rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-white outline-none transition placeholder:text-zinc-500 focus:border-cyan-300"
-          name="username"
-          autoComplete="username"
-          minLength={3}
-          maxLength={30}
-          required
-        />
-      </label>
-
-      {mode === "sign-up" ? (
-        <label className="block text-sm font-medium text-zinc-200">
-          Email
-          <input
-            className="mt-2 w-full rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-white outline-none transition placeholder:text-zinc-500 focus:border-cyan-300"
-            name="email"
-            type="email"
-            autoComplete="email"
+    <form action={onSubmit} className="mt-8">
+      <FieldGroup className="gap-6">
+        <Field>
+          <FieldLabel htmlFor="username">
+            {isSignUp ? "Username" : "Username or email"}
+          </FieldLabel>
+          <Input
+            id="username"
+            className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
+            name="username"
+            autoComplete="username"
+            minLength={3}
+            maxLength={30}
+            placeholder={isSignUp ? "intern-of-chaos" : "intern-of-chaos or email@company.com"}
             required
           />
-        </label>
-      ) : null}
+        </Field>
 
-      <label className="block text-sm font-medium text-zinc-200">
-        Password
-        <input
-          className="mt-2 w-full rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-white outline-none transition placeholder:text-zinc-500 focus:border-cyan-300"
-          name="password"
-          type="password"
-          autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
-          minLength={8}
-          required
-        />
-      </label>
+        {isSignUp ? (
+          <Field>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
+            <Input
+              id="email"
+              className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
+              name="email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@office-ladder.club"
+              required
+            />
+          </Field>
+        ) : null}
 
-      {error ? (
-        <p className="rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          {error}
-        </p>
-      ) : null}
+        <Field>
+          <FieldLabel htmlFor="password">Password</FieldLabel>
+          <Input
+            id="password"
+            className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
+            name="password"
+            type="password"
+            autoComplete={isSignUp ? "new-password" : "current-password"}
+            minLength={8}
+            placeholder={isSignUp ? "8 characters minimum" : "Enter your password"}
+            required
+          />
+        </Field>
 
-      <button
-        className="w-full rounded-2xl bg-cyan-300 px-5 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={isPending}
-        type="submit"
-      >
-        {isPending
-          ? "Working..."
-          : mode === "sign-up"
-            ? "Create account"
-            : "Sign in"}
-      </button>
+        {error ? (
+          <Alert variant="destructive" className="border-destructive/30 bg-destructive/10">
+            <AlertTitle>Access denied</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <Button className="w-full" disabled={isPending} size="lg" type="submit">
+          {isPending
+            ? isSignUp
+              ? "Creating account..."
+              : "Signing in..."
+            : isSignUp
+              ? "Claim your desk"
+              : "Get back in the room"}
+        </Button>
+      </FieldGroup>
     </form>
   );
 }

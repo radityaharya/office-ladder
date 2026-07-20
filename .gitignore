@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -10,15 +10,18 @@
 !.yarn/releases
 !.yarn/versions
 
+# nx
+.nx/cache
+.nx/workspace-data
+
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
+# build output
+dist
+build
+out
+routeTree.gen.ts
 
 # misc
 .DS_Store
@@ -39,4 +42,10 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
+
+# agent/session tooling scratch state (not project source)
+.omo/
+.impeccable/
+
+# Windows/WSL zone identifier artifacts from downloaded files
+*:Zone.Identifier

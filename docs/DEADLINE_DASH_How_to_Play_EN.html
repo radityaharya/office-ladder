@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deadline Dash — How to Play</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f1eb; color: #1a1a1a; font-size: 13px; }
+
+  .page { max-width: 900px; margin: 0 auto; padding: 24px; }
+
+  .header { background: #1a1a2e; color: white; padding: 20px 24px; border-radius: 10px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { font-size: 26px; color: #FFD700; letter-spacing: 1px; }
+  .header p { font-size: 11px; color: #aaa; margin-top: 4px; }
+  .badge { background: #FFD700; color: #1a1a2e; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 11px; white-space: nowrap; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .section { background: white; border-radius: 8px; padding: 14px 16px; border-left: 4px solid #ccc; }
+  .section h2 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #555; margin-bottom: 10px; }
+  .section.goal { border-color: #FFD700; }
+  .section.setup { border-color: #4CAF50; }
+  .section.turn { border-color: #2196F3; }
+  .section.resources { border-color: #FF9800; }
+  .section.tiles { border-color: #9C27B0; }
+  .section.promo { border-color: #E91E63; }
+  .section.cards { border-color: #00BCD4; }
+  .section.mgmt { border-color: #F44336; }
+  .section.win { border-color: #4CAF50; }
+
+  .role-box { display: flex; gap: 10px; }
+  .role { flex: 1; padding: 10px; border-radius: 6px; text-align: center; }
+  .role.worker { background: #e8f5e9; border: 1px solid #4CAF50; }
+  .role.mgmt { background: #fce4ec; border: 1px solid #e91e63; }
+  .role h3 { font-size: 13px; margin-bottom: 4px; }
+  .role p { font-size: 11px; color: #444; line-height: 1.4; }
+
+  .steps { display: flex; gap: 0; }
+  .step { flex: 1; text-align: center; padding: 8px 4px; position: relative; }
+  .step:not(:last-child)::after { content: "→"; position: absolute; right: -6px; top: 50%; transform: translateY(-50%); color: #aaa; font-size: 16px; }
+  .step-num { width: 22px; height: 22px; background: #2196F3; color: white; border-radius: 50%; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; margin: 0 auto 4px; }
+  .step p { font-size: 10px; color: #333; line-height: 1.3; }
+  .step strong { font-size: 10px; display: block; margin-bottom: 2px; }
+
+  .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .res { padding: 8px 10px; border-radius: 6px; }
+  .res.money { background: #fff9e6; border: 1px solid #f5c400; }
+  .res.rep { background: #f3e5f5; border: 1px solid #9c27b0; }
+  .res.energy { background: #e3f2fd; border: 1px solid #2196f3; }
+  .res.work { background: #e8f5e9; border: 1px solid #4caf50; }
+  .res h3 { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+  .res p { font-size: 10px; color: #555; line-height: 1.4; }
+
+  .tile-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tile-tag { padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; }
+  .t-work { background: #eee; color: #333; border: 1px solid #ccc; }
+  .t-meet { background: #ffe0e6; color: #c62828; }
+  .t-event { background: #fff3cd; color: #856404; }
+  .t-net { background: #f3e5f5; color: #6a1b9a; }
+  .t-restore { background: #e8f5e9; color: #2e7d32; }
+  .t-spec { background: #e3f2fd; color: #1565c0; }
+  .t-ceo { background: #1a237e; color: white; }
+  .t-burn { background: #b71c1c; color: white; }
+
+  .tile-desc { font-size: 10px; color: #555; margin-top: 4px; line-height: 1.5; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  th { background: #E91E63; color: white; padding: 5px 8px; text-align: left; font-size: 10px; }
+  td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }
+  tr:nth-child(even) td { background: #fafafa; }
+  tr.director td { background: #fff8e1; font-weight: bold; }
+  .benefit-text { font-size: 9.5px; color: #555; }
+
+  .card-types { display: flex; flex-direction: column; gap: 6px; }
+  .card-type { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 5px; }
+  .ct-stored { background: #e3f2fd; }
+  .ct-immed { background: #f3e5f5; }
+  .ct-target { background: #fff3e0; }
+  .ct-global { background: #e8f5e9; }
+  .ct-react { background: #fce4ec; }
+  .card-type .icon { font-size: 16px; flex-shrink: 0; }
+  .card-type .info strong { font-size: 10px; display: block; }
+  .card-type .info p { font-size: 10px; color: #444; }
+
+  .deck-list { display: flex; flex-direction: column; gap: 4px; }
+  .deck-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 10.5px; }
+  .deck-item .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .timer-badge { background: #e53935; color: white; font-size: 9px; padding: 1px 6px; border-radius: 10px; margin-left: auto; }
+
+  .ability { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; }
+  .ability.shuffle { background: #fff3e0; border-left: 3px solid #ff9800; }
+  .ability.block { background: #fce4ec; border-left: 3px solid #e91e63; }
+  .ability h3 { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+  .ability p { font-size: 10px; color: #444; line-height: 1.4; }
+
+  .win-list { display: flex; flex-direction: column; gap: 6px; }
+  .win-item { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; }
+  .win-item.ind { background: #e8f5e9; border-left: 3px solid #4caf50; }
+  .win-item.mgt { background: #fce4ec; border-left: 3px solid #e91e63; }
+  .win-item .icon { font-size: 18px; flex-shrink: 0; }
+  .win-item .text strong { font-size: 11px; display: block; }
+  .win-item .text p { font-size: 10px; color: #444; line-height: 1.4; }
+
+  .note { background: #fff8e1; border: 1px solid #f5c400; border-radius: 5px; padding: 6px 10px; font-size: 10px; color: #555; margin-top: 8px; }
+  .note strong { color: #333; }
+  .burnout-box { background: #ffebee; border: 1px solid #ef9a9a; border-radius: 5px; padding: 6px 10px; font-size: 10px; margin-top: 6px; }
+
+  .full-width { margin-bottom: 12px; }
+
+  @media print {
+    body { background: white; font-size: 11px; }
+    .page { padding: 10px; max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>🎮 DEADLINE DASH</h1>
+      <p>Corporate Satire Board Game · 2–6 Players · 20–120 Minutes</p>
+    </div>
+    <div class="badge">HOW TO PLAY</div>
+  </div>
+
+  <!-- Goal + Setup -->
+  <div class="grid-2">
+    <div class="section goal">
+      <h2>🎯 Objective</h2>
+      <div class="role-box">
+        <div class="role worker">
+          <h3>👷 Worker</h3>
+          <p>Be the <strong>first player</strong> to reach the <strong>Director</strong> rank.</p>
+        </div>
+        <div class="role mgmt">
+          <h3>🕵️ Management <em>(Hidden)</em></h3>
+          <p>Make sure <strong>nobody becomes Director</strong> before all Meeting & Event cards run out.</p>
+        </div>
+      </div>
+      <div class="note">⚠️ You <strong>don't know</strong> who is Management. Ratio: 3 Workers : 1 Management.</div>
+    </div>
+
+    <div class="section setup">
+      <h2>🛠️ Setup</h2>
+      <ol style="padding-left:16px; line-height:2; font-size:11px;">
+        <li>Place the board — 4 corners are <strong>fixed</strong></li>
+        <li>Shuffle all 6 card decks separately</li>
+        <li>Place the top 3 Meeting deck cards <strong>face-up</strong></li>
+        <li>Deal 1 Character card + Management Identity card to each player (keep secret)</li>
+        <li>All pawns start at <strong>Receptionist</strong></li>
+        <li>Each player starts with <strong>$1,000 · Rep 0 · Energy 5 · 1 MOVE token</strong></li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Turn Structure -->
+  <div class="section turn full-width">
+    <h2>🔄 Turn Order</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <strong>Start of Turn</strong>
+        <p>Check burnout<br>(Energy = 0?)<br>Free from Audit?</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <strong>Pre-Roll</strong>
+        <p>Play a card<br>from hand<br>Activate ability<br>Management: Shuffle?</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <strong>Roll & Move</strong>
+        <p>Roll 1d6<br>Spend MOVE token<br>for +1 space</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <strong>Tile Effect</strong>
+        <p>Resolve the effect<br>of the tile you<br>landed on</p>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <strong>End of Turn</strong>
+        <p>Other players<br>may play<br>1 Reaction card</p>
+      </div>
+    </div>
+    <div class="burnout-box">😵 <strong>Burnout:</strong> If Energy = 0 → skip your turn, Energy automatically refills to full. &nbsp;|&nbsp; 🏢 <strong>CEO's Office:</strong> Attempt a promotion any time you land here.</div>
+  </div>
+
+  <!-- Resources + Tiles -->
+  <div class="grid-2">
+    <div class="section resources">
+      <h2>📊 Resources & Tokens</h2>
+      <div class="res-grid">
+        <div class="res money">
+          <h3>💰 Money</h3>
+          <p>Used for promotions & fines. Earned from salary (passing Receptionist) & cards.</p>
+        </div>
+        <div class="res rep">
+          <h3>🌟 Reputation</h3>
+          <p>Minimum requirement for promotions. Does <strong>not</strong> decrease when you promote.</p>
+        </div>
+        <div class="res energy">
+          <h3>⚡ Energy</h3>
+          <p>Work tile = -1 Energy. Refill to FULL at Pantry / Lunch Break / Employee Lounge / Smoking Area.</p>
+        </div>
+        <div class="res work">
+          <h3>🔢 Work Counter</h3>
+          <p>Tracks how many times you've landed on Work tiles. Every <strong>5×</strong> = +1 Rep automatically (cumulative).</p>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:10px; color:#555;">
+        <strong>4 Tokens:</strong>
+        <span style="background:#ddeeff;padding:2px 6px;border-radius:10px;margin:2px;">🟦 MOVE (+1 space)</span>
+        <span style="background:#ddf0dd;padding:2px 6px;border-radius:10px;margin:2px;">🟩 MOMENTUM (step back / reroll)</span>
+        <span style="background:#ffddd0;padding:2px 6px;border-radius:10px;margin:2px;">🟥 REP (+1 Rep)</span>
+        <span style="background:#fff3cc;padding:2px 6px;border-radius:10px;margin:2px;">💰 MONEY (+$200)</span>
+      </div>
+    </div>
+
+    <div class="section tiles">
+      <h2>🗺️ Tile Types</h2>
+      <div class="tile-list">
+        <span class="tile-tag t-work">💼 Work</span>
+        <span class="tile-tag t-meet">📋 Meeting</span>
+        <span class="tile-tag t-event">🎉 Event</span>
+        <span class="tile-tag t-net">💬 Networking</span>
+        <span class="tile-tag t-restore">🍽️ Energy Restore</span>
+        <span class="tile-tag t-spec">⚙️ Special</span>
+        <span class="tile-tag t-ceo">🏢 CEO's Office</span>
+        <span class="tile-tag t-burn">😵 Burnout Tile</span>
+      </div>
+      <p class="tile-desc">
+        <strong>💼 Work</strong> → -1 Energy + draw 1 Work Card<br>
+        <strong>📋 Meeting</strong> → Draw 1 Meeting Card &nbsp;|&nbsp; <strong>🎉 Event</strong> → Draw 1 Event Card<br>
+        <strong>💬 Networking</strong> → Draw 1 Networking Card (read the card wording out loud!)<br>
+        <strong>🍽️ Restore</strong> → Refill Energy to full &nbsp;|&nbsp; <strong>😵 Burnout Tile</strong> → Skip 2 turns<br>
+        <strong>📚 Training</strong> → Roll 2d6: 2–6 = +1 Rep, 7–12 = +2 Rep<br>
+        <strong>👔 HR</strong> → Roll 2d6: Doubles = safe, anything else = -1 Rep<br>
+        <strong>💸 Finance</strong> → Pay $300 &nbsp;|&nbsp; <strong>📣 Marketing</strong> → +1 Rep<br>
+        <strong>⭐ CEO's Fav</strong> → +2 Rep &nbsp;|&nbsp; <strong>🏆 Best Employee</strong> → +$500 +3 Rep
+      </p>
+      <div style="margin-top:6px;font-size:10px;color:#555;border-top:1px solid #eee;padding-top:6px;">
+        <strong>4 Corners:</strong> 🟢 Receptionist (START · collect salary)&nbsp; 🔵 Board Meeting (draw global card)&nbsp; 🔴 Audit (trapped: roll true doubles <em>both dice same number</em> or pay $500)&nbsp; 🟡 Annual Event (draw global card)
+      </div>
+    </div>
+  </div>
+
+  <!-- Promotion + Cards -->
+  <div class="grid-2">
+    <div class="section promo">
+      <h2>📈 Promotions (at CEO's Office)</h2>
+      <table>
+        <tr><th>Rank</th><th>💰 Cost</th><th>🌟 Min. Rep</th><th>Benefit</th></tr>
+        <tr><td>Staff</td><td>$500</td><td>3</td><td class="benefit-text">+$100 every time you pass Receptionist</td></tr>
+        <tr><td>Senior Staff</td><td>$1,200</td><td>5</td><td class="benefit-text">Every 5th Work tile → +1 bonus Rep</td></tr>
+        <tr><td>Supervisor</td><td>$2,000</td><td>7</td><td class="benefit-text">Max Energy +2 (becomes 10)</td></tr>
+        <tr><td>Asst. Manager</td><td>$3,000</td><td>9</td><td class="benefit-text">1× per lap: reject roll result & reroll</td></tr>
+        <tr><td>Manager</td><td>$4,500</td><td>11</td><td class="benefit-text">Meeting tile → +1 bonus Rep</td></tr>
+        <tr><td>Senior Manager</td><td>$6,000</td><td>13</td><td class="benefit-text">2× rewards from Annual Event corner</td></tr>
+        <tr><td>General Manager</td><td>$8,000</td><td>15</td><td class="benefit-text">1× per lap: ignore any negative effect</td></tr>
+        <tr class="director"><td>👑 Director</td><td>$10,000</td><td>17</td><td class="benefit-text">🏆 WIN — game ends immediately!</td></tr>
+      </table>
+      <div class="note">Reputation does <strong>not decrease</strong> when you promote · Fast Mode: costs are 50%</div>
+    </div>
+
+    <div class="section cards">
+      <h2>🃏 Card System</h2>
+      <div class="deck-list">
+        <div class="deck-item"><div class="dot" style="background:#eee;border:1px solid #999"></div> 💼 Work Cards (50) — drawn on Work tiles</div>
+        <div class="deck-item"><div class="dot" style="background:#FFB3BA"></div> 📋 Meeting Cards (50) — drawn on Meeting tiles <span class="timer-badge">⏱ TIMER</span></div>
+        <div class="deck-item"><div class="dot" style="background:#FFDDA0"></div> 🎉 Event Cards (50) — drawn on Event tiles <span class="timer-badge">⏱ TIMER</span></div>
+        <div class="deck-item"><div class="dot" style="background:#FFB3FF"></div> 💬 Networking Cards (47) — Coffee / Gossip / Seminar</div>
+        <div class="deck-item"><div class="dot" style="background:#3399FF"></div> 🏛️ Board Meeting Cards (25) — Board Meeting corner</div>
+        <div class="deck-item"><div class="dot" style="background:#CCCC00"></div> 🎊 Annual Event Cards (25) — Annual Event corner</div>
+      </div>
+      <div class="note" style="margin-top:8px;">⏱ When the Meeting <strong>+</strong> Event decks are both empty → <strong>Management wins</strong>. All other decks reshuffle when empty.</div>
+      <div class="card-types" style="margin-top:8px;">
+        <div class="card-type ct-immed"><span class="icon">⚡</span><div class="info"><strong>Immediate</strong><p>Effect triggers right away, then discard.</p></div></div>
+        <div class="card-type ct-stored"><span class="icon">🗂️</span><div class="info"><strong>Stored / Consumable</strong><p>Keep in hand, play whenever you want — including on other players' turns.</p></div></div>
+        <div class="card-type ct-react"><span class="icon">⚔️</span><div class="info"><strong>[REACTION]</strong><p>Special stored card playable during Phase 5 of another player's turn (max 1 per turn).</p></div></div>
+        <div class="card-type ct-target"><span class="icon">🎯</span><div class="info"><strong>Target Player</strong><p>You choose which player is affected.</p></div></div>
+        <div class="card-type ct-global"><span class="icon">🌐</span><div class="info"><strong>Global</strong><p>Effect applies to <em>all</em> players.</p></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Management + Win -->
+  <div class="grid-2">
+    <div class="section mgmt">
+      <h2>🕵️ Management Abilities (Secret)</h2>
+      <div class="ability shuffle">
+        <h3>🔀 Shuffle Deck — 3× per Management player</h3>
+        <p>Reshuffle any one deck of your choice. Everyone sees that a shuffle happened, but <strong>nobody knows who did it</strong>. Identity stays hidden.</p>
+      </div>
+      <div class="ability block">
+        <h3>🚫 Block Promotion — 1× per Management player</h3>
+        <p>Cancel any player's promotion attempt, 100% effective. <strong>But your identity as Management is immediately revealed!</strong> Use it at the right moment.</p>
+      </div>
+      <div class="note">After a Block: that Management player can still play normally and shuffle. Other players now know who they are — but a second Management player may still be hidden.</div>
+    </div>
+
+    <div class="section win">
+      <h2>🏆 How to Win</h2>
+      <div class="win-list">
+        <div class="win-item ind">
+          <div class="icon">👑</div>
+          <div class="text">
+            <strong>Individual Win (Worker or Management)</strong>
+            <p>The first player to reach <strong>Director</strong> wins immediately. The game ends right then.</p>
+          </div>
+        </div>
+        <div class="win-item mgt">
+          <div class="icon">🕵️</div>
+          <div class="text">
+            <strong>Management Wins (Collectively)</strong>
+            <p>If the Meeting + Event decks run out before anyone becomes Director → <strong>all Management players win together</strong> (even though they never knew each other).</p>
+          </div>
+        </div>
+      </div>
+      <div class="note" style="margin-top:8px;">
+        <strong>6 Characters:</strong> The Workaholic · Social Butterfly · Sales Star · Tech Genius · Office Politician · Lucky Employee<br>
+        Each has a <strong>Passive</strong> (always active) and an <strong>Active</strong> skill (has a cooldown).
+      </div>
+      <div class="note" style="margin-top:6px; background:#f3e5f5; border-color:#9c27b0;">
+        <strong>💡 Key strategy:</strong> Watch who avoids attacking the leading player. Who passes through Meeting tiles when the deck looks favorable? That might be Management.
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center; font-size:10px; color:#888; margin-top:12px; padding-top:10px; border-top:1px solid #ddd;">
+    Deadline Dash · How to Play Guide (English) · v3.2 &nbsp;|&nbsp; <em>"Intern today, Director... eventually."</em>
+  </div>
+
+</div>
+</body>
+</html>
