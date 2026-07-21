@@ -90,6 +90,112 @@ describe("character passives", () => {
   });
 });
 
+describe("applyStatus tile effect and its consumers", () => {
+  it("Given a tile effect that applies status.skip-next-tile-effect, when the player next lands on any tile, then that tile's effects are skipped and the status is consumed", () => {
+    const state = rollState(0);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const moneyBefore = owner.resources.money.value;
+
+    const skippingOutcome = resolveTileEffects(
+      { ...owner, statuses: [{ id: brand("status.skip-next-tile-effect"), sourceId: null, stacks: 1, remainingTurns: null, expiresAtRound: null, visibility: "private", data: {} }] },
+      [{ type: "modifyResource", resource: "money", amount: -500, clampAtZero: true }],
+      createScriptedRandomSource([]),
+      "finance",
+      undefined,
+    );
+
+    expect(skippingOutcome.changes).toEqual([]);
+    expect(skippingOutcome.player.resources.money.value).toBe(moneyBefore);
+    expect(skippingOutcome.player.statuses).toEqual([]);
+  });
+
+  it("Given status.ignore-next-work-energy, when landing on a work tile, then the negative energy effect is filtered out but other work effects still apply", () => {
+    const state = rollState(0);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const energyBefore = owner.resources.energy?.value ?? 5;
+
+    const outcome = resolveTileEffects(
+      {
+        ...owner,
+        resources: {
+          ...owner.resources,
+          energy: { id: owner.resources.money.id, kind: "resource.energy", value: energyBefore, minimum: 0, maximum: 10 },
+          "work-counter": { id: owner.resources.money.id, kind: "resource.work-counter", value: 0, minimum: 0, maximum: null },
+        },
+        statuses: [{ id: brand("status.ignore-next-work-energy"), sourceId: null, stacks: 1, remainingTurns: null, expiresAtRound: null, visibility: "private", data: {} }],
+      },
+      [
+        { type: "modifyResource", resource: "energy", amount: -1, clampAtZero: true },
+        { type: "incrementWorkCounter", amount: 1, rewardEvery: 5, reward: { resource: "reputation", amount: 1 }, cumulative: true },
+      ],
+      createScriptedRandomSource([]),
+      "work",
+      undefined,
+    );
+
+    expect(outcome.player.resources.energy?.value).toBe(energyBefore);
+    expect(outcome.player.resources["work-counter"]?.value).toBe(1);
+    expect(outcome.player.statuses).toEqual([]);
+  });
+
+  it("Given status.next-roll-extra-movement (2 bonus spaces), when the player rolls, then movement is die + bonus and the status is consumed", () => {
+    const state = rollState(0);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const boostedState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          statuses: [{ id: brand("status.next-roll-extra-movement"), sourceId: null, stacks: 1, remainingTurns: null, expiresAtRound: null, visibility: "private", data: { spaces: 2 } }],
+        },
+      },
+    };
+
+    const result = applyCommand(boostedState, rollCommand(boostedState), context([0]));
+    const { state: nextState } = accepted(result);
+
+    // die=1 (fraction 0) + 2 bonus spaces = position 3, not the usual position 1.
+    expect(nextState.players[fixtureIds.owner]?.position).toBe(3);
+    expect(nextState.players[fixtureIds.owner]?.statuses).toEqual([]);
+  });
+
+  it("Given status.next-salary-multiplier (2x), when the player passes the receptionist, then the awarded salary doubles and the status is consumed", () => {
+    const state = rollState(43);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const moneyBefore = owner.resources.money.value;
+
+    const boostedState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          statuses: [{ id: brand("status.next-salary-multiplier"), sourceId: null, stacks: 1, remainingTurns: null, expiresAtRound: null, visibility: "private", data: { multiplier: 2 } }],
+        },
+      },
+    };
+
+    const boostedResult = applyCommand(boostedState, rollCommand(boostedState), context([0]));
+    const { state: boostedNextState } = accepted(boostedResult);
+
+    const baselineResult = applyCommand(state, rollCommand(state), context([0]));
+    const { state: baselineNextState } = accepted(baselineResult);
+
+    const boostedGain = (boostedNextState.players[fixtureIds.owner]?.resources.money.value ?? 0) - moneyBefore;
+    const baselineGain = (baselineNextState.players[fixtureIds.owner]?.resources.money.value ?? 0) - moneyBefore;
+
+    expect(boostedGain).toBe(baselineGain * 2);
+    expect(baselineGain).toBeGreaterThan(0);
+    expect(boostedNextState.players[fixtureIds.owner]?.statuses).toEqual([]);
+  });
+});
+
 describe("audit confinement (prompts/decisions)", () => {
   it("Given a player one roll from the audit tile, when they land on it, then a prompt opens, they're marked in-audit, and turn advances to the next player", () => {
     const state = rollState(16);

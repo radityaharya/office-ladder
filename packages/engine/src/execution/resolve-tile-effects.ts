@@ -2,6 +2,7 @@ import type { CharacterAbilityDescriptor, EffectDescriptor } from "@office-ladde
 
 import type { PlayerState, ResourceState } from "../model";
 import { randomInt, rollDie, type RandomSource } from "../random";
+import { applyStatusEffect, consumeStatus, findActiveStatus } from "./player-status";
 
 export type ResourceKey = "money" | "reputation" | "energy" | "work-counter";
 
@@ -191,9 +192,13 @@ function applyOne(
         openAuditPrompt: true,
       };
     case "applyStatus":
-      // Not implemented: would need duration/status-effect tracking beyond
-      // what's modeled today. See AGENTS.md known gaps.
-      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      return {
+        player: applyStatusEffect(player, effect),
+        changes: [],
+        extraRoll: false,
+        rolledDoubles: false,
+        openAuditPrompt: false,
+      };
     default:
       return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
   }
@@ -263,7 +268,25 @@ export function resolveTileEffects(
   tileKind: string,
   characterPassive: CharacterAbilityDescriptor | undefined,
 ): TileEffectOutcome {
-  const result = applyMany(player, effects, random, 0);
+  if (findActiveStatus(player, "status.skip-next-tile-effect") !== null) {
+    return {
+      player: consumeStatus(player, "status.skip-next-tile-effect"),
+      changes: [],
+      grantedExtraRoll: false,
+      openAuditPrompt: false,
+    };
+  }
+
+  const ignoresWorkEnergy =
+    tileKind === "work" && findActiveStatus(player, "status.ignore-next-work-energy") !== null;
+  const effectivePlayer = ignoresWorkEnergy
+    ? consumeStatus(player, "status.ignore-next-work-energy")
+    : player;
+  const effectiveEffects = ignoresWorkEnergy
+    ? effects.filter((effect) => !(effect.type === "modifyResource" && effect.resource === "energy" && effect.amount < 0))
+    : effects;
+
+  const result = applyMany(effectivePlayer, effectiveEffects, random, 0);
   const passive = applyCharacterPassive(result.player, characterPassive, tileKind, result.rolledDoubles);
 
   return {

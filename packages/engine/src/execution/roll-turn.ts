@@ -17,6 +17,7 @@ import { createSeededRandomSource, rollDie } from "../random";
 import { moveAroundBoard } from "../rules";
 import { rejectCommand } from "./errors";
 import { resolveNextTurn } from "./next-turn";
+import { consumeStatus, findActiveStatus } from "./player-status";
 import { resolvePromotion } from "./roll-promotion";
 import { resolveTileEffects } from "./resolve-tile-effects";
 import { createRollEvents } from "./roll-events";
@@ -100,9 +101,22 @@ export function rollTurn(
 
   const trackedRandom = trackRandom(random);
   const die = rollDie(trackedRandom.source);
+
+  // Consume any one-shot "next roll" statuses (from applyStatus tile effects
+  // on a *previous* turn) before resolving this roll's movement/salary.
+  const extraMovementStatus = findActiveStatus(player, "status.next-roll-extra-movement");
+  const bonusSpaces =
+    extraMovementStatus !== null && typeof extraMovementStatus.data["spaces"] === "number"
+      ? extraMovementStatus.data["spaces"]
+      : 0;
+  const playerAfterMovementStatus =
+    extraMovementStatus !== null
+      ? consumeStatus(player, "status.next-roll-extra-movement")
+      : player;
+
   const movement = moveAroundBoard({
     position: player.position,
-    spaces: die,
+    spaces: die + bonusSpaces,
     boardSize: state.boardSize,
     receptionistIndex,
   });
@@ -124,24 +138,38 @@ export function rollTurn(
     });
   }
 
+  const salaryMultiplierStatus = findActiveStatus(
+    playerAfterMovementStatus,
+    "status.next-salary-multiplier",
+  );
+  const salaryMultiplier =
+    salaryMultiplierStatus !== null && typeof salaryMultiplierStatus.data["multiplier"] === "number"
+      ? salaryMultiplierStatus.data["multiplier"]
+      : 1;
+  const effectiveSalaryAmount = salary.amount * salaryMultiplier;
+  const playerAfterSalaryStatus =
+    salaryMultiplierStatus !== null
+      ? consumeStatus(playerAfterMovementStatus, "status.next-salary-multiplier")
+      : playerAfterMovementStatus;
+
   const landedTile = context.content.board.spaces.find((tile) => tile.id === tileId);
   const revision = state.revision + 1;
-  const updatedMoney = salary.moneyResource.value + salary.amount;
+  const updatedMoney = salary.moneyResource.value + effectiveSalaryAmount;
 
   const movedPlayer: PlayerState = {
-    ...player,
+    ...playerAfterSalaryStatus,
     position: movement.destination,
     lapsCompleted: player.lapsCompleted + movement.laps,
     resources:
-      salary.amount > 0
+      effectiveSalaryAmount > 0
         ? {
-            ...player.resources,
+            ...playerAfterSalaryStatus.resources,
             [salary.moneyKey]: {
               ...salary.moneyResource,
               value: updatedMoney,
             },
           }
-        : player.resources,
+        : playerAfterSalaryStatus.resources,
   };
 
   // Tile effects draw from a dedicated, ephemeral source seeded by the

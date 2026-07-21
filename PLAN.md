@@ -48,9 +48,10 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 
 **Security note surfaced, not acted on**: Supabase reports RLS disabled on all 12 public tables. Expected given the access pattern (server-only `DATABASE_URL` connection, no client-side Supabase SDK), but worth a deliberate decision — see AGENTS.md.
 
+**Also landed this round: `applyStatus` is now fully implemented**, including real consumption of every status the content pack actually uses — not just tracked-but-inert bookkeeping. All 4 real usages in `board.ts` now do something and get consumed exactly once: `status.next-salary-multiplier` (multiplies the next receptionist-pass salary), `status.next-roll-extra-movement` (adds bonus spaces to the next die roll), `status.skip-next-tile-effect` (the next tile's effects are skipped entirely), and `status.ignore-next-work-energy` (filters the negative energy cost out of the next work tile, leaving other effects on that tile intact). Every effect type in the content pack's vocabulary is now interpreted except real card-deck content. 4 new tests, each proving both the effect and the consumption. Engine suite: 96/96.
+
 **What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
-- **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content.
-- `applyStatus` is still a documented no-op (status/duration tracking beyond `inAudit`/`skipTurns` isn't modeled).
+- **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content. This is now the single biggest remaining gap in the tile-effect vocabulary.
 - Only one prompt kind (`audit-release`) is wired end to end. `reaction.play`/`reaction.pass`/other decision commands aren't — but the plumbing now exists as a template to extend.
 - Two character passives needing a target or a cooldown counter (Tech Genius's `ignoreNegativeEffect`, and anything requiring `swapBoardPositions`/`teleport`/`stealResource`) aren't implemented.
 
@@ -59,9 +60,8 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 ## Next step
 
 1. Decide the RLS question deliberately (see above) before this goes anywhere a browser might talk to Supabase directly.
-2. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table).
+2. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table) — the last unimplemented tile-effect type.
 3. Extend `prompt.respond`'s plumbing to other decision command types (`reaction.play`/`reaction.pass`) — the engine/contracts/route/UI pattern is now established, just needs a new prompt `kind` + option set per case.
-4. Implement `applyStatus` as the next tile-effect increment, generalizing the `inAudit`/`skipTurns` precedent.
 
 ## MVP scope (from PRD)
 
@@ -69,7 +69,7 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - [x] Realtime transport (native WebSockets)
 - [x] Auth (username + email/password)
 - [x] Dice roll + player movement
-- [x] Board (44 spaces, tile effects interpreted for every effect type except `applyStatus`)
+- [x] Board (44 spaces, every tile-effect type interpreted except real deck-card content)
 - [ ] Event cards — tiles trigger `drawCards`, but it's a synthesized flavor table, not real authored card content
 - [x] Hidden character roles — characters assigned/shown; automatic passives resolve; targeted "active" abilities (steal/swap/teleport) aren't implemented
 - [x] Promotion system — auto-attempted on affordability
