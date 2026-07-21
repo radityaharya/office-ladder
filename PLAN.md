@@ -44,8 +44,11 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - Realtime: WebSocket hub (`apps/server/src/realtime/ws-hub.ts`) + client (`apps/web/src/realtime/room-channel.ts`), same invalidation-only contract as before (`ProjectionUpdated`), transport swapped from Supabase to native WS.
 - **Landed across this session and the prior one**: the engine's `turn.roll` transition runs a generic tile-effect interpreter (`resolve-tile-effects.ts`) covering `modifyResource`, `payResource`, `restoreResourceToMaximum`, `incrementWorkCounter` (with its milestone reward), `rollCheck` (doubles + total-range outcomes, recursive), `grantExtraRoll` (a real extra turn), `drawCards` (a synthesized flavor table standing in for unauthored deck content), `skipTurns` (a per-player counter that `resolveNextTurn` — `execution/next-turn.ts` — honors when advancing turn order), and `auditConfinement` (opens a real `PromptState`). Also auto-attempts promotion and detects the win condition. Four of six characters' automatic passives apply. **New this round**: a full prompt/decision command, `prompt.respond` (`execution/respond-to-prompt.ts`), wired through `apply-command.ts`, `legal-actions.ts`, contracts, the Hono `/respond` route, and a `PromptPanel` in the client — the audit tile's `pay-fine`/`attempt-roll` choice is playable end to end, not just modeled. Covered by engine tests (92/92 total).
 
+**Also landed this round**: rooms are now **Postgres-backed**, not in-memory. `PostgresRoomRepository` (`apps/server/src/rooms/postgres-repository.ts`) stores the full `StoredRoom` — including the canonical `GameState` — as a JSONB snapshot in `room_projections.projection`, using `rooms` for the code-uniqueness index. The migrations existed as SQL files since much earlier but had **never actually been applied to the live Supabase project** (confirmed via `list_tables` — only Better Auth's tables existed); applied both this round. Verified end to end: created a room, killed the server process, started a fresh one, fetched the same room by id — all fields intact, row confirmed present via direct SQL. Note: this uses only 2 of the schema's 8 tables (see AGENTS.md) — the event-sourced tables (`game_events`, `command_receipts`, `game_outbox`) are provisioned but unused, a real follow-up not attempted here.
+
+**Security note surfaced, not acted on**: Supabase reports RLS disabled on all 12 public tables. Expected given the access pattern (server-only `DATABASE_URL` connection, no client-side Supabase SDK), but worth a deliberate decision — see AGENTS.md.
+
 **What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
-- Rooms are **in-memory, not Postgres-backed** (schema + migrations exist, service isn't wired to them).
 - **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content.
 - `applyStatus` is still a documented no-op (status/duration tracking beyond `inAudit`/`skipTurns` isn't modeled).
 - Only one prompt kind (`audit-release`) is wired end to end. `reaction.play`/`reaction.pass`/other decision commands aren't — but the plumbing now exists as a template to extend.
@@ -55,7 +58,7 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 
 ## Next step
 
-1. Decide DB persistence timing: wire `packages/db`'s schema into the room service now, or explicitly defer.
+1. Decide the RLS question deliberately (see above) before this goes anywhere a browser might talk to Supabase directly.
 2. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table).
 3. Extend `prompt.respond`'s plumbing to other decision command types (`reaction.play`/`reaction.pass`) — the engine/contracts/route/UI pattern is now established, just needs a new prompt `kind` + option set per case.
 4. Implement `applyStatus` as the next tile-effect increment, generalizing the `inAudit`/`skipTurns` precedent.
@@ -73,6 +76,7 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - [x] Winner screen
 - [x] A real player decision, playable end to end (audit-release: pay fine vs. attempt a release roll)
 - [x] Shared game-engine module — `packages/engine`, server-authoritative, projections synced via WebSocket
+- [x] Rooms survive a server restart (Postgres-backed, verified)
 
 ## Future (post-MVP, per PRD)
 AI bots, chat, spectator mode, replay, leaderboard, daily challenges, avatars, mobile support.

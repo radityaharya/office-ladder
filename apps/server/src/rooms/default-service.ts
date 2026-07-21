@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { createStableId } from "@office-ladder/engine";
-import { InMemoryRoomRepository } from "./in-memory-repository";
+import { PostgresRoomRepository } from "./postgres-repository";
 import { createRoomService } from "./service/create-room-service";
 
 const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -12,7 +12,11 @@ function createRoomCode(): string {
     .slice(0, 6);
 }
 
-export const roomRepository = new InMemoryRoomRepository();
+// Postgres-backed: rooms survive a restart and work across server
+// instances. DATABASE_URL is already mandatory for this process to boot at
+// all (better-auth's drizzle adapter requires it too), so there's no
+// meaningful in-memory fallback to fall back to.
+export const roomRepository = new PostgresRoomRepository();
 
 export const roomService = createRoomService({
   repository: roomRepository,

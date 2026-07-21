@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createStableId } from "@office-ladder/engine";
-import {
-  createRoomService,
-  type RoomRepository,
-  type StoredRoom,
-} from "../../src/rooms/service";
+import { createRoomService } from "../../src/rooms/service/create-room-service";
+import type { RoomRepository, StoredRoom } from "../../src/rooms/service/types";
 
 const players = {
   host: createStableId("PlayerId", "user-host"),
