@@ -137,6 +137,45 @@ export function GameClient({ roomId }: GameClientProps) {
     }
   }, [refresh, roomId, state]);
 
+  const [isResponding, setIsResponding] = useState(false);
+  const [respondError, setRespondError] = useState<string | null>(null);
+
+  const respondToPrompt = useCallback(async (optionId: string): Promise<void> => {
+    if (state.kind !== "ready") return;
+    const action = findPromptAction(state.bootstrap.legalActions);
+    if (!action) return;
+
+    setIsResponding(true);
+    setRespondError(null);
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/respond`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          commandId: crypto.randomUUID(),
+          expectedRevision: action.expectedRevision,
+          decisionPointId: action.decisionPointId,
+          optionId,
+        }),
+      });
+      if (!response.ok) throw new GameRequestError(response.status);
+      await refresh();
+    } catch (error) {
+      if (error instanceof GameRequestError) {
+        setRespondError(error.status === 409 ? "The turn changed before that response reached the server. Refreshing the board." : "That response was not accepted. Try again after the projection refreshes.");
+        await refresh();
+        return;
+      }
+      if (error instanceof TypeError) {
+        setRespondError("The game server could not be reached.");
+        return;
+      }
+      throw error;
+    } finally {
+      setIsResponding(false);
+    }
+  }, [refresh, roomId, state]);
+
   if (state.kind === "loading") return <GameLoading />;
   if (state.kind === "absent") return <GameAbsent roomId={roomId} />;
   if (state.kind === "error") return <GameError message={state.message} onRetry={() => void refresh()} roomId={roomId} />;
@@ -145,6 +184,8 @@ export function GameClient({ roomId }: GameClientProps) {
   if (state.bootstrap.publicProjection.status === "ended") {
     return <GameWinner bootstrap={state.bootstrap} roomId={roomId} />;
   }
+
+  const promptAction = findPromptAction(state.bootstrap.legalActions);
 
   return (
     <main className="min-h-[100dvh] bg-background px-4 py-4 text-foreground sm:px-6 lg:px-8">
@@ -158,6 +199,14 @@ export function GameClient({ roomId }: GameClientProps) {
           room={state.bootstrap.room}
           selfPlayerId={state.bootstrap.self.playerId}
         />
+        {promptAction ? (
+          <PromptPanel
+            action={promptAction}
+            error={respondError}
+            isResponding={isResponding}
+            onRespond={(optionId) => void respondToPrompt(optionId)}
+          />
+        ) : null}
         <div className="order-3 min-w-0 lg:col-start-1 lg:row-start-3">
           <GameBoard
             activeTile={view.activeTile}
@@ -169,6 +218,45 @@ export function GameClient({ roomId }: GameClientProps) {
         </div>
       </div>
     </main>
+  );
+}
+
+function PromptPanel({
+  action,
+  error,
+  isResponding,
+  onRespond,
+}: {
+  readonly action: Extract<LegalActionSummary, { readonly type: "prompt.respond" }>;
+  readonly error: string | null;
+  readonly isResponding: boolean;
+  readonly onRespond: (optionId: string) => void;
+}) {
+  return (
+    <div className="order-2 border border-primary/40 bg-card p-4 lg:col-start-2 lg:row-start-1">
+      <p className="font-sans text-xs font-semibold tracking-widest text-primary uppercase">
+        {action.kind === "audit-release" ? "You've been audited" : "Decision required"}
+      </p>
+      <h2 className="mt-2 font-heading text-lg font-semibold">
+        {action.kind === "audit-release"
+          ? "Pay the fine or attempt a release roll."
+          : "Choose a response."}
+      </h2>
+      <div className="mt-4 flex flex-col gap-2">
+        {action.options.map((optionId) => (
+          <Button
+            disabled={isResponding}
+            key={optionId}
+            onClick={() => onRespond(optionId)}
+            type="button"
+            variant="outline"
+          >
+            {promptOptionLabel(optionId)}
+          </Button>
+        ))}
+      </div>
+      {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
+    </div>
   );
 }
 
@@ -227,6 +315,19 @@ function playerSeat(seat: number): PlayerSeat | null {
 
 function findRollAction(actions: readonly LegalActionSummary[]): Extract<LegalActionSummary, { readonly type: "turn.roll" }> | null {
   return actions.find((action) => action.type === "turn.roll") ?? null;
+}
+
+function findPromptAction(actions: readonly LegalActionSummary[]): Extract<LegalActionSummary, { readonly type: "prompt.respond" }> | null {
+  return actions.find((action) => action.type === "prompt.respond") ?? null;
+}
+
+const promptOptionLabels: Record<string, string> = {
+  "pay-fine": "Pay the $500 fine",
+  "attempt-roll": "Attempt a release roll (doubles to escape)",
+};
+
+function promptOptionLabel(optionId: string): string {
+  return promptOptionLabels[optionId] ?? optionId.replaceAll("-", " ");
 }
 
 function initials(name: string): string {

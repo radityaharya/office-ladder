@@ -110,7 +110,6 @@ describe("enumerateLegalActions", () => {
   });
 
   it.each([
-    ["a prompt", { prompts: createCanonicalGameState().prompts }],
     ["a reaction window", { reactionWindows: createCanonicalGameState().reactionWindows }],
     ["a resolution frame", { resolutionStack: createCanonicalGameState().resolutionStack }],
     ["a pending effect", { pendingEffects: createCanonicalGameState().pendingEffects }],
@@ -122,6 +121,40 @@ describe("enumerateLegalActions", () => {
     const actions = enumerateLegalActions(state, fixtureIds.owner);
 
     // Then: rolling is not legal until the blocker resolves.
+    expect(actions).toEqual([]);
+  });
+
+  it("offers prompt.respond instead of turn.roll while a prompt addressed to the active player is pending", () => {
+    // Given: an active pre-roll turn with the canonical fixture's open prompt.
+    const state = { ...preRollState(), prompts: createCanonicalGameState().prompts };
+    const openPrompt = state.prompts[0];
+    if (openPrompt === undefined) throw new Error("fixture missing an open prompt");
+
+    // When: the active player (who the prompt addresses) asks for legal actions.
+    const actions = enumerateLegalActions(state, fixtureIds.owner);
+
+    // Then: prompt.respond replaces turn.roll, carrying the prompt's own options.
+    expect(actions).toEqual([
+      {
+        gameId: state.gameId,
+        actorId: fixtureIds.owner,
+        expectedRevision: state.revision,
+        type: "prompt.respond",
+        decisionPointId: openPrompt.id,
+        kind: openPrompt.kind,
+        options: openPrompt.legalResponses.map((option) => option.id),
+      },
+    ]);
+  });
+
+  it("does not offer prompt.respond to a player the prompt isn't addressed to, and still blocks their roll", () => {
+    // Given: an open prompt addressed only to the owner.
+    const state = { ...preRollState(), prompts: createCanonicalGameState().prompts };
+
+    // When/Then: a different active-turn scenario isn't relevant here since
+    // turn.activePlayerId still points at the owner — the other player has
+    // no legal action at all (it's not their turn either way).
+    const actions = enumerateLegalActions(state, fixtureIds.hiddenOpponent);
     expect(actions).toEqual([]);
   });
 

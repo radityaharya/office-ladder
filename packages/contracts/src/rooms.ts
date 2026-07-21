@@ -28,6 +28,11 @@ type RevisionCommandRequest = {
 export type StartGameRequest = RevisionCommandRequest;
 export type RollRequest = RevisionCommandRequest;
 
+export type RespondToPromptRequest = RevisionCommandRequest & {
+  readonly decisionPointId: string;
+  readonly optionId: string;
+};
+
 export type RoomMemberProjection = {
   readonly id: string;
   readonly displayName: string;
@@ -127,6 +132,13 @@ export type LegalActionSummary =
   | {
       readonly type: "turn.roll";
       readonly expectedRevision: number;
+    }
+  | {
+      readonly type: "prompt.respond";
+      readonly expectedRevision: number;
+      readonly decisionPointId: string;
+      readonly kind: string;
+      readonly options: readonly string[];
     };
 
 export type SafeEventSummary = {
@@ -281,4 +293,20 @@ export function parseStartGameRequest(value: unknown): StartGameRequest {
 
 export function parseRollRequest(value: unknown): RollRequest {
   return parseRevisionCommandRequest(value, "roll");
+}
+
+export function parseRespondToPromptRequest(value: unknown): RespondToPromptRequest {
+  const input = requireObject(value, "respondToPrompt");
+  requireExactKeys(
+    input,
+    ["commandId", "expectedRevision", "decisionPointId", "optionId"],
+    "respondToPrompt",
+  );
+
+  return {
+    commandId: parseCommandId(input["commandId"]),
+    expectedRevision: requireRevision(input["expectedRevision"], "expectedRevision"),
+    decisionPointId: parseOpaqueId(input["decisionPointId"], "decisionPointId"),
+    optionId: parseOpaqueId(input["optionId"], "optionId"),
+  };
 }

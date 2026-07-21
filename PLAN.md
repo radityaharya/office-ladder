@@ -42,22 +42,23 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - Full room lifecycle API (create/join/get/start/roll) ported to Hono, auth-gated, same-origin-checked.
 - Lobby and game UI ported off Next.js (`next/navigation` → TanStack Router's `useNavigate`/`Link`, session-gated routes via `beforeLoad`).
 - Realtime: WebSocket hub (`apps/server/src/realtime/ws-hub.ts`) + client (`apps/web/src/realtime/room-channel.ts`), same invalidation-only contract as before (`ProjectionUpdated`), transport swapped from Supabase to native WS.
-- **New this session**: the engine's `turn.roll` transition now runs a generic tile-effect interpreter (`resolve-tile-effects.ts`) covering `modifyResource`, `payResource`, `restoreResourceToMaximum`, `incrementWorkCounter` (with its milestone reward), `rollCheck` (doubles + total-range outcomes, recursive), `grantExtraRoll` (a real extra turn, not just a flag), and `drawCards` (a synthesized flavor table standing in for unauthored deck content) — every tile kind on the board now does something, not just the receptionist. Also auto-attempts promotion (if a player affords the next rank) and detects the win condition (reaching Director ends the match, `GameState.outcome.winnerPlayerIds` populated). Four of six characters' *automatic* passives now apply too (work/meeting landing bonuses, a doubles bonus, and a promotion-requirement discount) — the remaining two need machinery (a per-lap usage counter; targeted "active" abilities with cooldowns) that isn't built. Threaded through to the client — `GameBootstrap.publicProjection.winnerPlayerIds` and a winner screen in `apps/web/src/components/game/game-client.tsx`. Covered by 6 new engine tests (89/89 total, up from 83).
+- **Landed across this session and the prior one**: the engine's `turn.roll` transition runs a generic tile-effect interpreter (`resolve-tile-effects.ts`) covering `modifyResource`, `payResource`, `restoreResourceToMaximum`, `incrementWorkCounter` (with its milestone reward), `rollCheck` (doubles + total-range outcomes, recursive), `grantExtraRoll` (a real extra turn), `drawCards` (a synthesized flavor table standing in for unauthored deck content), `skipTurns` (a per-player counter that `resolveNextTurn` — `execution/next-turn.ts` — honors when advancing turn order), and `auditConfinement` (opens a real `PromptState`). Also auto-attempts promotion and detects the win condition. Four of six characters' automatic passives apply. **New this round**: a full prompt/decision command, `prompt.respond` (`execution/respond-to-prompt.ts`), wired through `apply-command.ts`, `legal-actions.ts`, contracts, the Hono `/respond` route, and a `PromptPanel` in the client — the audit tile's `pay-fine`/`attempt-roll` choice is playable end to end, not just modeled. Covered by engine tests (92/92 total).
 
 **What's not done / honestly incomplete** — see AGENTS.md's "Known gaps" section for full detail, summarized here:
 - Rooms are **in-memory, not Postgres-backed** (schema + migrations exist, service isn't wired to them).
-- **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content (no `deck.work`/`deck.meeting`/`deck.event`/`deck.networking` cards exist anywhere in the content pack).
-- `skipTurns`, `applyStatus`, `auditConfinement` tile effects are parsed but are documented no-ops (would need turn-order-skipping and status-duration tracking, respectively — neither is modeled yet).
-- Prompts/decisions (`prompt.respond`, `reaction.play`) are **not implemented** — `legal-actions.ts` only ever enumerates `game.start` and `turn.roll`, so no player choice is ever surfaced. This blocks the two character abilities that need a target (steal/swap/teleport) and any "active" ability with a cooldown, even though most *automatic* passives now work (see AGENTS.md).
-- Combined `bun run dev` **was** verified this session (both processes together, through the Vite proxy): sign-up, session check, room creation, and the WebSocket upgrade all confirmed working end-to-end via curl.
-- No manual browser playthrough was done — no browser in this environment, only HTTP/WS-level verification. The API surface is confirmed; nobody has clicked through the actual React UI yet.
+- **Real event/management card content was never authored** — `drawCards` uses a small built-in synthesized effect table instead of real deck content.
+- `applyStatus` is still a documented no-op (status/duration tracking beyond `inAudit`/`skipTurns` isn't modeled).
+- Only one prompt kind (`audit-release`) is wired end to end. `reaction.play`/`reaction.pass`/other decision commands aren't — but the plumbing now exists as a template to extend.
+- Two character passives needing a target or a cooldown counter (Tech Genius's `ignoreNegativeEffect`, and anything requiring `swapBoardPositions`/`teleport`/`stealResource`) aren't implemented.
+
+**Verified this round via a connected browser** (the single biggest previously-open gap): create room → lobby → start → multiple live dice rolls, with visible tile effects (money/energy/work-counter changes), turn advancement, and a populating activity log, no console errors. This caught and fixed a real bug: `/rooms/$roomId/game` was a TanStack Router child route of `/rooms/$roomId`, but the parent rendered its lobby component directly instead of an `<Outlet />` — so the game view was **completely unreachable regardless of URL** before this fix. See AGENTS.md for the full explanation and the general footgun it represents for any future nested route.
 
 ## Next step
 
-1. Manually run `bun run dev` and click through create room → join → start → roll → promote → win, in a real browser.
-2. Decide DB persistence timing: wire `packages/db`'s schema into the room service now, or explicitly defer.
-3. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table) — this is the biggest remaining gap between what the content pack implies and what's implemented.
-4. Implement `skipTurns` (self-contained, only touches the current player's own next-turn logic) as the next tile-effect increment.
+1. Decide DB persistence timing: wire `packages/db`'s schema into the room service now, or explicitly defer.
+2. Author real management-deck card content (or deliberately scope `drawCards` to stay a flavor table).
+3. Extend `prompt.respond`'s plumbing to other decision command types (`reaction.play`/`reaction.pass`) — the engine/contracts/route/UI pattern is now established, just needs a new prompt `kind` + option set per case.
+4. Implement `applyStatus` as the next tile-effect increment, generalizing the `inAudit`/`skipTurns` precedent.
 
 ## MVP scope (from PRD)
 
@@ -65,11 +66,12 @@ The Next.js → Hono/TanStack Router migration and the Nx monorepo restructuring
 - [x] Realtime transport (native WebSockets)
 - [x] Auth (username + email/password)
 - [x] Dice roll + player movement
-- [x] Board (44 spaces, tile effects interpreted for most effect types — `skipTurns`/`applyStatus`/`auditConfinement` still no-ops, see gaps above)
+- [x] Board (44 spaces, tile effects interpreted for every effect type except `applyStatus`)
 - [ ] Event cards — tiles trigger `drawCards`, but it's a synthesized flavor table, not real authored card content
-- [x] Hidden character roles — characters assigned/shown; 5 of 6 automatic/passive abilities now resolve (salary multiplier, work/meeting landing bonuses, doubles bonus, promotion-requirement discount); targeted "active" abilities with cooldowns (steal/swap/teleport) and the per-lap-counter one are not implemented
-- [x] Promotion system — now auto-attempted on affordability, no player-driven prompt/choice yet
-- [x] Winner screen — implemented this session, tied to the new win-condition
+- [x] Hidden character roles — characters assigned/shown; automatic passives resolve; targeted "active" abilities (steal/swap/teleport) aren't implemented
+- [x] Promotion system — auto-attempted on affordability
+- [x] Winner screen
+- [x] A real player decision, playable end to end (audit-release: pay fine vs. attempt a release roll)
 - [x] Shared game-engine module — `packages/engine`, server-authoritative, projections synced via WebSocket
 
 ## Future (post-MVP, per PRD)

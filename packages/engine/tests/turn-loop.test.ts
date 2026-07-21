@@ -61,10 +61,14 @@ describe("turn command execution", () => {
     expect(transition.events[0]?.payload).toMatchObject({ playerId: fixtureIds.owner, dice: [1], total: 1, rngStream: "dice", rngCursor: 1 });
     expect(transition.events[1]?.payload).toMatchObject({ playerId: fixtureIds.owner, from: 3, to: 4, distance: 1, direction: "forward", lapsGained: 0 });
     expect(transition.state.players[fixtureIds.owner]?.position).toBe(4);
+    // The hidden opponent fixture carries skipTurns: 1, so turn order passes
+    // over them (their counter decrements to 0) straight to the revealed
+    // opponent — this is resolveNextTurn's skipTurns handling, not a bug.
+    expect(transition.state.players[fixtureIds.hiddenOpponent]?.skipTurns).toBe(0);
     expect(transition.state.turn).toMatchObject({
       number: 2,
       round: 1,
-      activePlayerId: fixtureIds.hiddenOpponent,
+      activePlayerId: fixtureIds.revealedOpponent,
       phase: "pre-roll",
     });
     expect(transition.state.rng.streams.dice?.cursor).toBe(1);

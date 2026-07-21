@@ -179,5 +179,43 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
       await repository.save(updated);
       return { ok: true, value: updated };
     },
+    async respondToPrompt(input) {
+      const room = await repository.get(input.roomId);
+      if (room === null) return fail("ROOM_NOT_FOUND");
+      const actorId = createStableId("PlayerId", input.actorId);
+      if (!room.memberIds.includes(actorId)) return fail("ACTOR_NOT_MEMBER");
+      if (room.game === null || room.status !== "active") return fail("GAME_NOT_ACTIVE");
+
+      const responded = applyCommand(
+        room.game,
+        {
+          commandId: createStableId("CommandId", input.commandId ?? ids.commandId()),
+          gameId: room.game.gameId,
+          actorId,
+          expectedRevision: input.expectedRevision,
+          decisionPointId: createStableId("DecisionPointId", input.decisionPointId),
+          type: "prompt.respond",
+          payload: {
+            optionId: createStableId("PromptOptionId", input.optionId),
+            value: null,
+          },
+        },
+        { logicalTimestamp: now(), content: deadlineDashContent },
+      );
+      if (!responded.ok) return fail(responded.error.code);
+
+      const updated = {
+        ...room,
+        status: "active",
+        revision: room.revision + 1,
+        game: responded.value.state,
+        eventSummaries: [
+          ...room.eventSummaries,
+          ...eventSummaries(responded.value.events, actorId),
+        ],
+      } satisfies ActiveStoredRoom;
+      await repository.save(updated);
+      return { ok: true, value: updated };
+    },
   };
 }

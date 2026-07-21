@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { applyCommand, createScriptedRandomSource } from "../src";
+import type { CommandId, DecisionPointId, FrameId, PromptOptionId } from "../src";
 import { resolveTileEffects } from "../src/execution/resolve-tile-effects";
 import { accepted, context, rollCommand, rollState } from "./turn-loop-fixtures";
 import { fixtureIds } from "./fixtures";
+
+const brand = <Id extends string>(value: string) => value as Id;
 
 describe("tile effects", () => {
   it("Given a player one space from the finance tile, when they roll onto it, then payResource deducts money", () => {
@@ -84,6 +87,81 @@ describe("character passives", () => {
     );
 
     expect(outcome.player.resources.money.value).toBe(owner.resources.money.value);
+  });
+});
+
+describe("audit confinement (prompts/decisions)", () => {
+  it("Given a player one roll from the audit tile, when they land on it, then a prompt opens, they're marked in-audit, and turn advances to the next player", () => {
+    const state = rollState(16);
+
+    // die = 6 lands on tile.board.22.audit
+    const result = applyCommand(state, rollCommand(state), context([0.9]));
+    const { state: nextState } = accepted(result);
+
+    const owner = nextState.players[fixtureIds.owner];
+    expect(owner?.inAudit).toBe(true);
+    expect(nextState.prompts).toHaveLength(1);
+    expect(nextState.prompts[0]).toMatchObject({
+      kind: "audit-release",
+      audience: [fixtureIds.owner],
+    });
+    expect(nextState.turn.activePlayerId).not.toBe(fixtureIds.owner);
+  });
+
+  it("Given an open audit prompt on the active player's own turn, when they choose to pay the fine, then they are released and 500 money is deducted", () => {
+    const state = rollState(16);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const promptId = brand<DecisionPointId>("prompt-audit-test");
+    const payFineOptionId = brand<PromptOptionId>("pay-fine");
+    const attemptRollOptionId = brand<PromptOptionId>("attempt-roll");
+
+    const confinedState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          inAudit: true,
+          resources: { ...owner.resources, money: { ...owner.resources.money, value: 1000 } },
+        },
+      },
+      prompts: [
+        {
+          id: promptId,
+          frameId: brand<FrameId>("frame-audit-test"),
+          kind: "audit-release",
+          audience: [fixtureIds.owner],
+          legalResponses: [
+            { id: payFineOptionId, value: null },
+            { id: attemptRollOptionId, value: null },
+          ],
+          deadlineAt: null,
+          defaultResponse: { optionId: attemptRollOptionId, value: null },
+          visibility: "public",
+          responses: {},
+        },
+      ],
+    };
+
+    const command = {
+      commandId: brand<CommandId>("command-respond-pay-fine"),
+      gameId: confinedState.gameId,
+      actorId: fixtureIds.owner,
+      expectedRevision: confinedState.revision,
+      decisionPointId: promptId,
+      type: "prompt.respond" as const,
+      payload: { optionId: payFineOptionId, value: null },
+    };
+
+    const result = applyCommand(confinedState, command, context([]));
+    const { state: nextState } = accepted(result);
+
+    expect(nextState.players[fixtureIds.owner]?.inAudit).toBe(false);
+    expect(nextState.players[fixtureIds.owner]?.resources.money.value).toBe(500);
+    expect(nextState.prompts).toHaveLength(0);
+    expect(nextState.turn.activePlayerId).not.toBe(fixtureIds.owner);
   });
 });
 

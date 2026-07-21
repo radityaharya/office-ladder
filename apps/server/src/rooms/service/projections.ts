@@ -118,10 +118,20 @@ export function createBootstrap(
       optionIds: prompt.legalResponses.map((option) => option.id),
     })),
     reactions: playerView.reactions,
-    legalActions: enumerateLegalActions(game, viewerId).map((action) => ({
-      type: action.type,
-      expectedRevision: action.expectedRevision,
-    })),
+    legalActions: enumerateLegalActions(game, viewerId).map((action) =>
+      action.type === "prompt.respond"
+        ? {
+            type: action.type,
+            expectedRevision: action.expectedRevision,
+            decisionPointId: action.decisionPointId,
+            kind: action.kind,
+            options: action.options,
+          }
+        : {
+            type: action.type,
+            expectedRevision: action.expectedRevision,
+          },
+    ),
     serverTime,
   };
 }

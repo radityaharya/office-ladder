@@ -1,6 +1,7 @@
 import type { GameCommand } from "../commands";
 import type { GameState } from "../model";
 import { rejectCommand } from "./errors";
+import { respondToPrompt } from "./respond-to-prompt";
 import { rollTurn } from "./roll-turn";
 import { startGame } from "./start-game";
 import type { TransitionContext, TransitionResult } from "./types";
@@ -36,7 +37,11 @@ export function applyCommand(
       },
     });
   }
-  if (command.type !== "game.start" && command.type !== "turn.roll") {
+  if (
+    command.type !== "game.start" &&
+    command.type !== "turn.roll" &&
+    command.type !== "prompt.respond"
+  ) {
     return rejectCommand(state, command, {
       code: "INVALID_COMMAND",
       message: "Command type is not supported by this execution slice",
@@ -58,12 +63,12 @@ export function applyCommand(
     });
   }
   if (
-    command.type === "turn.roll" &&
+    (command.type === "turn.roll" || command.type === "prompt.respond") &&
     state.turn.activePlayerId !== command.actorId
   ) {
     return rejectCommand(state, command, {
       code: "NOT_ACTOR_TURN",
-      message: "Only the active player can roll",
+      message: "Only the active player can act",
     });
   }
   if (state.status === "ended") {
@@ -106,10 +111,11 @@ export function applyCommand(
     });
   }
   if (
-    state.resolutionStack.length > 0 ||
-    state.prompts.length > 0 ||
-    state.pendingEffects.length > 0 ||
-    state.reactionWindows.length > 0
+    command.type !== "prompt.respond" &&
+    (state.resolutionStack.length > 0 ||
+      state.pendingEffects.length > 0 ||
+      state.reactionWindows.length > 0 ||
+      state.prompts.some((prompt) => prompt.audience.includes(command.actorId)))
   ) {
     return rejectCommand(state, command, {
       code: "ILLEGAL_ACTION",
@@ -121,6 +127,8 @@ export function applyCommand(
       return startGame(state, command, context);
     case "turn.roll":
       return rollTurn(state, command, context);
+    case "prompt.respond":
+      return respondToPrompt(state, command, context);
     default:
       return assertNever(command);
   }

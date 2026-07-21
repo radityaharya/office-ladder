@@ -107,6 +107,12 @@ export type RollRoomInput = RoomActorInput & {
   readonly expectedRevision: number;
 };
 
+export type RespondToPromptRoomInput = RoomActorInput & {
+  readonly expectedRevision: number;
+  readonly decisionPointId: string;
+  readonly optionId: string;
+};
+
 export type BootstrapRoomInput = {
   readonly roomId: string;
   readonly viewerId: string;
@@ -121,4 +127,7 @@ export interface RoomService {
   ): Promise<RoomServiceResult<RoomBootstrap | GameBootstrap>>;
   start(input: RoomActorInput): Promise<RoomServiceResult<ActiveStoredRoom>>;
   roll(input: RollRoomInput): Promise<RoomServiceResult<ActiveStoredRoom>>;
+  respondToPrompt(
+    input: RespondToPromptRoomInput,
+  ): Promise<RoomServiceResult<ActiveStoredRoom>>;
 }

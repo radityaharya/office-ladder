@@ -15,6 +15,7 @@ export type TileEffectOutcome = {
   readonly player: PlayerState;
   readonly changes: readonly TileEffectChange[];
   readonly grantedExtraRoll: boolean;
+  readonly openAuditPrompt: boolean;
 };
 
 /**
@@ -37,6 +38,7 @@ type Accumulated = {
   readonly changes: readonly TileEffectChange[];
   readonly extraRoll: boolean;
   readonly rolledDoubles: boolean;
+  readonly openAuditPrompt: boolean;
 };
 
 function adjustResource(
@@ -78,7 +80,7 @@ function applyOne(
   random: RandomSource,
   depth: number,
 ): Accumulated {
-  if (depth > 3) return { player, changes: [], extraRoll: false, rolledDoubles: false };
+  if (depth > 3) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
 
   switch (effect.type) {
     case "modifyResource": {
@@ -89,16 +91,16 @@ function applyOne(
         effect.clampAtZero ?? false,
         effect.clampAtMaximum ?? false,
       );
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false };
+      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "payResource": {
       const { player: next, change } = adjustResource(player, effect.resource, -effect.amount, true, false);
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false };
+      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "restoreResourceToMaximum": {
       const resource = player.resources[effect.resource];
       if (resource === undefined || resource.maximum === null) {
-        return { player, changes: [], extraRoll: false, rolledDoubles: false };
+        return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
       }
       const { player: next, change } = adjustResource(
         player,
@@ -107,11 +109,11 @@ function applyOne(
         false,
         true,
       );
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false };
+      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "incrementWorkCounter": {
       const counter = player.resources["work-counter"];
-      if (counter === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false };
+      if (counter === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
 
       const { player: afterIncrement, change } = adjustResource(
         player,
@@ -134,9 +136,10 @@ function applyOne(
           changes: rewardChange ? [...changes, rewardChange] : changes,
           extraRoll: false,
           rolledDoubles: false,
+          openAuditPrompt: false,
         };
       }
-      return { player: afterIncrement, changes, extraRoll: false, rolledDoubles: false };
+      return { player: afterIncrement, changes, extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "rollCheck": {
       const firstDie = rollDie(random, effect.dice.sides);
@@ -152,7 +155,7 @@ function applyOne(
         return total >= min && total <= max;
       });
       if (outcome === undefined) {
-        return { player, changes: [], extraRoll: false, rolledDoubles: isDoubles };
+        return { player, changes: [], extraRoll: false, rolledDoubles: isDoubles, openAuditPrompt: false };
       }
 
       const nested = applyMany(player, outcome.effects, random, depth + 1);
@@ -161,24 +164,38 @@ function applyOne(
     case "drawCards": {
       const index = randomInt(random, 0, DECK_FLAVOR_EFFECTS.length - 1);
       const flavor = DECK_FLAVOR_EFFECTS[index];
-      if (flavor === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false };
+      if (flavor === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
       return applyOne(player, flavor, random, depth + 1);
     }
     case "grantExtraRoll":
-      return { player, changes: [], extraRoll: true, rolledDoubles: false };
+      return { player, changes: [], extraRoll: true, rolledDoubles: false, openAuditPrompt: false };
     case "gainSalary":
     case "attemptPromotion":
       // Handled unconditionally once per turn in roll-turn.ts, independent of
       // which tile was landed on — see AGENTS.md.
-      return { player, changes: [], extraRoll: false, rolledDoubles: false };
+      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     case "skipTurns":
-    case "applyStatus":
+      return {
+        player: { ...player, skipTurns: player.skipTurns + effect.count },
+        changes: [],
+        extraRoll: false,
+        rolledDoubles: false,
+        openAuditPrompt: false,
+      };
     case "auditConfinement":
-      // Not implemented: would need turn-order-skipping and status/duration
-      // tracking beyond what's modeled today. See AGENTS.md known gaps.
-      return { player, changes: [], extraRoll: false, rolledDoubles: false };
+      return {
+        player: { ...player, inAudit: true },
+        changes: [],
+        extraRoll: false,
+        rolledDoubles: false,
+        openAuditPrompt: true,
+      };
+    case "applyStatus":
+      // Not implemented: would need duration/status-effect tracking beyond
+      // what's modeled today. See AGENTS.md known gaps.
+      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     default:
-      return { player, changes: [], extraRoll: false, rolledDoubles: false };
+      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
   }
 }
 
@@ -192,6 +209,7 @@ function applyMany(
   const changes: TileEffectChange[] = [];
   let extraRoll = false;
   let rolledDoubles = false;
+  let openAuditPrompt = false;
 
   for (const effect of effects) {
     const result = applyOne(current, effect, random, depth);
@@ -199,9 +217,10 @@ function applyMany(
     changes.push(...result.changes);
     extraRoll = extraRoll || result.extraRoll;
     rolledDoubles = rolledDoubles || result.rolledDoubles;
+    openAuditPrompt = openAuditPrompt || result.openAuditPrompt;
   }
 
-  return { player: current, changes, extraRoll, rolledDoubles };
+  return { player: current, changes, extraRoll, rolledDoubles, openAuditPrompt };
 }
 
 /**
@@ -251,5 +270,6 @@ export function resolveTileEffects(
     player: passive.player,
     changes: [...result.changes, ...passive.changes],
     grantedExtraRoll: result.extraRoll,
+    openAuditPrompt: result.openAuditPrompt,
   };
 }

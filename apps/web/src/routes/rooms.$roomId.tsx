@@ -1,6 +1,5 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
-import { RoomLobbyClient } from "@/components/room/room-lobby-client";
 import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/rooms/$roomId")({
@@ -10,10 +9,5 @@ export const Route = createFileRoute("/rooms/$roomId")({
       throw redirect({ to: "/sign-in" });
     }
   },
-  component: RoomLobbyPage,
+  component: Outlet,
 });
-
-function RoomLobbyPage() {
-  const { roomId } = Route.useParams();
-  return <RoomLobbyClient roomId={roomId} />;
-}

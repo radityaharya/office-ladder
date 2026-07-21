@@ -5,6 +5,7 @@ import {
   parseCreateRoomRequest,
   parseJoinRoomRequest,
   parseOpaqueId,
+  parseRespondToPromptRequest,
   parseRollRequest,
   parseStartGameRequest,
 } from "@office-ladder/contracts";
@@ -182,6 +183,38 @@ roomsRouter.post("/:roomId/roll", async (c) => {
       actorId: session.value.user.id,
       commandId: input.commandId,
       expectedRevision: input.expectedRevision,
+    });
+
+    if (!result.ok) return serviceErrorResponse(result.error.code);
+
+    await publishUpdateIfAvailable(roomId, session.value.user.id, input.commandId);
+    return json({ room: { id: result.value.id, revision: result.value.revision } });
+  } catch (error) {
+    if (error instanceof ContractValidationError) return errorResponse("INVALID_REQUEST", 400);
+    return errorResponse("INTERNAL_SERVER_ERROR", 500);
+  }
+});
+
+roomsRouter.post("/:roomId/respond", async (c) => {
+  const origin = requireSameOriginMutation(c.req.raw);
+  if (!origin.ok) return errorResponse(origin.error.code, origin.error.status);
+
+  const session = await requireSession(c.req.raw.headers);
+  if (!session.ok) return errorResponse(session.error.code, session.error.status);
+
+  const body = await parseJson(c.req.raw);
+  if (!body.ok) return errorResponse(body.error.code, body.error.status);
+
+  try {
+    const roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
+    const input = parseRespondToPromptRequest(body.value);
+    const result = await roomService.respondToPrompt({
+      roomId,
+      actorId: session.value.user.id,
+      commandId: input.commandId,
+      expectedRevision: input.expectedRevision,
+      decisionPointId: input.decisionPointId,
+      optionId: input.optionId,
     });
 
     if (!result.ok) return serviceErrorResponse(result.error.code);

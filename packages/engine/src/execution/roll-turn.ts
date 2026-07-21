@@ -6,10 +6,17 @@ import type {
   PlayerPromotedEvent,
   ResourceChangedEvent,
 } from "../events";
-import { createStableId, type GameState, type MatchOutcome, type PlayerState } from "../model";
+import {
+  createStableId,
+  type GameState,
+  type MatchOutcome,
+  type PlayerState,
+  type PromptState,
+} from "../model";
 import { createSeededRandomSource, rollDie } from "../random";
 import { moveAroundBoard } from "../rules";
 import { rejectCommand } from "./errors";
+import { resolveNextTurn } from "./next-turn";
 import { resolvePromotion } from "./roll-promotion";
 import { resolveTileEffects } from "./resolve-tile-effects";
 import { createRollEvents } from "./roll-events";
@@ -47,9 +54,9 @@ export function rollTurn(
   }
   if (
     state.resolutionStack.length > 0 ||
-    state.prompts.length > 0 ||
     state.pendingEffects.length > 0 ||
-    state.reactionWindows.length > 0
+    state.reactionWindows.length > 0 ||
+    state.prompts.some((prompt) => prompt.audience.includes(command.actorId))
   ) {
     return rejectCommand(state, command, {
       code: "ILLEGAL_ACTION",
@@ -147,7 +154,7 @@ export function rollTurn(
   );
   const tileOutcome =
     landedTile === undefined
-      ? { player: movedPlayer, changes: [], grantedExtraRoll: false }
+      ? { player: movedPlayer, changes: [], grantedExtraRoll: false, openAuditPrompt: false }
       : resolveTileEffects(
           movedPlayer,
           landedTile.effects,
@@ -156,14 +163,15 @@ export function rollTurn(
           character?.passive,
         );
 
-  const nextPlayerId = tileOutcome.grantedExtraRoll ? command.actorId : naturalNextPlayerId;
-  const nextTurnNumber = tileOutcome.grantedExtraRoll
-    ? state.turn.number
-    : state.turn.number + 1;
-  const nextRound =
-    !tileOutcome.grantedExtraRoll && nextPlayerId === state.playerOrder[0]
-      ? state.turn.round + 1
-      : state.turn.round;
+  const nextTurn = resolveNextTurn(
+    state,
+    currentOrderIndex,
+    tileOutcome.grantedExtraRoll,
+    command.actorId,
+  );
+  const nextPlayerId = nextTurn.nextPlayerId;
+  const nextTurnNumber = nextTurn.turnNumber;
+  const nextRound = nextTurn.round;
 
   const consumed = trackedRandom.consumed();
   const rngCursor = diceCursor(random, diceStream, consumed);
@@ -275,6 +283,26 @@ export function rollTurn(
 
   const lastEvent = allEvents[allEvents.length - 1] ?? finalEvent;
 
+  const auditPrompt: PromptState | null = tileOutcome.openAuditPrompt
+    ? {
+        id: createStableId("DecisionPointId", `${command.commandId}:audit`),
+        frameId: createStableId("FrameId", `${command.commandId}:frame`),
+        kind: "audit-release",
+        audience: [updatedPlayer.id],
+        legalResponses: [
+          { id: createStableId("PromptOptionId", "pay-fine"), value: null },
+          { id: createStableId("PromptOptionId", "attempt-roll"), value: null },
+        ],
+        deadlineAt: null,
+        defaultResponse: {
+          optionId: createStableId("PromptOptionId", "attempt-roll"),
+          value: null,
+        },
+        visibility: "public",
+        responses: {},
+      }
+    : null;
+
   return {
     ok: true,
     value: {
@@ -284,7 +312,8 @@ export function rollTurn(
         eventSequence: lastEvent.sequence,
         status: outcome !== null ? "ended" : state.status,
         outcome: outcome ?? state.outcome,
-        players: { ...state.players, [player.id]: updatedPlayer },
+        players: { ...nextTurn.players, [player.id]: updatedPlayer },
+        prompts: auditPrompt !== null ? [...state.prompts, auditPrompt] : state.prompts,
         turn: {
           number: nextTurnNumber,
           round: nextRound,
