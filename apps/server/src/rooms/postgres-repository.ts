@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { db } from "@office-ladder/db";
-import { rooms, roomProjections } from "@office-ladder/db/schema";
+import { games, rooms, roomProjections } from "@office-ladder/db/schema";
 import type { RoomRepository, StoredRoom } from "./service";
 
 /**
@@ -29,8 +29,8 @@ function toLifecycle(status: StoredRoom["status"]): "open" | "active" | "closed"
  */
 /** Round-trips through JSON so the jsonb column sees a plain value — branded ID types etc. are just strings at runtime anyway. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- jsonb column boundary; see comment above
-function toJsonSnapshot(room: StoredRoom): any {
-  return JSON.parse(JSON.stringify(room));
+function toJsonSnapshot(value: unknown): any {
+  return JSON.parse(JSON.stringify(value));
 }
 
 export class PostgresRoomRepository implements RoomRepository {
@@ -72,6 +72,27 @@ export class PostgresRoomRepository implements RoomRepository {
       .update(rooms)
       .set({ lifecycle: toLifecycle(room.status) })
       .where(eq(rooms.id, room.id));
+
+    if (room.game !== null) {
+      const game = room.game;
+      const gameRow = {
+        id: game.gameId,
+        roomId: room.id,
+        status: game.status,
+        revision: game.revision,
+        eventSequence: game.eventSequence,
+        canonicalState: toJsonSnapshot(game),
+        engineVersion: game.versions.engineVersion,
+        rulesetVersion: game.versions.rulesetId,
+        contentVersion: game.versions.contentReleaseId,
+        stateHash: game.stateHash,
+      };
+      await db
+        .insert(games)
+        .values(gameRow)
+        .onConflictDoUpdate({ target: games.id, set: gameRow });
+    }
+
     await db
       .update(roomProjections)
       .set({

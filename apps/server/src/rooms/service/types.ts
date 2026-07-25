@@ -4,6 +4,7 @@ import type {
   RoomCapacity,
   RoomMode,
   RoomStatus,
+  SafeEventSummary,
 } from "@office-ladder/contracts";
 import type {
   CommandId,
@@ -19,19 +20,14 @@ export type StoredRoom = {
   readonly code: string;
   readonly hostId: PlayerId;
   readonly memberIds: readonly PlayerId[];
+  readonly memberNames: Readonly<Partial<Record<PlayerId, string>>>;
   readonly modeId: RoomMode;
   readonly capacity: RoomCapacity;
   readonly status: RoomStatus;
   readonly revision: number;
   readonly createdAt: string;
   readonly game: GameState | null;
-  readonly eventSummaries: readonly {
-    readonly id: string;
-    readonly type: string;
-    readonly revision: number;
-    readonly occurredAt: string;
-    readonly actorPlayerId: string | null;
-  }[];
+  readonly eventSummaries: readonly SafeEventSummary[];
 };
 
 export interface RoomRepository {
@@ -81,6 +77,7 @@ export type RoomServiceDependencies = {
 
 export type CreateRoomInput = {
   readonly hostId: string;
+  readonly playerName: string;
   readonly modeId?: RoomMode;
   readonly mode?: RoomMode;
   readonly capacity?: RoomCapacity;
@@ -89,11 +86,13 @@ export type CreateRoomInput = {
 export type JoinRoomInput = {
   readonly roomId: string;
   readonly actorId: string;
+  readonly playerName: string;
 };
 
 export type JoinRoomByCodeInput = {
   readonly roomCode: string;
   readonly actorId: string;
+  readonly playerName: string;
 };
 
 export type RoomActorInput = {

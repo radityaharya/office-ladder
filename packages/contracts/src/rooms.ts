@@ -14,10 +14,12 @@ export type RoomStatus =
 export type CreateRoomRequest = {
   readonly mode: RoomMode;
   readonly capacity: RoomCapacity;
+  readonly playerName: string;
 };
 
 export type JoinRoomRequest = {
   readonly roomCode: string;
+  readonly playerName: string;
 };
 
 type RevisionCommandRequest = {
@@ -141,13 +143,46 @@ export type LegalActionSummary =
       readonly options: readonly string[];
     };
 
-export type SafeEventSummary = {
+type SafeEventSummaryMetadata = {
   readonly id: string;
   readonly type: string;
   readonly revision: number;
   readonly occurredAt: string;
   readonly actorPlayerId: string | null;
 };
+
+export type SafeEventSummary =
+  | (SafeEventSummaryMetadata & {
+      readonly type: "CardDrawn";
+      readonly card: {
+        readonly definitionId: string;
+        readonly deckId: string;
+        readonly nameKey: string;
+      };
+    })
+  | (SafeEventSummaryMetadata & {
+      readonly type:
+        | "GameStarted"
+        | "TurnStarted"
+        | "DiceRolled"
+        | "PlayerMoved"
+        | "SalaryAwarded"
+        | "TileResolved"
+        | "CardStored"
+        | "CardPlayed"
+        | "EffectProposed"
+        | "EffectPrevented"
+        | "ResourceChanged"
+        | "StatusApplied"
+        | "PromptOpened"
+        | "ReactionWindowOpened"
+        | "PromotionAttempted"
+        | "PromotionBlocked"
+        | "ManagementRevealed"
+        | "PlayerPromoted"
+        | "ClockDeckExhausted"
+        | "MatchEnded";
+    });
 
 export type GameBootstrap = {
   readonly room: RoomProjection;
@@ -208,6 +243,15 @@ function requireString(value: unknown, path: string): string {
   return value;
 }
 
+function requirePlayerName(value: unknown, path: string): string {
+  const name = requireString(value, path).trim();
+  if (name.length < 1 || name.length > 40) {
+    throw new ContractValidationError(path, "must be between 1 and 40 characters");
+  }
+
+  return name;
+}
+
 function requireRevision(value: unknown, path: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new ContractValidationError(path, "must be a non-negative safe integer");
@@ -259,19 +303,23 @@ export function parseCommandId(value: unknown): string {
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
   const input = requireObject(value, "createRoom");
-  requireExactKeys(input, ["mode", "capacity"], "createRoom");
+  requireExactKeys(input, ["mode", "capacity", "playerName"], "createRoom");
 
   return {
     mode: requireRoomMode(input["mode"], "mode"),
     capacity: requireRoomCapacity(input["capacity"], "capacity"),
+    playerName: requirePlayerName(input["playerName"], "playerName"),
   };
 }
 
 export function parseJoinRoomRequest(value: unknown): JoinRoomRequest {
   const input = requireObject(value, "joinRoom");
-  requireExactKeys(input, ["roomCode"], "joinRoom");
+  requireExactKeys(input, ["roomCode", "playerName"], "joinRoom");
 
-  return { roomCode: parseRoomCode(input["roomCode"]) };
+  return {
+    roomCode: parseRoomCode(input["roomCode"]),
+    playerName: requirePlayerName(input["playerName"], "playerName"),
+  };
 }
 
 function parseRevisionCommandRequest(

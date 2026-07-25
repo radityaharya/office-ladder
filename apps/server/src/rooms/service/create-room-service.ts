@@ -44,6 +44,7 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
   async function joinByRoomId(
     roomId: string,
     actorId: string,
+    playerName: string,
   ): Promise<RoomServiceResult<StoredRoom>> {
     const room = await repository.get(roomId);
     if (room === null) return fail("ROOM_NOT_FOUND");
@@ -55,6 +56,7 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
     const updated = {
       ...room,
       memberIds: [...room.memberIds, playerId],
+      memberNames: { ...room.memberNames, [playerId]: playerName },
       revision: room.revision + 1,
     } satisfies StoredRoom;
     await repository.save(updated);
@@ -67,11 +69,13 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
       const code = parseRoomCode(ids.roomCode?.() ?? derivedRoomCode(id));
       const modeId = input.modeId ?? input.mode;
       if (modeId === undefined) return fail("UNSUPPORTED_MODE");
+      const hostId = createStableId("PlayerId", input.hostId);
       const room: StoredRoom = {
         id,
         code,
-        hostId: createStableId("PlayerId", input.hostId),
-        memberIds: [createStableId("PlayerId", input.hostId)],
+        hostId,
+        memberIds: [hostId],
+        memberNames: { [hostId]: input.playerName },
         modeId,
         capacity: input.capacity ?? DEFAULT_CAPACITY,
         status: "open",
@@ -84,12 +88,12 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
       return { ok: true, value: room };
     },
     async join(input: JoinRoomInput) {
-      return joinByRoomId(input.roomId, input.actorId);
+      return joinByRoomId(input.roomId, input.actorId, input.playerName);
     },
     async joinByCode(input) {
       const room = await repository.getByCode?.(parseRoomCode(input.roomCode));
       if (room === null || room === undefined) return fail("ROOM_CODE_NOT_FOUND");
-      return joinByRoomId(room.id, input.actorId);
+      return joinByRoomId(room.id, input.actorId, input.playerName);
     },
     async bootstrap(input) {
       const room = await repository.get(input.roomId);

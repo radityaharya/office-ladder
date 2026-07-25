@@ -14,7 +14,7 @@ export function RoomHeader({
   description = "Choose a character, mark ready, and wait for the host to start.",
 }: RoomHeaderProps) {
   return (
-    <header className="flex flex-col gap-6 border-b border-border pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <header className="surface-panel flex flex-col gap-6 p-5 sm:flex-row sm:items-end sm:justify-between sm:p-6">
       <div className="max-w-2xl space-y-2">
         <p className="font-sans text-xs font-semibold tracking-widest text-primary uppercase">
           Private room

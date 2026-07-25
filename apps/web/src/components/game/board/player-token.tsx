@@ -3,12 +3,12 @@ import { cn } from "../../../lib/utils";
 import type { PlayerTokenView } from "./types";
 
 const seatStyles = {
-  1: "bg-sky-400 [background-image:repeating-linear-gradient(45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)] [clip-path:polygon(0_0,75%_0,100%_25%,100%_100%,0_100%)]",
-  2: "bg-amber-400 [background-image:radial-gradient(var(--background)_1px,transparent_1px)] [background-size:4px_4px]",
-  3: "bg-fuchsia-400 [background-image:repeating-linear-gradient(-45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)] [clip-path:polygon(25%_0,100%_0,100%_100%,0_100%,0_25%)]",
-  4: "bg-indigo-400 [background-image:repeating-linear-gradient(0deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)]",
-  5: "bg-orange-400 [background-image:conic-gradient(var(--background)_25%,transparent_0_50%,var(--background)_0_75%,transparent_0)] [background-size:6px_6px] [clip-path:polygon(0_0,100%_0,100%_75%,75%_100%,25%_100%,0_75%)]",
-  6: "bg-violet-400 [background-image:repeating-linear-gradient(45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px),repeating-linear-gradient(-45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)]",
+  1: "bg-player-1 [background-image:repeating-linear-gradient(45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)] [clip-path:polygon(0_0,75%_0,100%_25%,100%_100%,0_100%)]",
+  2: "bg-player-2 [background-image:radial-gradient(var(--background)_1px,transparent_1px)] [background-size:4px_4px]",
+  3: "bg-player-3 [background-image:repeating-linear-gradient(-45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)] [clip-path:polygon(25%_0,100%_0,100%_100%,0_100%,0_25%)]",
+  4: "bg-player-4 [background-image:repeating-linear-gradient(0deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)]",
+  5: "bg-player-5 [background-image:conic-gradient(var(--background)_25%,transparent_0_50%,var(--background)_0_75%,transparent_0)] [background-size:6px_6px] [clip-path:polygon(0_0,100%_0,100%_75%,75%_100%,25%_100%,0_75%)]",
+  6: "bg-player-6 [background-image:repeating-linear-gradient(45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px),repeating-linear-gradient(-45deg,transparent_0,transparent_3px,var(--background)_3px,var(--background)_4px)]",
 } as const satisfies Record<PlayerTokenView["seat"], string>;
 
 type PlayerTokenProps = {

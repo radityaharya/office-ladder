@@ -6,7 +6,6 @@ import type {
   ResourceChangedEvent,
   SalaryAwardedEvent,
   TileResolvedEvent,
-  TurnStartedEvent,
 } from "../events";
 import type { GameState, PlayerState, TileId } from "../model";
 import type { BoardMovementResult } from "../rules";
@@ -24,9 +23,6 @@ export type RollEventInput = {
   readonly movement: BoardMovementResult;
   readonly salary: SalaryResolution;
   readonly tileId: TileId;
-  readonly nextPlayerId: PlayerState["id"];
-  readonly nextTurnNumber: number;
-  readonly nextRound: number;
 };
 
 export function createRollEvents(input: RollEventInput): readonly GameEvent[] {
@@ -100,17 +96,5 @@ export function createRollEvents(input: RollEventInput): readonly GameEvent[] {
     },
   };
   events.push(tileResolved);
-  const turnStarted: TurnStartedEvent = {
-    ...metadata(),
-    type: "TurnStarted",
-    payload: {
-      playerId: input.nextPlayerId,
-      turnNumber: input.nextTurnNumber,
-      round: input.nextRound,
-      phase: "pre-roll",
-      deadlineAt: null,
-    },
-  };
-  events.push(turnStarted);
   return events;
 }

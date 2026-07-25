@@ -158,7 +158,7 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
   }
 
   return (
-    <main className="min-h-[100dvh] bg-background px-5 py-6 text-foreground sm:px-8 lg:px-12">
+    <main className="app-shell">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
         {bootstrap ? (
           <RoomHeader roomCode={bootstrap.room.code} playerCount={bootstrap.room.members.length} />

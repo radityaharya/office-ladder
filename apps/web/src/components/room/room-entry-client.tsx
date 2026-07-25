@@ -26,12 +26,16 @@ type RoomCommand =
   | {
       readonly kind: "create";
       readonly endpoint: "/api/rooms";
-      readonly body: { readonly mode: "mode.quick"; readonly capacity: 6 };
+      readonly body: {
+        readonly mode: "mode.quick";
+        readonly capacity: 6;
+        readonly playerName: string;
+      };
     }
   | {
       readonly kind: "join";
       readonly endpoint: "/api/rooms/join";
-      readonly body: { readonly roomCode: string };
+      readonly body: { readonly roomCode: string; readonly playerName: string };
     };
 
 class RoomEntryError extends Error {
@@ -109,18 +113,18 @@ export function RoomEntryClient() {
       characterOptions={characterOptions}
       createState={createState}
       joinState={joinState}
-      onCreate={() => {
+      onCreate={({ playerName }) => {
         void submit({
           kind: "create",
           endpoint: "/api/rooms",
-          body: { mode: "mode.quick", capacity: 6 },
+          body: { mode: "mode.quick", capacity: 6, playerName },
         });
       }}
-      onJoin={({ roomCode }) => {
+      onJoin={({ roomCode, playerName }) => {
         void submit({
           kind: "join",
           endpoint: "/api/rooms/join",
-          body: { roomCode },
+          body: { roomCode, playerName },
         });
       }}
     />

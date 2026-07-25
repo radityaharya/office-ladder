@@ -1,10 +1,12 @@
 import type { RollTurnCommand } from "../commands";
 import { createEventMetadata } from "./events";
 import type {
+  CardDrawnEvent,
   GameEvent,
   MatchEndedEvent,
   PlayerPromotedEvent,
   ResourceChangedEvent,
+  TurnStartedEvent,
 } from "../events";
 import {
   createStableId,
@@ -29,6 +31,10 @@ import {
 } from "./roll-random";
 import { resolveSalary } from "./roll-salary";
 import type { TransitionContext, TransitionResult } from "./types";
+
+function assertNeverTraceEntry(value: never): never {
+  throw new TypeError(`Unsupported tile-effect trace entry: ${String(value)}`);
+}
 
 export function rollTurn(
   state: GameState,
@@ -182,13 +188,14 @@ export function rollTurn(
   );
   const tileOutcome =
     landedTile === undefined
-      ? { player: movedPlayer, changes: [], grantedExtraRoll: false, openAuditPrompt: false }
+      ? { player: movedPlayer, changes: [], trace: [], grantedExtraRoll: false, openAuditPrompt: false }
       : resolveTileEffects(
           movedPlayer,
           landedTile.effects,
           tileEffectRandom,
           landedTile.kind,
           character?.passive,
+          context.content.decks,
         );
 
   const nextTurn = resolveNextTurn(
@@ -215,9 +222,6 @@ export function rollTurn(
     movement,
     salary,
     tileId,
-    nextPlayerId,
-    nextTurnNumber,
-    nextRound,
   });
   const finalEvent = events[events.length - 1];
   if (finalEvent === undefined) {
@@ -236,22 +240,56 @@ export function rollTurn(
       state.eventSequence + allEvents.length + 1,
     );
 
-  for (const change of tileOutcome.changes) {
-    const resource = tileOutcome.player.resources[change.resource];
-    if (resource === undefined) continue;
-    const resourceChanged: ResourceChangedEvent = {
-      ...eventMetadata(),
-      type: "ResourceChanged",
-      payload: {
-        playerId: tileOutcome.player.id,
-        resourceId: resource.id,
-        previousValue: change.previousValue,
-        newValue: change.newValue,
-        reason: "tile-effect",
-      },
-    };
-    allEvents.push(resourceChanged);
+  for (const traceEntry of tileOutcome.trace) {
+    switch (traceEntry.type) {
+      case "card-drawn": {
+        const cardDrawn: CardDrawnEvent = {
+          ...eventMetadata(),
+          type: "CardDrawn",
+          payload: {
+            playerId: tileOutcome.player.id,
+            cardId: createStableId("CardDefinitionId", traceEntry.card.id),
+            deckId: createStableId("DeckId", traceEntry.card.deckId),
+            nameKey: traceEntry.card.nameKey,
+          },
+        };
+        allEvents.push(cardDrawn);
+        break;
+      }
+      case "resource-changed": {
+        const resource = tileOutcome.player.resources[traceEntry.change.resource];
+        if (resource === undefined) break;
+        const resourceChanged: ResourceChangedEvent = {
+          ...eventMetadata(),
+          type: "ResourceChanged",
+          payload: {
+            playerId: tileOutcome.player.id,
+            resourceId: resource.id,
+            previousValue: traceEntry.change.previousValue,
+            newValue: traceEntry.change.newValue,
+            reason: "tile-effect",
+          },
+        };
+        allEvents.push(resourceChanged);
+        break;
+      }
+      default:
+        assertNeverTraceEntry(traceEntry);
+    }
   }
+
+  const turnStarted: TurnStartedEvent = {
+    ...eventMetadata(),
+    type: "TurnStarted",
+    payload: {
+      playerId: nextPlayerId,
+      turnNumber: nextTurnNumber,
+      round: nextRound,
+      phase: "pre-roll",
+      deadlineAt: null,
+    },
+  };
+  allEvents.push(turnStarted);
 
   const promotion = resolvePromotion(tileOutcome.player, context.content, state.modeId);
 

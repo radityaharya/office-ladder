@@ -23,7 +23,7 @@ export function roomProjection(room: StoredRoom): RoomProjection {
     revision: room.revision,
     members: room.memberIds.map((memberId, seat) => ({
       id: memberId,
-      displayName: memberId,
+      displayName: room.memberNames[memberId] ?? memberId,
       seat,
       isHost: memberId === room.hostId,
       isReady: true,

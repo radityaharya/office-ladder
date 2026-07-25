@@ -56,6 +56,7 @@ describe("turn command execution", () => {
       "DiceRolled",
       "PlayerMoved",
       "TileResolved",
+      "CardDrawn",
       "TurnStarted",
     ]);
     expect(transition.events[0]?.payload).toMatchObject({ playerId: fixtureIds.owner, dice: [1], total: 1, rngStream: "dice", rngCursor: 1 });
@@ -72,7 +73,7 @@ describe("turn command execution", () => {
       phase: "pre-roll",
     });
     expect(transition.state.rng.streams.dice?.cursor).toBe(1);
-    expect(transition.events.map((event) => event.sequence)).toEqual([30, 31, 32, 33]);
+    expect(transition.events.map((event) => event.sequence)).toEqual([30, 31, 32, 33, 34]);
     expect(transition.state.revision).toBe(state.revision + 1);
   });
 

@@ -26,7 +26,7 @@ export function CreateJoinPanel({
   onJoin,
 }: CreateJoinPanelProps) {
   return (
-    <section className="border border-border bg-card" aria-labelledby="room-entry-title">
+    <section className="surface-panel overflow-hidden" aria-labelledby="room-entry-title">
       <div className="space-y-1 border-b border-border px-4 py-5 sm:px-6">
         <h2 id="room-entry-title" className="font-heading text-lg font-semibold tracking-wider uppercase">
           Enter the floor
@@ -155,7 +155,7 @@ function RoomEntryForm({
       </Field>
 
       {state.kind === "error" ? (
-        <Alert variant="destructive" className="border-destructive/30 bg-background">
+        <Alert variant="destructive">
           <AlertTitle>{isCreate ? "Room not created" : "Room not joined"}</AlertTitle>
           <AlertDescription>{state.message}</AlertDescription>
         </Alert>

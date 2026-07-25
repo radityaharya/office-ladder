@@ -1,4 +1,4 @@
-import type { CharacterAbilityDescriptor, EffectDescriptor } from "@office-ladder/content";
+import type { CharacterAbilityDescriptor, DeckCard, DeckConfig, EffectDescriptor } from "@office-ladder/content";
 
 import type { PlayerState, ResourceState } from "../model";
 import { randomInt, rollDie, type RandomSource } from "../random";
@@ -12,35 +12,36 @@ export type TileEffectChange = {
   readonly newValue: number;
 };
 
+export type ImmediateCardResolution = Pick<DeckCard, "id" | "nameKey"> & {
+  readonly deckId: DeckConfig["id"];
+};
+
+export type TileEffectTraceEntry =
+  | { readonly type: "card-drawn"; readonly card: ImmediateCardResolution }
+  | { readonly type: "resource-changed"; readonly change: TileEffectChange };
+
 export type TileEffectOutcome = {
   readonly player: PlayerState;
   readonly changes: readonly TileEffectChange[];
+  readonly trace: readonly TileEffectTraceEntry[];
   readonly grantedExtraRoll: boolean;
   readonly openAuditPrompt: boolean;
 };
 
-/**
- * Small built-in flavor table used in place of real management-deck card
- * content (no deck/card pool has been authored yet — see AGENTS.md). Picked
- * deterministically via the tracked dice random source so replay stays
- * reproducible.
- */
-const DECK_FLAVOR_EFFECTS: readonly EffectDescriptor[] = [
-  { type: "modifyResource", resource: "money", amount: 150, clampAtZero: true },
-  { type: "modifyResource", resource: "money", amount: -150, clampAtZero: true },
-  { type: "modifyResource", resource: "reputation", amount: 1, clampAtZero: true },
-  { type: "modifyResource", resource: "reputation", amount: -1, clampAtZero: true },
-  { type: "modifyResource", resource: "energy", amount: -1, clampAtZero: true },
-  { type: "modifyResource", resource: "money", amount: 300, clampAtZero: true },
-];
+const MAX_EFFECT_RECURSION_DEPTH = 3;
 
 type Accumulated = {
   readonly player: PlayerState;
   readonly changes: readonly TileEffectChange[];
+  readonly trace: readonly TileEffectTraceEntry[];
   readonly extraRoll: boolean;
   readonly rolledDoubles: boolean;
   readonly openAuditPrompt: boolean;
 };
+
+function resourceTrace(changes: readonly TileEffectChange[]): readonly TileEffectTraceEntry[] {
+  return changes.map((change) => ({ type: "resource-changed", change }));
+}
 
 function adjustResource(
   player: PlayerState,
@@ -80,8 +81,11 @@ function applyOne(
   effect: EffectDescriptor,
   random: RandomSource,
   depth: number,
+  decks: readonly DeckConfig[],
 ): Accumulated {
-  if (depth > 3) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+  if (depth > MAX_EFFECT_RECURSION_DEPTH) {
+    return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+  }
 
   switch (effect.type) {
     case "modifyResource": {
@@ -92,16 +96,18 @@ function applyOne(
         effect.clampAtZero ?? false,
         effect.clampAtMaximum ?? false,
       );
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      const changes = change ? [change] : [];
+      return { player: next, changes, trace: resourceTrace(changes), extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "payResource": {
       const { player: next, change } = adjustResource(player, effect.resource, -effect.amount, true, false);
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      const changes = change ? [change] : [];
+      return { player: next, changes, trace: resourceTrace(changes), extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "restoreResourceToMaximum": {
       const resource = player.resources[effect.resource];
       if (resource === undefined || resource.maximum === null) {
-        return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+        return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
       }
       const { player: next, change } = adjustResource(
         player,
@@ -110,11 +116,12 @@ function applyOne(
         false,
         true,
       );
-      return { player: next, changes: change ? [change] : [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      const changes = change ? [change] : [];
+      return { player: next, changes, trace: resourceTrace(changes), extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "incrementWorkCounter": {
       const counter = player.resources["work-counter"];
-      if (counter === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      if (counter === undefined) return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
 
       const { player: afterIncrement, change } = adjustResource(
         player,
@@ -135,12 +142,13 @@ function applyOne(
         return {
           player: afterReward,
           changes: rewardChange ? [...changes, rewardChange] : changes,
+          trace: resourceTrace(rewardChange ? [...changes, rewardChange] : changes),
           extraRoll: false,
           rolledDoubles: false,
           openAuditPrompt: false,
         };
       }
-      return { player: afterIncrement, changes, extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      return { player: afterIncrement, changes, trace: resourceTrace(changes), extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     }
     case "rollCheck": {
       const firstDie = rollDie(random, effect.dice.sides);
@@ -156,29 +164,57 @@ function applyOne(
         return total >= min && total <= max;
       });
       if (outcome === undefined) {
-        return { player, changes: [], extraRoll: false, rolledDoubles: isDoubles, openAuditPrompt: false };
+        return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: isDoubles, openAuditPrompt: false };
       }
 
-      const nested = applyMany(player, outcome.effects, random, depth + 1);
+      const nested = applyMany(player, outcome.effects, random, depth + 1, decks);
       return { ...nested, rolledDoubles: isDoubles };
     }
     case "drawCards": {
-      const index = randomInt(random, 0, DECK_FLAVOR_EFFECTS.length - 1);
-      const flavor = DECK_FLAVOR_EFFECTS[index];
-      if (flavor === undefined) return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
-      return applyOne(player, flavor, random, depth + 1);
+      const deck = decks.find((candidate) => candidate.id === effect.deckId);
+      if (deck === undefined || deck.cards.length === 0) {
+        return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      }
+
+      let current = player;
+      const changes: TileEffectChange[] = [];
+      const trace: TileEffectTraceEntry[] = [];
+      let extraRoll = false;
+      let rolledDoubles = false;
+      let openAuditPrompt = false;
+
+      for (let drawIndex = 0; drawIndex < effect.count; drawIndex += 1) {
+        const cardIndex = randomInt(random, 0, deck.cards.length - 1);
+        const card = deck.cards[cardIndex];
+        if (card === undefined) continue;
+
+        trace.push({
+          type: "card-drawn",
+          card: { id: card.id, nameKey: card.nameKey, deckId: deck.id },
+        });
+        const result = applyMany(current, card.effects, random, depth + 1, decks);
+        current = result.player;
+        changes.push(...result.changes);
+        trace.push(...result.trace);
+        extraRoll = extraRoll || result.extraRoll;
+        rolledDoubles = rolledDoubles || result.rolledDoubles;
+        openAuditPrompt = openAuditPrompt || result.openAuditPrompt;
+      }
+
+      return { player: current, changes, trace, extraRoll, rolledDoubles, openAuditPrompt };
     }
     case "grantExtraRoll":
-      return { player, changes: [], extraRoll: true, rolledDoubles: false, openAuditPrompt: false };
+      return { player, changes: [], trace: [], extraRoll: true, rolledDoubles: false, openAuditPrompt: false };
     case "gainSalary":
     case "attemptPromotion":
       // Handled unconditionally once per turn in roll-turn.ts, independent of
       // which tile was landed on — see AGENTS.md.
-      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
     case "skipTurns":
       return {
         player: { ...player, skipTurns: player.skipTurns + effect.count },
         changes: [],
+        trace: [],
         extraRoll: false,
         rolledDoubles: false,
         openAuditPrompt: false,
@@ -187,6 +223,7 @@ function applyOne(
       return {
         player: { ...player, inAudit: true },
         changes: [],
+        trace: [],
         extraRoll: false,
         rolledDoubles: false,
         openAuditPrompt: true,
@@ -195,12 +232,13 @@ function applyOne(
       return {
         player: applyStatusEffect(player, effect),
         changes: [],
+        trace: [],
         extraRoll: false,
         rolledDoubles: false,
         openAuditPrompt: false,
       };
     default:
-      return { player, changes: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
+      return { player, changes: [], trace: [], extraRoll: false, rolledDoubles: false, openAuditPrompt: false };
   }
 }
 
@@ -209,23 +247,26 @@ function applyMany(
   effects: readonly EffectDescriptor[],
   random: RandomSource,
   depth: number,
+  decks: readonly DeckConfig[],
 ): Accumulated {
   let current = player;
   const changes: TileEffectChange[] = [];
+  const trace: TileEffectTraceEntry[] = [];
   let extraRoll = false;
   let rolledDoubles = false;
   let openAuditPrompt = false;
 
   for (const effect of effects) {
-    const result = applyOne(current, effect, random, depth);
+    const result = applyOne(current, effect, random, depth, decks);
     current = result.player;
     changes.push(...result.changes);
+    trace.push(...result.trace);
     extraRoll = extraRoll || result.extraRoll;
     rolledDoubles = rolledDoubles || result.rolledDoubles;
     openAuditPrompt = openAuditPrompt || result.openAuditPrompt;
   }
 
-  return { player: current, changes, extraRoll, rolledDoubles, openAuditPrompt };
+  return { player: current, changes, trace, extraRoll, rolledDoubles, openAuditPrompt };
 }
 
 /**
@@ -267,11 +308,13 @@ export function resolveTileEffects(
   random: RandomSource,
   tileKind: string,
   characterPassive: CharacterAbilityDescriptor | undefined,
+  decks: readonly DeckConfig[] = [],
 ): TileEffectOutcome {
   if (findActiveStatus(player, "status.skip-next-tile-effect") !== null) {
     return {
       player: consumeStatus(player, "status.skip-next-tile-effect"),
       changes: [],
+      trace: [],
       grantedExtraRoll: false,
       openAuditPrompt: false,
     };
@@ -286,12 +329,13 @@ export function resolveTileEffects(
     ? effects.filter((effect) => !(effect.type === "modifyResource" && effect.resource === "energy" && effect.amount < 0))
     : effects;
 
-  const result = applyMany(effectivePlayer, effectiveEffects, random, 0);
+  const result = applyMany(effectivePlayer, effectiveEffects, random, 0, decks);
   const passive = applyCharacterPassive(result.player, characterPassive, tileKind, result.rolledDoubles);
 
   return {
     player: passive.player,
     changes: [...result.changes, ...passive.changes],
+    trace: [...result.trace, ...resourceTrace(passive.changes)],
     grantedExtraRoll: result.extraRoll,
     openAuditPrompt: result.openAuditPrompt,
   };

@@ -16,6 +16,7 @@ export function ReadinessSummary({
   return (
     <section
       aria-label="Readiness summary"
+      aria-live="polite"
       className="grid gap-4 border-y border-border bg-muted/30 px-4 py-4 sm:grid-cols-3"
     >
       <SummaryItem label="Readiness" value={`${readyCount} of ${players.length} ready`} />

@@ -22,18 +22,20 @@ The fastest way for a group to jump into a funny office-themed board game.
 
 ## Brand Personality
 
-The product should feel funny, marathon-like, and mischievous. Its tone should support long-form play without becoming exhausting: playful rather than random, competitive without becoming severe, and socially animated without feeling noisy or juvenile. The humor should come from office-drama situations, game consequences, and player interaction more than from novelty UI tricks.
+The product should feel funny, marathon-like, and mischievous — but that personality now lives in the writing and the game's consequences, not in the chrome. As of the 2026-07-25 visual direction, the interface itself deliberately plays it straight: a serious, in-universe corporate management terminal that the office hands each player for the shift. The joke is the contrast — deadpan, procedural software running a game about office chaos — not a UI that visibly winks at the player. Playful rather than random, competitive without becoming severe, and socially animated without feeling noisy or juvenile still describes the tone of copy, events, and player interaction; it no longer describes the visual language.
 
 ## Anti-references
 
-This should explicitly not feel like polished corporate SaaS. Even though the theme is office life, the interface should not borrow the emotional tone of workplace software, B2B dashboards, or enterprise admin tools. Avoid sterile professionalism, business-app stiffness, and any design language that makes the game feel like productivity software with a theme pasted on top.
+The prior anti-reference here explicitly rejected "polished corporate SaaS" and "sterile professionalism, business-app stiffness." That rejection is reversed as of the 2026-07-25 visual direction (see `DESIGN.md`'s "In-Game Corporate" mandate) — the interface now deliberately adopts the look and cold confidence of a real management dashboard, in-fiction, as its core aesthetic. Do not re-propose the old "should not feel like workplace software" framing without new instruction; it was a deliberate, already-tried-and-reverted position, same as the history entries in `AGENTS.md`.
+
+What is still out of bounds: mascot energy, rounded toy-like affordances, playful color bursts, novelty UI tricks, and anything that makes the interface itself perform the humor. The game is funny; the terminal it runs on is not trying to be.
 
 ## Design Principles
 
 1. Remove friction before adding flourish. Room creation, joining, readying up, and starting a match should feel instant and obvious.
 2. Keep the social layer alive between turns. The game should preserve a feeling of shared presence so waiting is still part of the fun.
 3. Make competition legible, not intimidating. Players should understand standings, stakes, and consequences quickly without the UI feeling dense or punishing.
-4. Let the office theme drive flavor, not corporate UI conventions. The setting should shape copy, events, and visual character without turning the product into faux-enterprise software.
+4. Let the office theme drive the interface's own idiom, not just its flavor. Copy, events, and player interaction carry the comedy; the visual system plays it as straight, serious in-universe software — see `DESIGN.md` for the enforceable spec.
 5. Design for replayability. Flows, feedback, and pacing should support repeated sessions with the same group, not just a one-time novelty round.
 
 ## Accessibility & Inclusion

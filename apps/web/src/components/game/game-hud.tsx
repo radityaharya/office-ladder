@@ -1,11 +1,9 @@
 import {
   RiArrowLeftLine,
   RiCoinsLine,
-  RiErrorWarningLine,
   RiFlashlightLine,
   RiHistoryLine,
   RiMapPin2Line,
-  RiRefreshLine,
   RiShieldStarLine,
   RiUserStarLine,
 } from "@remixicon/react";
@@ -15,19 +13,14 @@ import type {
   PublicGameProjection,
   PublicPlayerProjection,
   RoomProjection,
-  SafeEventSummary,
 } from "@office-ladder/contracts";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+
+import { playerColorClass, playerName, rankLabel } from "./turn-rail";
 
 type GameHudProps = {
   readonly room: RoomProjection;
   readonly game: PublicGameProjection;
   readonly selfPlayerId: string;
-  readonly canRoll: boolean;
-  readonly isRolling: boolean;
-  readonly rollError: string | null;
-  readonly onRoll: () => void;
 };
 
 const resourceIcons = {
@@ -37,181 +30,132 @@ const resourceIcons = {
   "work-counter": RiHistoryLine,
 } as const;
 
-export function GameHud({
-  room,
-  game,
-  selfPlayerId,
-  canRoll,
-  isRolling,
-  rollError,
-  onRoll,
-}: GameHudProps) {
-  const activePlayer = game.players.find((player) => player.id === game.activePlayerId);
+const resourceLabels = {
+  money: "Cash",
+  reputation: "Rep",
+  energy: "Energy",
+  "work-counter": "Work",
+} as const;
+
+export function GameHud({ room, game, selfPlayerId }: GameHudProps) {
   const selfPlayer = game.players.find((player) => player.id === selfPlayerId);
 
   return (
-    <div className="contents">
-      <header className="order-1 flex flex-col gap-4 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between lg:col-span-2 lg:row-start-1">
-        <div className="min-w-0 space-y-1">
-          <Link
-            className="inline-flex items-center gap-2 font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase hover:text-foreground"
-            to="/rooms/$roomId"
-            params={{ roomId: room.id }}
-          >
-            <RiArrowLeftLine aria-hidden="true" className="size-4" />
-            Room {room.code}
-          </Link>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-            Deadline Dash
-          </h1>
-        </div>
-        <div className="flex flex-wrap gap-x-6 gap-y-2 font-mono text-xs text-muted-foreground">
-          <span>Round {game.round}</span>
-          <span>Turn {game.turnNumber}</span>
-          <span className="text-foreground">{phaseLabel(game.phase)}</span>
-        </div>
-      </header>
+    <>
+      <TopBar game={game} room={room} />
+      <ResourceDock selfPlayer={selfPlayer} />
+    </>
+  );
+}
 
-      <section
-        aria-label="Your resources"
-        className="order-2 flex min-w-0 snap-x gap-6 overflow-x-auto border-b border-border bg-card px-4 py-3 [scrollbar-gutter:stable] lg:col-span-2 lg:row-start-2"
+function TopBar({
+  game,
+  room,
+}: {
+  readonly game: PublicGameProjection;
+  readonly room: RoomProjection;
+}) {
+  const activeName = game.activePlayerId ? playerName(room, game.activePlayerId) : null;
+
+  return (
+    <header
+      className="pointer-events-auto absolute top-3 left-3 z-30 flex items-center gap-2 sm:top-4 sm:left-4"
+      data-slot="game-header-region"
+    >
+      <Link
+        aria-label={`Back to room ${room.code}`}
+        className="inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-card/95 text-muted-foreground shadow-[0_6px_20px_-8px_rgba(0,0,0,0.6)] backdrop-blur hover:bg-muted hover:text-foreground sm:size-11"
+        params={{ roomId: room.id }}
+        to="/rooms/$roomId"
       >
-        {selfPlayer ? (
+        <RiArrowLeftLine aria-hidden="true" className="size-5" />
+      </Link>
+      <div className="flex items-center gap-2.5 rounded-full border border-border bg-card/95 py-2 pr-4 pl-4 shadow-[0_6px_20px_-8px_rgba(0,0,0,0.6)] backdrop-blur">
+        <p className="font-heading text-sm font-semibold tracking-tight text-foreground sm:text-base">
+          Deadline Dash
+        </p>
+        <span aria-hidden="true" className="h-4 w-px bg-border" />
+        <p className="font-mono text-xs font-medium tracking-wide text-muted-foreground">
+          {room.code}
+        </p>
+        <span aria-hidden="true" className="h-4 w-px bg-border" />
+        <p className="font-mono text-xs tracking-wide text-muted-foreground">
+          R{game.round}.{game.turnNumber}
+        </p>
+        {activeName ? (
           <>
-            <ResourceItem icon={RiMapPin2Line} label="Position" value={`${selfPlayer.position + 1} / 44`} />
-            {Object.entries(selfPlayer.resources).map(([resource, value]) => (
-              <ResourceItem
-                icon={resourceIcon(resource)}
-                key={resource}
-                label={resourceLabel(resource)}
-                value={value.toLocaleString()}
-              />
-            ))}
-            <ResourceItem icon={RiUserStarLine} label="Rank" value={rankLabel(selfPlayer)} />
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground">Spectating the current office scramble.</p>
-        )}
-      </section>
-
-      <aside className="order-5 border border-border bg-card lg:col-start-2 lg:row-start-3" aria-labelledby="turn-rail-title">
-        <div className="border-b border-border px-4 py-4">
-          <h2 id="turn-rail-title" className="font-heading text-lg font-semibold tracking-wider uppercase">
-            Turn rail
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {activePlayer ? `${playerName(room, activePlayer.id)} is at position ${activePlayer.position + 1}.` : "The match is resolving."}
-          </p>
-        </div>
-        <div role="list" aria-label="Players in seat order">
-          {game.players.map((player) => (
-            <PlayerRow
-              active={player.id === game.activePlayerId}
-              key={player.id}
-              name={playerName(room, player.id)}
-              player={player}
-              self={player.id === selfPlayerId}
-            />
-          ))}
-        </div>
-      </aside>
-
-      <section className="order-6 border border-border bg-card p-4 lg:col-start-2 lg:row-start-4" aria-labelledby="activity-title">
-        <div className="flex items-center justify-between gap-3">
-          <h2 id="activity-title" className="font-heading text-lg font-semibold tracking-wider uppercase">
-            Activity
-          </h2>
-          <RiHistoryLine aria-hidden="true" className="size-4 text-muted-foreground" />
-        </div>
-        <ActivityList events={game.eventSummaries} room={room} />
-      </section>
-
-      <section
-        aria-labelledby="action-dock-title"
-        className="order-4 border border-border bg-card p-4 shadow-sm lg:sticky lg:bottom-4 lg:col-start-1 lg:row-start-4"
-      >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <h2 id="action-dock-title" className="font-heading text-lg font-semibold tracking-wider uppercase">
-              {canRoll ? "Your move" : "Stand by"}
-            </h2>
-            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              {canRoll
-                ? "Roll to advance. Movement and the resulting tile are committed by the seeded server engine."
-                : `${activePlayer ? playerName(room, activePlayer.id) : "The server"} currently owns the next action.`}
+            <span aria-hidden="true" className="hidden h-4 w-px bg-border sm:inline-block" />
+            <p className="hidden font-sans text-xs font-semibold text-primary sm:inline-block">
+              {activeName}&rsquo;s turn
             </p>
-            {rollError ? (
-              <p className="mt-2 flex items-center gap-2 text-sm text-destructive" role="alert">
-                <RiErrorWarningLine aria-hidden="true" className="size-4" />
-                {rollError}
-              </p>
-            ) : null}
-          </div>
-          <Button aria-busy={isRolling} disabled={!canRoll || isRolling} onClick={onRoll} size="lg" type="button">
-            {isRolling ? <RiRefreshLine aria-hidden="true" className="animate-spin" /> : null}
-            {isRolling ? "Rolling" : "Roll dice"}
-          </Button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function ResourceItem({ icon: Icon, label, value }: { readonly icon: typeof RiCoinsLine; readonly label: string; readonly value: string }) {
-  return (
-    <div className="flex shrink-0 snap-start items-center gap-3">
-      <Icon aria-hidden="true" className="size-4 text-primary" />
-      <div>
-        <p className="font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase">{label}</p>
-        <p className="font-mono text-sm font-semibold tabular-nums text-foreground">{value}</p>
+          </>
+        ) : null}
       </div>
-    </div>
+    </header>
   );
 }
 
-function PlayerRow({ active, name, player, self }: { readonly active: boolean; readonly name: string; readonly player: PublicPlayerProjection; readonly self: boolean }) {
-  return (
-    <div className={cn("grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-4 py-3 last:border-b-0", active && "bg-primary/10 ring-1 ring-inset ring-primary/50")} role="listitem">
-      <span className="flex size-7 items-center justify-center border border-border bg-background font-mono text-xs font-semibold tabular-nums">{player.seat}</span>
-      <div className="min-w-0">
-        <p className="truncate font-heading text-sm font-semibold text-foreground">{name}{self ? " (you)" : ""}</p>
-        <p className="truncate text-xs text-muted-foreground">{rankLabel(player)} · Position {player.position + 1}</p>
-      </div>
-      <span className={cn("font-sans text-xs font-semibold tracking-widest uppercase", active ? "text-primary" : "text-muted-foreground")}>{active ? "Acting" : player.connected ? "Online" : "Away"}</span>
-    </div>
-  );
-}
-
-function ActivityList({ events, room }: { readonly events: readonly SafeEventSummary[]; readonly room: RoomProjection }) {
-  const recentEvents = events.slice(-5).reverse();
-  if (recentEvents.length === 0) return <p className="mt-4 text-sm text-muted-foreground">No committed incidents yet. The first roll will start the paper trail.</p>;
+function ResourceDock({ selfPlayer }: { readonly selfPlayer?: PublicPlayerProjection }) {
+  if (!selfPlayer) {
+    return (
+      <p
+        className="pointer-events-none absolute bottom-3 left-3 z-30 rounded-full border border-border bg-card/95 px-4 py-2 text-xs text-muted-foreground backdrop-blur sm:bottom-4 sm:left-4"
+        data-slot="game-resources-region"
+      >
+        Spectating
+      </p>
+    );
+  }
 
   return (
-    <ol className="mt-4 divide-y divide-border">
-      {recentEvents.map((event) => (
-        <li className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 py-3 first:pt-0 last:pb-0" key={event.id}>
-          <span className="font-mono text-xs tabular-nums text-muted-foreground">R{event.revision}</span>
-          <p className="text-sm text-foreground">{event.actorPlayerId ? playerName(room, event.actorPlayerId) : "System"} · {eventLabel(event.type)}</p>
-        </li>
+    <section
+      aria-label="Your resources"
+      className="pointer-events-auto absolute bottom-3 left-3 z-30 flex flex-wrap items-center gap-2 sm:bottom-4 sm:left-4"
+      data-slot="game-resources-region"
+    >
+      <span
+        aria-hidden="true"
+        className={`size-3 shrink-0 rounded-full ${playerColorClass(selfPlayer.seat, "bg")}`}
+      />
+      <ResourceChip icon={RiMapPin2Line} label="Tile" value={`${selfPlayer.position + 1}/44`} />
+      {Object.entries(selfPlayer.resources).map(([resource, value]) => (
+        <ResourceChip
+          icon={resourceIcon(resource)}
+          key={resource}
+          label={resourceLabel(resource)}
+          value={value.toLocaleString()}
+        />
       ))}
-    </ol>
+      <ResourceChip icon={RiUserStarLine} label="Rank" value={rankLabel(selfPlayer)} />
+    </section>
   );
 }
 
-function playerName(room: RoomProjection, playerId: string): string {
-  return room.members.find((member) => member.id === playerId)?.displayName ?? `Seat ${room.members.find((member) => member.id === playerId)?.seat ?? "?"}`;
-}
-
-function rankLabel(player: PublicPlayerProjection): string {
-  return player.rank.kind?.replace("rank.", "").replaceAll("-", " ") ?? `Rank ${player.rank.index + 1}`;
-}
-
-function phaseLabel(phase: string): string {
-  return phase.replaceAll("-", " ").replaceAll("_", " ");
+function ResourceChip({
+  icon: Icon,
+  label,
+  value,
+}: {
+  readonly icon: typeof RiCoinsLine;
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card/95 py-1.5 pr-3.5 pl-2.5 shadow-[0_6px_20px_-8px_rgba(0,0,0,0.6)] backdrop-blur">
+      <Icon aria-hidden="true" className="size-4 text-primary" />
+      <span className="flex flex-col leading-none">
+        <span className="font-mono text-sm font-bold tabular-nums text-foreground">{value}</span>
+        <span className="hidden font-sans text-[0.5625rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase sm:block">
+          {label}
+        </span>
+      </span>
+    </span>
+  );
 }
 
 function resourceLabel(resource: string): string {
-  return resource.replace("resource.", "").replaceAll("-", " ");
+  const key = resource.replace("resource.", "") as keyof typeof resourceLabels;
+  return resourceLabels[key] ?? resource.replaceAll("-", " ");
 }
 
 function resourceIcon(resource: string): typeof RiCoinsLine {
@@ -231,8 +175,4 @@ function resourceIcon(resource: string): typeof RiCoinsLine {
     default:
       return RiCoinsLine;
   }
-}
-
-function eventLabel(type: string): string {
-  return type.replaceAll(".", " ").replaceAll("-", " ");
 }

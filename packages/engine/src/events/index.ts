@@ -1,4 +1,5 @@
 import type {
+  CardDefinitionId,
   CardInstanceId,
   CommandId,
   DeckId,
@@ -88,7 +89,12 @@ export type TileResolvedEvent = EventEnvelope<
 >;
 export type CardDrawnEvent = EventEnvelope<
   "CardDrawn",
-  { readonly playerId: PlayerId | null; readonly cardId: CardInstanceId; readonly deckId: DeckId }
+  {
+    readonly playerId: PlayerId | null;
+    readonly cardId: CardDefinitionId;
+    readonly deckId: DeckId;
+    readonly nameKey: `deadlineDash.card.${string}.name`;
+  }
 >;
 export type CardStoredEvent = EventEnvelope<
   "CardStored",

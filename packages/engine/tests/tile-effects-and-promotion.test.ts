@@ -1,12 +1,32 @@
 import { describe, expect, it } from "vitest";
 
+import type { DeckConfig } from "@office-ladder/content";
+
 import { applyCommand, createScriptedRandomSource } from "../src";
 import type { CommandId, DecisionPointId, FrameId, PromptOptionId } from "../src";
 import { resolveTileEffects } from "../src/execution/resolve-tile-effects";
-import { accepted, context, rollCommand, rollState } from "./turn-loop-fixtures";
+import { accepted, context, logicalTimestamp, rollCommand, rollState } from "./turn-loop-fixtures";
 import { fixtureIds } from "./fixtures";
 
 const brand = <Id extends string>(value: string) => value as Id;
+
+const authoredTestDecks = [
+  {
+    id: "deck.work",
+    cards: [
+      {
+        id: "card.work.small-bonus",
+        nameKey: "deadlineDash.card.workSmallBonus.name",
+        effects: [{ type: "modifyResource", resource: "money", amount: 10, clampAtZero: true }],
+      },
+      {
+        id: "card.work.large-bonus",
+        nameKey: "deadlineDash.card.workLargeBonus.name",
+        effects: [{ type: "modifyResource", resource: "money", amount: 100, clampAtZero: true }],
+      },
+    ],
+  },
+] as const satisfies readonly DeckConfig[];
 
 describe("tile effects", () => {
   it("Given a player one space from the finance tile, when they roll onto it, then payResource deducts money", () => {
@@ -51,6 +71,246 @@ describe("tile effects", () => {
 
     const energy = nextState.players[fixtureIds.owner]?.resources.energy;
     expect(energy?.value).toBe(10);
+  });
+});
+
+describe("authored card draws", () => {
+  it("Given an authored deck, when drawing one card, then the selected card resolves immediately", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const random = createScriptedRandomSource([0]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.work", count: 1 }],
+      random,
+      "work",
+      undefined,
+      authoredTestDecks,
+    );
+
+    expect(outcome.player.resources.money.value).toBe(owner.resources.money.value + 10);
+    expect(random.getCursor()).toBe(1);
+  });
+
+  it("Given an authored deck, when drawing one card, then its public identity precedes its resource trace", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.work", count: 1 }],
+      createScriptedRandomSource([0]),
+      "work",
+      undefined,
+      authoredTestDecks,
+    );
+
+    expect(outcome.trace).toEqual([
+      {
+        type: "card-drawn",
+        card: {
+          id: "card.work.small-bonus",
+          nameKey: "deadlineDash.card.workSmallBonus.name",
+          deckId: "deck.work",
+        },
+      },
+      {
+        type: "resource-changed",
+        change: {
+          resource: "money",
+          previousValue: owner.resources.money.value,
+          newValue: owner.resources.money.value + 10,
+        },
+      },
+    ]);
+    expect(outcome.changes).toEqual([
+      {
+        resource: "money",
+        previousValue: owner.resources.money.value,
+        newValue: owner.resources.money.value + 10,
+      },
+    ]);
+  });
+
+  it("Given an authored immediate card with two effects, when turn.roll draws it, then CardDrawn precedes both causal resource events", () => {
+    const baseState = rollState(15);
+    const owner = baseState.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const state: typeof baseState = {
+      ...baseState,
+      players: {
+        ...baseState.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          resources: {
+            ...owner.resources,
+            reputation: {
+              id: owner.resources.money.id,
+              kind: "resource.reputation",
+              value: 1,
+              minimum: 0,
+              maximum: null,
+            },
+          },
+        },
+      },
+    };
+    const command = rollCommand(state, { commandId: brand<CommandId>("card-order-3") });
+
+    const transition = accepted(applyCommand(state, command, context([0])));
+
+    expect(transition.events.map((event) => event.type)).toEqual([
+      "DiceRolled",
+      "PlayerMoved",
+      "TileResolved",
+      "CardDrawn",
+      "ResourceChanged",
+      "ResourceChanged",
+      "TurnStarted",
+    ]);
+    expect(transition.events[3]?.payload).toEqual({
+      playerId: fixtureIds.owner,
+      cardId: "card.event.jackpot",
+      deckId: "deck.event",
+      nameKey: "deadlineDash.card.eventJackpot.name",
+    });
+    expect(transition.events[3]).toMatchObject({
+      causationCommandId: command.commandId,
+      logicalTimestamp: logicalTimestamp,
+      visibility: { kind: "public" },
+    });
+    expect(transition.events.slice(3).map((event) => event.sequence)).toEqual([33, 34, 35, 36]);
+    expect(transition.events.slice(3).every((event) => event.revision === state.revision + 1)).toBe(true);
+    expect(transition.events[4]?.payload).toMatchObject({
+      previousValue: 12,
+      newValue: 812,
+      reason: "tile-effect",
+    });
+    expect(transition.events[5]?.payload).toMatchObject({
+      previousValue: 1,
+      newValue: 3,
+      reason: "tile-effect",
+    });
+    expect(transition.events.findIndex((event) => event.type === "CardDrawn")).toBeLessThan(
+      transition.events.findIndex((event) => event.type === "TurnStarted"),
+    );
+    expect(transition.events[6]?.payload).toMatchObject({
+      playerId: fixtureIds.revealedOpponent,
+      turnNumber: 2,
+      round: 1,
+      phase: "pre-roll",
+    });
+  });
+
+  it("Given a multi-card draw, when resolving it, then exactly count cards are drawn with replacement", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const random = createScriptedRandomSource([0, 0, 0]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.work", count: 3 }],
+      random,
+      "work",
+      undefined,
+      authoredTestDecks,
+    );
+
+    expect(outcome.player.resources.money.value).toBe(owner.resources.money.value + 30);
+    expect(random.getCursor()).toBe(3);
+  });
+
+  it("Given scripted randomness, when drawing multiple cards, then selections resolve sequentially in scripted order", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const random = createScriptedRandomSource([0.75, 0, 0.75]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.work", count: 3 }],
+      random,
+      "work",
+      undefined,
+      authoredTestDecks,
+    );
+
+    expect(outcome.changes.map((change) => change.newValue - change.previousValue)).toEqual([
+      100,
+      10,
+      100,
+    ]);
+  });
+
+  it("Given a recursively self-drawing card, when resolving it, then recursion is bounded without exhausting the scripted source", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const recursiveDecks = [
+      {
+        id: "deck.networking",
+        cards: [
+          {
+            id: "card.networking.loop",
+            nameKey: "deadlineDash.card.networkingLoop.name",
+            effects: [{ type: "drawCards", deckId: "deck.networking", count: 1 }],
+          },
+        ],
+      },
+    ] as const satisfies readonly DeckConfig[];
+    const random = createScriptedRandomSource([0, 0, 0, 0, 0, 0]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.networking", count: 1 }],
+      random,
+      "networking",
+      undefined,
+      recursiveDecks,
+    );
+
+    expect(outcome.player).toEqual(owner);
+    expect(random.getCursor()).toBe(4);
+  });
+
+  it("Given an absent authored deck, when drawing from it, then no state changes and no randomness is consumed", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const random = createScriptedRandomSource([0]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.event", count: 2 }],
+      random,
+      "event",
+      undefined,
+      authoredTestDecks,
+    );
+
+    expect(outcome.player).toEqual(owner);
+    expect(outcome.changes).toEqual([]);
+    expect(random.getCursor()).toBe(0);
+  });
+
+  it("Given an empty authored deck, when drawing from it, then no state changes and no randomness is consumed", () => {
+    const owner = rollState(0).players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+    const emptyDecks = [
+      { id: "deck.event", cards: [] },
+    ] as const satisfies readonly DeckConfig[];
+    const random = createScriptedRandomSource([0]);
+
+    const outcome = resolveTileEffects(
+      owner,
+      [{ type: "drawCards", deckId: "deck.event", count: 2 }],
+      random,
+      "event",
+      undefined,
+      emptyDecks,
+    );
+
+    expect(outcome.player).toEqual(owner);
+    expect(outcome.changes).toEqual([]);
+    expect(random.getCursor()).toBe(0);
   });
 });
 

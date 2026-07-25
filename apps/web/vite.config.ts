@@ -18,6 +18,7 @@ export default defineConfig({
     outDir: "dist/client",
   },
   server: {
+    allowedHosts: ["inigamemasihdibikin.rdt.fyi"],
     proxy: {
       "/api": `http://localhost:${apiPort}`,
       "/ws": {

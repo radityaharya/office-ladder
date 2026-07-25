@@ -25,7 +25,7 @@ export function LobbyPanel({ state }: LobbyPanelProps) {
       const openSeats = Math.max(0, maximumPlayers - state.players.length);
 
       return (
-        <section className="border border-border bg-card" aria-labelledby="lobby-roster-title">
+        <section className="surface-panel overflow-hidden" aria-labelledby="lobby-roster-title">
           <div className="flex flex-col gap-2 px-4 py-5 sm:flex-row sm:items-end sm:justify-between">
             <div className="space-y-1">
               <h2
@@ -127,7 +127,7 @@ function StartSection({
 
 function LobbyLoading({ seatCount }: { readonly seatCount: number }) {
   return (
-    <section className="border border-border bg-card" aria-busy="true" aria-label="Loading lobby">
+    <section className="surface-panel overflow-hidden" aria-busy="true" aria-label="Loading lobby">
       <div className="space-y-3 px-4 py-5">
         <Skeleton className="h-5 w-40" />
         <Skeleton className="h-4 w-full max-w-lg" />

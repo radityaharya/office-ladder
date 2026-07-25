@@ -9,8 +9,8 @@ export const Route = createFileRoute("/sign-in")({
 
 function SignInPage() {
   return (
-    <main className="min-h-screen bg-background px-5 py-6 text-foreground sm:px-8 lg:px-12">
-      <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-7xl flex-col">
+    <main className="app-shell">
+      <div className="mx-auto flex min-h-[calc(100dvh-3rem)] w-full max-w-7xl flex-col">
         <header className="flex items-center justify-between border-b border-border pb-5">
           <Link
             className="font-heading text-lg font-semibold tracking-[0.08em] uppercase"
@@ -25,7 +25,7 @@ function SignInPage() {
 
         <section className="grid flex-1 items-center gap-12 py-12 lg:grid-cols-[minmax(0,0.9fr)_minmax(24rem,0.55fr)]">
           <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+            <p className="ui-kicker text-primary">
               Return to the room
             </p>
             <h1 className="mt-5 font-heading text-5xl font-semibold tracking-[-0.035em] sm:text-7xl">
@@ -37,7 +37,7 @@ function SignInPage() {
           </div>
 
           <section
-            className="border border-border bg-card p-6 sm:p-8"
+            className="surface-panel p-6 sm:p-8"
             aria-labelledby="sign-in-title"
           >
             <h2 className="font-heading text-2xl font-semibold" id="sign-in-title">

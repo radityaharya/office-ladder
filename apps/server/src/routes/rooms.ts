@@ -82,6 +82,7 @@ roomsRouter.post("/", async (c) => {
     const input = parseCreateRoomRequest(body.value);
     const result = await roomService.create({
       hostId: session.value.user.id,
+      playerName: input.playerName,
       modeId: input.mode,
       capacity: input.capacity,
     });
@@ -109,6 +110,7 @@ roomsRouter.post("/join", async (c) => {
     const result = await roomService.joinByCode({
       roomCode: input.roomCode,
       actorId: session.value.user.id,
+      playerName: input.playerName,
     });
 
     if (!result.ok) return serviceErrorResponse(result.error.code);

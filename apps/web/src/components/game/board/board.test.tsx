@@ -89,4 +89,24 @@ describe("GameBoard", () => {
     expect(markup).toContain('aria-label="Mina, seat 1"');
     expect(markup).toContain('aria-label="Omar, seat 2"');
   });
+
+  it("exposes a mobile panning instruction without changing board geometry", () => {
+    // Given
+    const label = "Deadline Dash board";
+
+    // When
+    const markup = renderToStaticMarkup(
+      <GameBoard incident={{ title: "Quarterly incident" }} label={label} spaces={createSpaces()} />,
+    );
+
+    // Then
+    const describedBy = markup.match(/aria-describedby="([^"]+)"/)?.[1];
+    expect(describedBy).toBeDefined();
+    expect(markup).toContain('data-slot="board-pan-instructions"');
+    expect(markup).toContain(`id="${describedBy}"`);
+    expect(markup).toContain("sr-only");
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain("overflow-auto");
+    expect(markup).toContain("grid-cols-12");
+  });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   deadlineDashBoard,
   deadlineDashContent,
+  deadlineDashDecks,
 } from "../src/deadline-dash";
 import {
   formatDeadlineDashValidationIssues,
@@ -45,6 +46,14 @@ type MutableContent = {
       };
     }
   >;
+  decks: Array<{
+    id: string;
+    cards: Array<{
+      id: string;
+      nameKey: string;
+      effects: unknown[];
+    }>;
+  }>;
 };
 
 function cloneContent(): MutableContent {
@@ -202,6 +211,87 @@ describe("Deadline Dash board content", () => {
 
   it("passes the full canonical content validator", () => {
     expect(validateDeadlineDashContent()).toEqual({ valid: true, issues: [] });
+  });
+
+  it("defines six unique authored decks with non-empty immediate-effect card catalogs", () => {
+    expect(deadlineDashDecks).toHaveLength(6);
+    expect(new Set(deadlineDashDecks.map((deck) => deck.id)).size).toBe(6);
+    for (const deck of deadlineDashDecks) {
+      expect(deck.cards.length).toBeGreaterThan(0);
+      for (const card of deck.cards) {
+        expect(card.effects.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("rejects missing, duplicate, and empty authored decks", () => {
+    const missing = validateMutation((content) => {
+      content.decks.pop();
+    });
+    expectIssue(missing, "deck.count", "decks.length");
+
+    const duplicate = validateMutation((content) => {
+      content.decks[1].id = content.decks[0].id;
+    });
+    expectIssue(duplicate, "deck.duplicate-id", "decks[1].id");
+
+    const empty = validateMutation((content) => {
+      content.decks[0].cards = [];
+    });
+    expectIssue(empty, "deck.empty", "decks[0].cards");
+
+    const unknown = validateMutation((content) => {
+      content.decks[0].id = "deck.unknown";
+    });
+    expectIssue(unknown, "deck.id", "decks[0].id");
+  });
+
+  it("rejects duplicate or malformed cards and empty card effect lists", () => {
+    const result = validateMutation((content) => {
+      content.decks[0].cards[1].id = content.decks[0].cards[0].id;
+      content.decks[0].cards[2].id = "work.mentorship";
+      content.decks[0].cards[5].id = "card.meeting.crunch-time";
+      content.decks[0].cards[3].nameKey = "card.workExpenseReportRejected";
+      content.decks[0].cards[4].effects = [];
+    });
+
+    expectIssue(result, "deck.card-duplicate-id", "decks[0].cards[1].id");
+    expectIssue(result, "deck.card-id", "decks[0].cards[2].id");
+    expectIssue(result, "deck.card-id", "decks[0].cards[5].id");
+    expectIssue(result, "deck.card-name-key", "decks[0].cards[3].nameKey");
+    expectIssue(result, "deck.card-effects", "decks[0].cards[4].effects");
+  });
+
+  it("rejects board and recursively nested card draws that do not resolve to authored decks", () => {
+    const result = validateMutation((content) => {
+      content.board.spaces[3].effects = [
+        { type: "drawCards", deckId: "deck.unknown", count: 1 },
+      ];
+      content.decks[0].cards[0].effects = [
+        {
+          type: "rollCheck",
+          dice: { count: 1, sides: 6 },
+          rerollEligible: false,
+          outcomes: [
+            {
+              when: { total: [1, 6] },
+              effects: [{ type: "drawCards", deckId: "deck.missing", count: 1 }],
+            },
+          ],
+        },
+      ];
+    });
+
+    expectIssue(
+      result,
+      "board.effect-deck-id",
+      "board.spaces[3].effects[0].deckId",
+    );
+    expectIssue(
+      result,
+      "board.effect-deck-id",
+      "decks[0].cards[0].effects[0].outcomes[0].effects[0].deckId",
+    );
   });
 
   it("rejects character count, order, duplicate IDs, abilities, and cooldown mutations", () => {

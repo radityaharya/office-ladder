@@ -3,9 +3,9 @@ import {
   httpError,
   type HttpResult,
 } from "./errors";
+import { trustedOrigins } from "./trusted-origins";
 
 const JSON_CONTENT_TYPE = "application/json";
-const LOCAL_ORIGIN = "http://localhost:3072";
 
 export function json<Value>(body: Value, init?: ResponseInit): Response {
   const headers = new Headers(init?.headers as ConstructorParameters<typeof Headers>[0]);
@@ -51,12 +51,4 @@ export function requireSameOriginMutation(request: Request): HttpResult<void> {
 
 function isJsonContentType(contentType: string | null): boolean {
   return contentType?.split(";", 1)[0]?.trim().toLowerCase() === JSON_CONTENT_TYPE;
-}
-
-function trustedOrigins(): ReadonlySet<string> {
-  const configuredOrigin = new URL(
-    process.env.BETTER_AUTH_URL ?? LOCAL_ORIGIN,
-  ).origin;
-
-  return new Set([LOCAL_ORIGIN, configuredOrigin]);
 }

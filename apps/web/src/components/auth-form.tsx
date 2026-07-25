@@ -20,6 +20,8 @@ export function AuthForm({ mode }: AuthFormProps) {
   const [isPending, startTransition] = useTransition();
 
   const isSignUp = mode === "sign-up";
+  const errorId = `${mode}-error`;
+  const statusId = `${mode}-status`;
 
   function onSubmit(formData: FormData) {
     setError(null);
@@ -51,7 +53,12 @@ export function AuthForm({ mode }: AuthFormProps) {
   }
 
   return (
-    <form action={onSubmit} className="mt-8">
+    <form
+      action={onSubmit}
+      aria-busy={isPending}
+      aria-describedby={statusId}
+      className="mt-8"
+    >
       <FieldGroup className="gap-6">
         <Field>
           <FieldLabel htmlFor="username">
@@ -59,9 +66,10 @@ export function AuthForm({ mode }: AuthFormProps) {
           </FieldLabel>
           <Input
             id="username"
-            className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
             name="username"
             autoComplete="username"
+            aria-describedby={error ? errorId : undefined}
+            aria-invalid={error !== null}
             minLength={3}
             maxLength={30}
             placeholder={isSignUp ? "intern-of-chaos" : "intern-of-chaos or email@company.com"}
@@ -74,10 +82,11 @@ export function AuthForm({ mode }: AuthFormProps) {
             <FieldLabel htmlFor="email">Email</FieldLabel>
             <Input
               id="email"
-              className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
               name="email"
               type="email"
               autoComplete="email"
+              aria-describedby={error ? errorId : undefined}
+              aria-invalid={error !== null}
               placeholder="you@office-ladder.club"
               required
             />
@@ -88,10 +97,11 @@ export function AuthForm({ mode }: AuthFormProps) {
           <FieldLabel htmlFor="password">Password</FieldLabel>
           <Input
             id="password"
-            className="border border-input bg-background px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-primary"
             name="password"
             type="password"
             autoComplete={isSignUp ? "new-password" : "current-password"}
+            aria-describedby={error ? errorId : undefined}
+            aria-invalid={error !== null}
             minLength={8}
             placeholder={isSignUp ? "8 characters minimum" : "Enter your password"}
             required
@@ -99,7 +109,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         </Field>
 
         {error ? (
-          <Alert variant="destructive" className="border-destructive/30 bg-destructive/10">
+          <Alert id={errorId} variant="destructive" className="border-destructive/30 bg-destructive/10">
             <AlertTitle>Access denied</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
@@ -114,6 +124,13 @@ export function AuthForm({ mode }: AuthFormProps) {
               ? "Claim your desk"
               : "Get back in the room"}
         </Button>
+        <p id={statusId} role="status" aria-live="polite" className="sr-only">
+          {isPending
+            ? isSignUp
+              ? "Creating account"
+              : "Signing in"
+            : ""}
+        </p>
       </FieldGroup>
     </form>
   );

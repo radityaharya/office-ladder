@@ -1,12 +1,14 @@
 import {
   deadlineDashBoard,
   deadlineDashCharacters,
+  deadlineDashDecks,
   deadlineDashModes,
   deadlineDashRanks,
 } from "../deadline-dash";
 import type {
   BoardConfig,
   CharacterConfig,
+  DeckConfig,
   ModeConfig,
   RankConfig,
 } from "../schema";
@@ -196,14 +198,16 @@ const expectedCharacters = [
   ["character.lucky-employee", "doublesMoneyBonus", "turns", 5, "rerollDice"],
 ] as const;
 
-const validDeckIds = new Set([
+const expectedDeckIds = [
   "deck.work",
   "deck.meeting",
   "deck.event",
   "deck.networking",
   "deck.board-meeting",
   "deck.annual-event",
-]);
+] as const;
+
+const validDeckIds = new Set<string>(expectedDeckIds);
 
 const validStatusIds = new Set([
   "status.audit",
@@ -228,6 +232,14 @@ export type DeadlineDashValidationIssueCode =
   | "board.effect-status-id"
   | "board.effect-dice"
   | "board.effect-outcome"
+  | "deck.count"
+  | "deck.duplicate-id"
+  | "deck.id"
+  | "deck.empty"
+  | "deck.card-duplicate-id"
+  | "deck.card-id"
+  | "deck.card-name-key"
+  | "deck.card-effects"
   | "mode.ids"
   | "mode.id"
   | "mode.resource"
@@ -274,6 +286,7 @@ export type DeadlineDashContentValidationInput = {
   readonly modes: Readonly<Record<string, ModeConfig>>;
   readonly ranks: readonly RankConfig[];
   readonly characters: Readonly<Record<string, CharacterConfig>>;
+  readonly decks: readonly DeckConfig[];
 };
 
 const canonicalContent: DeadlineDashContentValidationInput = {
@@ -281,6 +294,7 @@ const canonicalContent: DeadlineDashContentValidationInput = {
   modes: deadlineDashModes,
   ranks: deadlineDashRanks,
   characters: deadlineDashCharacters,
+  decks: deadlineDashDecks,
 };
 
 function formatValue(value: unknown): string {
@@ -366,6 +380,7 @@ function validateEffectList(
   effects: unknown,
   path: string,
   issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
 ): void {
   if (!Array.isArray(effects)) {
     addIssue(issues, "board.effect-shape", path, "effect array", effects);
@@ -373,7 +388,7 @@ function validateEffectList(
   }
 
   effects.forEach((effect, index) => {
-    validateEffect(effect, `${path}[${index}]`, issues);
+    validateEffect(effect, `${path}[${index}]`, issues, authoredDeckIds);
   });
 }
 
@@ -381,6 +396,7 @@ function validateEffect(
   effect: unknown,
   path: string,
   issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
 ): void {
   if (!isRecord(effect) || typeof effect.type !== "string") {
     addIssue(issues, "board.effect-shape", path, "effect object with a type", effect);
@@ -396,12 +412,12 @@ function validateEffect(
       if (typeof effect.deckId !== "string" || !isPositiveInteger(effect.count)) {
         invalidShape("drawCards with deckId and positive integer count");
       }
-      if (typeof effect.deckId === "string" && !validDeckIds.has(effect.deckId)) {
+      if (typeof effect.deckId === "string" && !authoredDeckIds.has(effect.deckId)) {
         addIssue(
           issues,
           "board.effect-deck-id",
           `${path}.deckId`,
-          [...validDeckIds],
+          [...authoredDeckIds],
           effect.deckId,
         );
       }
@@ -501,7 +517,7 @@ function validateEffect(
           );
         }
 
-        validateEffectList(outcome.effects, `${outcomePath}.effects`, issues);
+        validateEffectList(outcome.effects, `${outcomePath}.effects`, issues, authoredDeckIds);
       });
 
       for (let index = 0; index < totalRanges.length; index += 1) {
@@ -577,6 +593,7 @@ function validateEffect(
 function validateBoard(
   board: DeadlineDashContentValidationInput["board"],
   issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
 ): void {
   const spaces = board.spaces;
 
@@ -610,7 +627,12 @@ function validateBoard(
     if (space.placement === "side") {
       sideCounts.set(space.side, (sideCounts.get(space.side) ?? 0) + 1);
     }
-    validateEffectList(space.effects, `board.spaces[${position}].effects`, issues);
+    validateEffectList(
+      space.effects,
+      `board.spaces[${position}].effects`,
+      issues,
+      authoredDeckIds,
+    );
   });
 
   for (const [index, coordinate, kind] of cornerExpectations) {
@@ -688,6 +710,95 @@ function validateBoard(
       );
     }
   }
+}
+
+function validateDecks(
+  decks: DeadlineDashContentValidationInput["decks"],
+  issues: DeadlineDashValidationIssue[],
+): ReadonlySet<string> {
+  if (decks.length !== expectedDeckIds.length) {
+    addIssue(issues, "deck.count", "decks.length", expectedDeckIds.length, decks.length);
+  }
+
+  const authoredDeckIds = new Set(decks.map((deck) => deck.id));
+  const seenDeckIds = new Map<string, number>();
+  const seenCardIds = new Map<string, string>();
+
+  decks.forEach((deck, deckIndex) => {
+    const deckPath = `decks[${deckIndex}]`;
+    const firstDeckIndex = seenDeckIds.get(deck.id);
+    if (firstDeckIndex !== undefined) {
+      addIssue(
+        issues,
+        "deck.duplicate-id",
+        `${deckPath}.id`,
+        `unique (first used at decks[${firstDeckIndex}].id)`,
+        deck.id,
+      );
+    } else {
+      seenDeckIds.set(deck.id, deckIndex);
+    }
+
+    if (!validDeckIds.has(deck.id)) {
+      addIssue(issues, "deck.id", `${deckPath}.id`, expectedDeckIds, deck.id);
+    }
+    if (deck.cards.length === 0) {
+      addIssue(issues, "deck.empty", `${deckPath}.cards`, "non-empty card array", deck.cards);
+    }
+
+    deck.cards.forEach((card, cardIndex) => {
+      const cardPath = `${deckPath}.cards[${cardIndex}]`;
+      const firstCardPath = seenCardIds.get(card.id);
+      if (firstCardPath !== undefined) {
+        addIssue(
+          issues,
+          "deck.card-duplicate-id",
+          `${cardPath}.id`,
+          `unique (first used at ${firstCardPath})`,
+          card.id,
+        );
+      } else {
+        seenCardIds.set(card.id, `${cardPath}.id`);
+      }
+
+      if (!/^card\.[A-Za-z][A-Za-z0-9-]*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(card.id)) {
+        addIssue(issues, "deck.card-id", `${cardPath}.id`, "card.<deck>.<slug>", card.id);
+      } else {
+        const cardDeckId = card.id.slice("card.".length, card.id.lastIndexOf("."));
+        const expectedCardDeckId = deck.id.slice("deck.".length);
+        if (cardDeckId !== expectedCardDeckId) {
+          addIssue(
+            issues,
+            "deck.card-id",
+            `${cardPath}.id`,
+            `card.${expectedCardDeckId}.<slug>`,
+            card.id,
+          );
+        }
+      }
+      if (!/^deadlineDash\.card\.[A-Za-z][A-Za-z0-9]*\.name$/.test(card.nameKey)) {
+        addIssue(
+          issues,
+          "deck.card-name-key",
+          `${cardPath}.nameKey`,
+          "deadlineDash.card.<name>.name",
+          card.nameKey,
+        );
+      }
+      if (card.effects.length === 0) {
+        addIssue(
+          issues,
+          "deck.card-effects",
+          `${cardPath}.effects`,
+          "non-empty effect array",
+          card.effects,
+        );
+      }
+      validateEffectList(card.effects, `${cardPath}.effects`, issues, authoredDeckIds);
+    });
+  });
+
+  return authoredDeckIds;
 }
 
 function validateNumberRecord(
@@ -1019,7 +1130,8 @@ export function validateDeadlineDashContent(
 ): DeadlineDashValidationResult {
   const issues: DeadlineDashValidationIssue[] = [];
 
-  validateBoard(content.board, issues);
+  const authoredDeckIds = validateDecks(content.decks, issues);
+  validateBoard(content.board, issues, authoredDeckIds);
   validateModes(content.modes, issues);
   validateRanks(content.ranks, issues);
   validateCharacters(content.characters, issues);
