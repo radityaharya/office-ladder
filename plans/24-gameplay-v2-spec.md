@@ -904,6 +904,79 @@ narrow where the board and rail cannot share the width. Inside the rail, use con
 queries — the rail is a narrow column in a wide viewport and viewport queries are the wrong
 signal, a mistake already made and fixed once in this codebase.
 
+### 10.5 Resolutions — gaps found while authoring the pack
+
+Authoring all 243 cards surfaced six holes in §10. These are the rulings.
+
+**Timing lives on the card, not the effect.** `DeckCard.timing?: EffectTiming`. §10.2
+declared the type without saying where it attaches and the authoring split on it. Per-effect
+makes `[{stored}, {immediate}]` representable, and that card has no defined answer to which
+zone it ends up in.
+
+**`DeckCard.copies?: number`** (default 1), expanded at deck construction. The workbook
+encodes rarity **as multiplicity** — 8 of 50 work rows and 4 of 50 meeting rows are flagged
+`Duplicate`, and nothing tagged Uncommon or rarer is ever duplicated. One definition per
+design silently inverts the rarity curve, making the Legendary card as likely as the Common
+one. Do not fake this with `-2`/`-3` id suffixes; that breaks the pack-wide displayName
+uniqueness rule, which is a real invariant.
+
+**A choice primitive.** The GDD names Choice as a category across all six decks and §10 has
+no way to express it — targeting says *who*, timing says *when*, `condition` guards, but
+nothing offers the controller a branch.
+
+```ts
+{ type: "chooseOne", options: readonly { readonly id: string; readonly label: string;
+  readonly effects: readonly EffectDescriptor[] }[] }
+```
+
+Resolves by opening a `PromptState` addressed to the controller, exactly as
+`chosen-opponent` does.
+
+**`grantImmunity` gets a declared shape** — four authored cards invented one and smuggled
+the filter into the open `condition` object:
+
+```ts
+{ type: "grantImmunity"; count: number;
+  scope: { resource?: ResourceKind; direction?: "loss" | "gain"; effectTypes?: readonly string[] } }
+```
+
+**Status removal, plus provenance.** All thirteen §10.3 types add state; none removes it.
+Add `{ type: "removeStatuses"; filter: { polarity?: "positive" | "negative"; sourceDeckId?: DeckId } }`,
+and `PlayerStatusState` gains `polarity` and `sourceDeckId` — without both, "remove all
+negative Work card effects" is an unevaluable predicate, not a missing verb.
+
+**`transferResource` declares direction.** §10.3 defined it target→actor only. Add
+`direction: "to-actor" | "from-actor"` and define the shortfall rule: a transfer that cannot
+be paid in full moves what is available rather than failing, matching `payResource`'s
+existing `pay-up-to-available`.
+
+### 10.6 Design mandates for the pack
+
+The audit found the authored pack mechanically flat. These are corrections to the *content*,
+not the vocabulary, and they bind any agent re-cutting it.
+
+1. **Deduplicate.** 243 cards resolve to 91 distinct effect signatures. Twenty-one cards are
+   identically "reputation +2". A deck whose cards are interchangeable is a deck that could
+   be a die roll. Target: no effect signature appearing more than three times across the
+   pack, and never more than twice in one deck.
+2. **Distribute aggression.** Nineteen of 243 cards carry `modifyHeat`, all inside
+   `deck.event` and `deck.networking`. `deck.work`, `deck.meeting` and both corner decks
+   have none — so `mode.standard`, the default, draws almost entirely from decks with no
+   interaction in them. Every deck needs a real share.
+3. **Fix the reputation economy.** Reaching Director needs 17 cumulative reputation; the
+   pack grants it 82 times. Either reputation gains shrink substantially or the ladder
+   costs rise — but a win axis that nine cards can satisfy is not a ladder.
+4. **Make the corner decks asymmetric.** A symmetric effect applied to everyone changes
+   nobody's relative standing, which makes 49 of 50 corner cards ceremonial. All-player
+   does not mean identical-to-every-player: scale by rank, by position, by debt, by heat, or
+   target a derived subset (`richest`, `lowest-rank`). §10.1 exists for this.
+5. **Reconcile energy.** `create-game.ts` sets energy maximum equal to starting energy (5),
+   so `+3 energy` and restore-to-maximum are no-ops for a rested player. The GDD specifies
+   8 base and 10 at Supervisor. Either raise the ceiling or cut the cards; shipping both is
+   shipping dead content.
+6. **Cut true duplicates.** `card.work.burnout` and `card.event.burnout` are the same card.
+   Renaming display copy hides the symptom; the answer is to cut one.
+
 ### Standing instructions for every agent
 
 - Work on `main`. Do not branch.
