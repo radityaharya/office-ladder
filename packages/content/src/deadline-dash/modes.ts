@@ -50,7 +50,8 @@ export const deadlineDashModes = {
     startingResources: {
       money: 1000,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -161,7 +162,8 @@ export const deadlineDashModes = {
     startingResources: {
       money: 1200,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -274,7 +276,8 @@ export const deadlineDashModes = {
     startingResources: {
       money: 1500,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -285,13 +288,16 @@ export const deadlineDashModes = {
       reputation: 3,
       money: 4,
     },
+    // Capped at each deck's real physical size (designs × `copies`). A quantity
+    // above it does not fail loudly — `buildDecks` cycles the pool — it just
+    // silently reprints the same cards, which is the rarity curve lying.
     deckQuantities: {
       "deck.work": 50,
       "deck.meeting": 30,
       "deck.event": 30,
       "deck.networking": 47,
-      "deck.board-meeting": 25,
-      "deck.annual-event": 25,
+      "deck.board-meeting": 23,
+      "deck.annual-event": 24,
     },
     clockDeck: {
       deckIds: ["deck.meeting", "deck.event"],
@@ -395,7 +401,8 @@ export const deadlineDashModes = {
     startingResources: {
       money: 2000,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1, momentum: 1 },
@@ -406,13 +413,15 @@ export const deadlineDashModes = {
       reputation: 4,
       money: 5,
     },
+    // Capped at each deck's real physical size — see `mode.marathon`. Campaign
+    // asked for more cards than the pack has in four of six decks.
     deckQuantities: {
-      "deck.work": 63,
+      "deck.work": 55,
       "deck.meeting": 38,
       "deck.event": 38,
-      "deck.networking": 59,
-      "deck.board-meeting": 31,
-      "deck.annual-event": 31,
+      "deck.networking": 49,
+      "deck.board-meeting": 23,
+      "deck.annual-event": 24,
     },
     clockDeck: {
       deckIds: ["deck.meeting", "deck.event"],

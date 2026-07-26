@@ -64,7 +64,8 @@ const expectedModes = {
     startingResources: {
       money: 1000,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -87,7 +88,8 @@ const expectedModes = {
     startingResources: {
       money: 1200,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -119,7 +121,8 @@ const expectedModes = {
     startingResources: {
       money: 1500,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1 },
@@ -130,8 +133,8 @@ const expectedModes = {
       "deck.meeting": 30,
       "deck.event": 30,
       "deck.networking": 47,
-      "deck.board-meeting": 25,
-      "deck.annual-event": 25,
+      "deck.board-meeting": 23,
+      "deck.annual-event": 24,
     },
     clockQuantities: { meeting: 30, event: 30, total: 60 },
     endgame: {
@@ -151,19 +154,20 @@ const expectedModes = {
     startingResources: {
       money: 2000,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     },
     startingTokens: { move: 1, momentum: 1 },
     handLimit: 4,
     tokenCaps: { move: 6, momentum: 6, reputation: 4, money: 5 },
     deckQuantities: {
-      "deck.work": 63,
+      "deck.work": 55,
       "deck.meeting": 38,
       "deck.event": 38,
-      "deck.networking": 59,
-      "deck.board-meeting": 31,
-      "deck.annual-event": 31,
+      "deck.networking": 49,
+      "deck.board-meeting": 23,
+      "deck.annual-event": 24,
     },
     clockQuantities: { meeting: 38, event: 38, total: 76 },
     endgame: {
@@ -219,7 +223,7 @@ const expectedRanks = [
       standard: 2000,
       marathon: 2000,
       campaign: 2500,
-      reputation: 7,
+      reputation: 8,
     },
     benefits: [{ type: "increaseMaximumEnergy", amount: 2 }],
   },
@@ -231,7 +235,7 @@ const expectedRanks = [
       standard: 3000,
       marathon: 3000,
       campaign: 3750,
-      reputation: 9,
+      reputation: 12,
     },
     benefits: [{ type: "rerollNormalMovement", usesPerLap: 1 }],
   },
@@ -243,7 +247,7 @@ const expectedRanks = [
       standard: 4500,
       marathon: 4500,
       campaign: 5625,
-      reputation: 11,
+      reputation: 18,
     },
     benefits: [
       {
@@ -260,7 +264,7 @@ const expectedRanks = [
       standard: 6000,
       marathon: 6000,
       campaign: 7500,
-      reputation: 13,
+      reputation: 27,
     },
     benefits: [{ type: "multiplyAnnualEventReward", multiplier: 2 }],
   },
@@ -272,7 +276,7 @@ const expectedRanks = [
       standard: 8000,
       marathon: 8000,
       campaign: 10000,
-      reputation: 15,
+      reputation: 40,
     },
     benefits: [
       { type: "ignoreNegativeEffect", usesPerLap: 1, sources: ["tile", "card"] },
@@ -286,7 +290,7 @@ const expectedRanks = [
       standard: 10000,
       marathon: 10000,
       campaign: 12500,
-      reputation: 17,
+      reputation: 58,
     },
     benefits: [{ type: "directorOutcome" }],
   },
@@ -324,6 +328,44 @@ const expectedDeckIds = [
 
 const validDeckIds = new Set<string>(expectedDeckIds);
 
+/** Mirrors `ResourceId`. */
+const RESOURCE_IDS: readonly string[] = ["money", "reputation", "energy"];
+
+/** Mirrors `EffectTarget` in `src/schema/effects.ts`. */
+const VALID_EFFECT_TARGETS = new Set<string>([
+  "self",
+  "active-player",
+  "chosen-opponent",
+  "all-opponents",
+  "all-players",
+  "left-neighbour",
+  "right-neighbour",
+  "highest-rank",
+  "lowest-rank",
+  "richest",
+  "poorest",
+]);
+
+/** Mirrors `EffectScaleMetric`. */
+const VALID_SCALE_METRICS = new Set<string>([
+  "rank-tier",
+  "board-position",
+  "laps",
+  "heat",
+  "debt",
+  "work-counter",
+  "opponent-count",
+]);
+
+const VALID_CONDITION_SUBJECTS = new Set<string>(["actor", "target"]);
+const VALID_CONDITION_RESOURCES = new Set<string>([...RESOURCE_IDS, "work-counter"]);
+
+/**
+ * Mirrors `StatusId` in `src/schema/ids.ts`. The first six are the tile-authored
+ * statuses the engine already consumes; the rest are the card vocabulary's, per
+ * the re-cut plan's §11.2. An id here with no engine consumer validates,
+ * persists, and does nothing — see the docstring on `StatusId`.
+ */
 const validStatusIds = new Set([
   "status.audit",
   "status.burnout-tile",
@@ -331,6 +373,13 @@ const validStatusIds = new Set([
   "status.skip-next-tile-effect",
   "status.next-roll-extra-movement",
   "status.next-salary-multiplier",
+  "status.next-work-card-money-multiplier",
+  "status.next-work-card-reputation-multiplier",
+  "status.next-promotion-reputation-discount",
+  "status.cancel-next-money-loss",
+  "status.skip-next-networking-reward",
+  "status.next-work-extra-energy",
+  "status.ignore-next-meeting-energy",
 ]);
 
 const expectedGlobalEventIds = [
@@ -381,6 +430,8 @@ export type DeadlineDashValidationIssueCode =
   | "board.effect-status-id"
   | "board.effect-dice"
   | "board.effect-outcome"
+  | "board.effect-target"
+  | "board.effect-condition"
   | "board.decision-shape"
   | "deck.count"
   | "deck.duplicate-id"
@@ -400,6 +451,7 @@ export type DeadlineDashValidationIssueCode =
   | "mode.timer"
   | "mode.token-cap"
   | "mode.deck-quantity"
+  | "mode.deck-quantity-exceeds-deck"
   | "mode.clock-deck-ids"
   | "mode.clock-quantity"
   | "mode.clock-total"
@@ -894,6 +946,137 @@ function validateTileDecision(
   validateEffectList(decline.effects, `${path}.decline.effects`, issues, authoredDeckIds);
 }
 
+/**
+ * `EffectCondition` is a **closed** grammar, and the engine's
+ * `parseEffectCondition` fails closed on anything it does not recognise — an
+ * unrecognised guard silently never fires. Validating it here is what turns
+ * that silence into a build error.
+ */
+function validateEffectCondition(
+  condition: unknown,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  if (!isRecord(condition) || typeof condition.kind !== "string") {
+    addIssue(issues, "board.effect-condition", path, "condition object with a kind", condition);
+    return;
+  }
+
+  const invalid = (expected: string): void => {
+    addIssue(issues, "board.effect-condition", path, expected, condition);
+  };
+  const subjectOk = (): boolean => VALID_CONDITION_SUBJECTS.has(String(condition.who));
+
+  switch (condition.kind) {
+    case "always":
+    case "never":
+      return;
+    case "resourceAtLeast":
+    case "resourceAtMost":
+      if (
+        !subjectOk() ||
+        !VALID_CONDITION_RESOURCES.has(String(condition.resource)) ||
+        !isFiniteNumber(condition.amount)
+      ) {
+        invalid("resource comparison with who, resource and finite amount");
+      }
+      return;
+    case "rankIndexAtLeast":
+    case "rankIndexAtMost":
+      if (!subjectOk() || !isFiniteNumber(condition.index) || condition.index < 0) {
+        invalid("rank comparison with who and a non-negative index");
+      }
+      return;
+    case "heatAtLeast":
+      if (!subjectOk() || !isFiniteNumber(condition.value)) {
+        invalid("heat comparison with who and a finite value");
+      }
+      return;
+    case "hasStatus":
+      if (!subjectOk() || typeof condition.statusId !== "string") {
+        invalid("hasStatus with who and a status id");
+        return;
+      }
+      if (!validStatusIds.has(condition.statusId)) {
+        addIssue(
+          issues,
+          "board.effect-status-id",
+          `${path}.statusId`,
+          [...validStatusIds],
+          condition.statusId,
+        );
+      }
+      return;
+    case "ownsTile":
+      if (!subjectOk() || (condition.tileId !== null && typeof condition.tileId !== "string")) {
+        invalid("ownsTile with who and a tile id or null");
+      }
+      return;
+    case "roundAtLeast":
+      if (!isPositiveInteger(condition.round)) invalid("roundAtLeast with a positive round");
+      return;
+    case "quarterIndex":
+      if (!isFiniteNumber(condition.index) || condition.index < 0) {
+        invalid("quarterIndex with a non-negative index");
+      }
+      return;
+    case "not":
+      validateEffectCondition(condition.of, `${path}.of`, issues);
+      return;
+    case "all":
+    case "any":
+      if (!Array.isArray(condition.of) || condition.of.length === 0) {
+        invalid("combinator with a non-empty clause list");
+        return;
+      }
+      condition.of.forEach((clause, index) => {
+        validateEffectCondition(clause, `${path}.of[${index}]`, issues);
+      });
+      return;
+    default:
+      invalid("known condition kind");
+  }
+}
+
+/**
+ * The four fields `EffectEnvelope` adds to *every* effect. All optional; every
+ * default reproduces v1 behaviour, which is why the pre-v2 pack validated
+ * without this.
+ */
+function validateEffectEnvelope(
+  effect: Record<string, unknown>,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  if (effect.target !== undefined && !VALID_EFFECT_TARGETS.has(String(effect.target))) {
+    addIssue(issues, "board.effect-target", `${path}.target`, [...VALID_EFFECT_TARGETS], effect.target);
+  }
+  if (effect.preventable !== undefined && typeof effect.preventable !== "boolean") {
+    addIssue(issues, "board.effect-shape", `${path}.preventable`, "boolean", effect.preventable);
+  }
+  if (effect.condition !== undefined) {
+    validateEffectCondition(effect.condition, `${path}.condition`, issues);
+  }
+  if (effect.scale !== undefined) {
+    const scale = effect.scale;
+    if (
+      !isRecord(scale) ||
+      !VALID_SCALE_METRICS.has(String(scale.by)) ||
+      !isFiniteNumber(scale.perUnit) ||
+      (scale.cap !== undefined && !isFiniteNumber(scale.cap)) ||
+      (scale.of !== undefined && !VALID_CONDITION_SUBJECTS.has(String(scale.of)))
+    ) {
+      addIssue(
+        issues,
+        "board.effect-shape",
+        `${path}.scale`,
+        "scale with a known metric and finite perUnit",
+        scale,
+      );
+    }
+  }
+}
+
 function validateEffect(
   effect: unknown,
   path: string,
@@ -908,6 +1091,8 @@ function validateEffect(
   const invalidShape = (expected: string): void => {
     addIssue(issues, "board.effect-shape", path, expected, effect);
   };
+
+  validateEffectEnvelope(effect, path, issues);
 
   switch (effect.type) {
     case "drawCards":
@@ -946,8 +1131,11 @@ function validateEffect(
       }
       return;
     case "incrementWorkCounter":
+      // `amount` was widened from the literal 1 in the v2 schema: the re-cut's
+      // `WC(n)` notation needs multi-step cards and `rewardEvery` already
+      // handles a stride.
       if (
-        effect.amount !== 1 ||
+        !isPositiveInteger(effect.amount) ||
         effect.rewardEvery !== 5 ||
         effect.cumulative !== true ||
         !isRecord(effect.reward) ||
@@ -987,8 +1175,12 @@ function validateEffect(
       }
       return;
     case "skipTurns":
-      if (!isPositiveInteger(effect.count) || effect.source !== "tile") {
-        invalidShape("positive tile skipTurns effect");
+      // `source` was widened from the literal "tile": cards skip turns too.
+      if (
+        !isPositiveInteger(effect.count) ||
+        (effect.source !== "tile" && effect.source !== "card")
+      ) {
+        invalidShape("positive skipTurns effect sourced from a tile or a card");
       }
       return;
     case "gainSalary":
@@ -1014,6 +1206,167 @@ function validateEffect(
       if (isRecord(effect.release)) {
         validateDice(effect.release.roll, `${path}.release.roll`, issues);
       }
+      return;
+
+    // ---- v2 vocabulary (spec §10.3, re-cut plan §3) ----------------------
+    case "transferResource":
+      if (
+        !RESOURCE_IDS.includes(String(effect.resource)) ||
+        !isFiniteNumber(effect.amount) ||
+        effect.amount < 0 ||
+        (effect.direction !== undefined &&
+          effect.direction !== "target-to-actor" &&
+          effect.direction !== "actor-to-target") ||
+        (effect.perTarget !== undefined && typeof effect.perTarget !== "boolean") ||
+        (effect.insufficientFunds !== undefined &&
+          effect.insufficientFunds !== "transfer-up-to-available" &&
+          effect.insufficientFunds !== "all-or-nothing")
+      ) {
+        invalidShape("transferResource with a valid resource, non-negative amount and direction");
+      }
+      return;
+    case "modifyHeat":
+      if (!isFiniteNumber(effect.amount) || effect.amount === 0) {
+        invalidShape("modifyHeat with a non-zero finite amount");
+      }
+      return;
+    case "grantImmunity": {
+      const hasCount = effect.count !== undefined;
+      const hasDuration = effect.duration !== undefined;
+      if (
+        !isRecord(effect.scope) ||
+        hasCount === hasDuration ||
+        (hasCount && !isPositiveInteger(effect.count)) ||
+        (hasDuration &&
+          (!isRecord(effect.duration) ||
+            effect.duration.kind !== "turns" ||
+            !isPositiveInteger(effect.duration.count)))
+      ) {
+        invalidShape("grantImmunity with a scope and exactly one of count or turns duration");
+        return;
+      }
+      const scope = effect.scope;
+      if (
+        Object.keys(scope).length === 0 ||
+        (scope.resource !== undefined && !RESOURCE_IDS.includes(String(scope.resource))) ||
+        (scope.direction !== undefined &&
+          scope.direction !== "loss" &&
+          scope.direction !== "gain") ||
+        (scope.effectTypes !== undefined &&
+          (!Array.isArray(scope.effectTypes) ||
+            scope.effectTypes.some((entry) => typeof entry !== "string"))) ||
+        (scope.sourceDeckId !== undefined && typeof scope.sourceDeckId !== "string")
+      ) {
+        invalidShape("grantImmunity scope with at least one recognised filter");
+        return;
+      }
+      if (typeof scope.sourceDeckId === "string" && !authoredDeckIds.has(scope.sourceDeckId)) {
+        addIssue(
+          issues,
+          "board.effect-deck-id",
+          `${path}.scope.sourceDeckId`,
+          [...authoredDeckIds],
+          scope.sourceDeckId,
+        );
+      }
+      return;
+    }
+    case "removeStatuses": {
+      if (!isRecord(effect.filter) || Object.keys(effect.filter).length === 0) {
+        invalidShape("removeStatuses with a non-empty filter");
+        return;
+      }
+      const filter = effect.filter;
+      if (
+        (filter.polarity !== undefined &&
+          filter.polarity !== "positive" &&
+          filter.polarity !== "negative") ||
+        (filter.sourceDeckId !== undefined && typeof filter.sourceDeckId !== "string") ||
+        (filter.statusId !== undefined && typeof filter.statusId !== "string") ||
+        (effect.limit !== undefined && !isPositiveInteger(effect.limit))
+      ) {
+        invalidShape("removeStatuses filter with recognised polarity, deck and status");
+        return;
+      }
+      if (typeof filter.statusId === "string" && !validStatusIds.has(filter.statusId)) {
+        addIssue(
+          issues,
+          "board.effect-status-id",
+          `${path}.filter.statusId`,
+          [...validStatusIds],
+          filter.statusId,
+        );
+      }
+      if (typeof filter.sourceDeckId === "string" && !authoredDeckIds.has(filter.sourceDeckId)) {
+        addIssue(
+          issues,
+          "board.effect-deck-id",
+          `${path}.filter.sourceDeckId`,
+          [...authoredDeckIds],
+          filter.sourceDeckId,
+        );
+      }
+      return;
+    }
+    case "chooseOne": {
+      if (!Array.isArray(effect.options) || effect.options.length < 2) {
+        invalidShape("chooseOne with at least two options");
+        return;
+      }
+      const optionIds = new Set<string>();
+      effect.options.forEach((option, index) => {
+        const optionPath = `${path}.options[${index}]`;
+        if (
+          !isRecord(option) ||
+          typeof option.id !== "string" ||
+          option.id.length === 0 ||
+          typeof option.label !== "string" ||
+          option.label.length === 0
+        ) {
+          addIssue(issues, "board.effect-shape", optionPath, "choice option with id and label", option);
+          return;
+        }
+        if (optionIds.has(option.id)) {
+          addIssue(issues, "board.effect-shape", `${optionPath}.id`, "unique option id", option.id);
+        }
+        optionIds.add(option.id);
+        validateEffectList(option.effects, `${optionPath}.effects`, issues, authoredDeckIds);
+      });
+      return;
+    }
+    case "noEffect":
+      return;
+    case "opposedRoll":
+      if (!Array.isArray(effect.onWin) || !Array.isArray(effect.onLose)) {
+        invalidShape("opposedRoll with onWin and onLose effect lists");
+        return;
+      }
+      if (effect.dice !== undefined) validateDice(effect.dice, `${path}.dice`, issues);
+      validateEffectList(effect.onWin, `${path}.onWin`, issues, authoredDeckIds);
+      validateEffectList(effect.onLose, `${path}.onLose`, issues, authoredDeckIds);
+      if (effect.onTie !== undefined) {
+        validateEffectList(effect.onTie, `${path}.onTie`, issues, authoredDeckIds);
+      }
+      return;
+
+    /**
+     * Declared in `schema/effects.ts` but not yet reached by any authored card
+     * or tile. Accepted structurally so authoring one is not blocked by a
+     * validator false alarm; each needs a real shape check the day it is used.
+     */
+    case "placeObject":
+    case "claimTile":
+    case "releaseTile":
+    case "startProject":
+    case "contributeToProject":
+    case "sabotageProject":
+    case "openBallot":
+    case "forceDiscard":
+    case "swapBoardPositions":
+    case "teleport":
+    case "modifyUpkeep":
+    case "openReactionWindow":
+    case "grantIncomeStream":
       return;
     default:
       invalidShape("known board effect type");
@@ -1790,7 +2143,24 @@ function validateModes(
   modes: DeadlineDashContentValidationInput["modes"],
   issues: DeadlineDashValidationIssue[],
   rankLadderLength: number,
+  decks: DeadlineDashContentValidationInput["decks"],
 ): void {
+  /**
+   * Physical size of each authored deck — designs expanded by `copies`. This is
+   * the check nobody had: `deckQuantities` was only ever compared against the
+   * hardcoded table above and never against the cards that exist, which is how
+   * four impossible entries shipped. `buildDecks` cycles the pool rather than
+   * throwing, so an over-large quantity reprints cards silently instead of
+   * failing — the rarity curve lies and nothing says so.
+   */
+  const physicalSizes = new Map<string, number>();
+  for (const deck of decks) {
+    physicalSizes.set(
+      deck.id,
+      deck.cards.reduce((total, card) => total + (card.copies ?? 1), 0),
+    );
+  }
+
   const expectedIds = Object.keys(expectedModes);
   const actualIds = Object.keys(modes).sort();
   if (JSON.stringify(actualIds) !== JSON.stringify([...expectedIds].sort())) {
@@ -1861,6 +2231,19 @@ function validateModes(
       "mode.deck-quantity",
       issues,
     );
+
+    for (const [deckId, quantity] of Object.entries(mode.deckQuantities)) {
+      const available = physicalSizes.get(deckId);
+      if (available !== undefined && quantity > available) {
+        addIssue(
+          issues,
+          "mode.deck-quantity-exceeds-deck",
+          `modes.${modeId}.deckQuantities.${deckId}`,
+          `at most ${available} (the deck's physical size)`,
+          quantity,
+        );
+      }
+    }
 
     if (JSON.stringify(mode.clockDeck.deckIds) !== JSON.stringify(["deck.meeting", "deck.event"])) {
       addIssue(
@@ -2107,7 +2490,7 @@ export function validateDeadlineDashContent(
 
   const authoredDeckIds = validateDecks(content.decks, issues);
   validateBoard(content.board, issues, authoredDeckIds);
-  validateModes(content.modes, issues, content.ranks.length);
+  validateModes(content.modes, issues, content.ranks.length, content.decks);
   validateRanks(content.ranks, issues);
   validateCharacters(content.characters, issues);
   validateGlobalEvents(

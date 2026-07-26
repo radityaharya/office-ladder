@@ -299,7 +299,8 @@ describe("shipped mode presets", () => {
     expect(mode.startingResources).toEqual({
       money: 1500,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     });
     expect(mode.endgame).toEqual({
@@ -329,7 +330,8 @@ describe("shipped mode presets", () => {
     expect(mode.startingResources).toEqual({
       money: 1000,
       reputation: 0,
-      energy: 5,
+      energy: 8,
+      energyMaximum: 8,
       workCounter: 0,
     });
     expect(mode.endgame).toEqual({ type: "immediate" });

@@ -16,6 +16,34 @@ import type { RankConfig } from "../schema";
 const DERIVED_MODE_COST_NOTE =
   "`mode.standard` and `mode.campaign` money costs are underived and unplaytested: standard copies `mode.marathon` unchanged, campaign is `mode.marathon` x 1.25. Neither came from the design workbook, which only ever costed quick and marathon.";
 
+/**
+ * The `reputationRequired` ladder is **3, 5, 8, 12, 18, 27, 40, 58** — geometric,
+ * roughly x1.5 per rung, deliberately shaped like the money ladder rather than
+ * against it.
+ *
+ * It used to be dead linear (3/5/7/9/11/13/15/17, +2 per rung) while money is
+ * geometric (500 -> 10,000 in `mode.standard`, x1.4-x1.5 per rung). Measured
+ * against the shipped board and card pack that meant reputation was co-binding
+ * for three rungs and then completely slack: Director was reputation-reachable
+ * around turn 47 and money-reachable around turn 201, so above `rank.supervisor`
+ * reputation was not a win axis, it was a formality. A linear requirement
+ * against a geometric cost cannot be anything else.
+ *
+ * With these numbers the ratio of reputation-limited turns to money-limited
+ * turns across the ladder is 4.0, 2.0, 1.5, 1.3, 1.1, 1.1, 1.1, 1.15 — a real
+ * gate at every rung and the *binding* gate at the top, with money staying the
+ * mid-game constraint. The first rung stays at 3 on purpose: the on-ramp should
+ * not be a wall.
+ *
+ * Two things a reader should know:
+ * - `reputationRequired` is a **threshold, never spent**. `resolvePromotion`
+ *   compares `reputation.value >= reputationRequired` and deducts money only.
+ *   Making reputation spent would fix the ratchet at the root and is the cleaner
+ *   design, but it changes promotion semantics everywhere; it was considered and
+ *   declined, not missed.
+ * - `packages/content/src/validation/deadline-dash.ts` mirrors this table. Both
+ *   files change together or the content suite goes red.
+ */
 export const deadlineDashRanks = [
   {
     id: "rank.intern",
@@ -82,7 +110,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 2000,
         "mode.campaign": 2500,
       },
-      reputationRequired: 7,
+      reputationRequired: 8,
     },
     benefits: [{ type: "increaseMaximumEnergy", amount: 2 }],
     sourceNotes: [DERIVED_MODE_COST_NOTE],
@@ -99,7 +127,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 3000,
         "mode.campaign": 3750,
       },
-      reputationRequired: 9,
+      reputationRequired: 12,
     },
     benefits: [{ type: "rerollNormalMovement", usesPerLap: 1 }],
     sourceNotes: [DERIVED_MODE_COST_NOTE],
@@ -116,7 +144,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 4500,
         "mode.campaign": 5625,
       },
-      reputationRequired: 11,
+      reputationRequired: 18,
     },
     benefits: [
       {
@@ -140,7 +168,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 6000,
         "mode.campaign": 7500,
       },
-      reputationRequired: 13,
+      reputationRequired: 27,
     },
     benefits: [{ type: "multiplyAnnualEventReward", multiplier: 2 }],
     sourceNotes: [
@@ -160,7 +188,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 8000,
         "mode.campaign": 10000,
       },
-      reputationRequired: 15,
+      reputationRequired: 40,
     },
     benefits: [
       {
@@ -183,7 +211,7 @@ export const deadlineDashRanks = [
         "mode.marathon": 10000,
         "mode.campaign": 12500,
       },
-      reputationRequired: 17,
+      reputationRequired: 58,
     },
     benefits: [{ type: "directorOutcome" }],
     sourceNotes: [DERIVED_MODE_COST_NOTE],

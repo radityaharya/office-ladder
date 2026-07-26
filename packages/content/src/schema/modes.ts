@@ -129,7 +129,17 @@ export type ModeConfig = {
   readonly startingResources: {
     readonly money: number;
     readonly reputation: 0;
-    readonly energy: 5;
+    /**
+     * Starting energy and the base ceiling are separate numbers on purpose.
+     * `create-game.ts` used to pass `energy` as both the value *and* the
+     * maximum, which pinned the ceiling to the starting value — so every
+     * `+energy` grant and every `restoreResourceToMaximum` in the pack was a
+     * guaranteed no-op for a rested player, and `rank.supervisor`'s
+     * `increaseMaximumEnergy` benefit had nothing to widen. GDD numbers: 8
+     * base, 10 once Supervisor's benefit applies.
+     */
+    readonly energy: 8;
+    readonly energyMaximum: 8;
     readonly workCounter: 0;
   };
   readonly startingTokens: Partial<Readonly<Record<TokenId, number>>>;
