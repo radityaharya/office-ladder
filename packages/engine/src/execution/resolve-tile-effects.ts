@@ -294,6 +294,17 @@ function applyOne(
     }
     case "drawCards": {
       const deck = decks.find((candidate) => candidate.id === effect.deckId);
+      // The **fallback path**, and deliberately a silent one: a deck the content
+      // pack has not authored yet draws nothing rather than inventing a card.
+      //
+      // This used to be `DECK_FLAVOR_EFFECTS`, a small synthesized table of
+      // plausible resource deltas that stood in for real card content. Real
+      // cards now exist and are read from `decks` above, so the stand-in is
+      // gone — but the *fallback shape* is still load-bearing while the
+      // remaining decks are authored (§10.4: `decks.ts` holds 29 of ~247
+      // designed cards). Do not reintroduce synthesized effects here: a draw
+      // that quietly pays out content nobody wrote is indistinguishable, in the
+      // log and in the UI, from one that did.
       if (deck === undefined || deck.cards.length === 0) {
         return inert(player);
       }
@@ -446,6 +457,73 @@ export function applyEffectDescriptors(
 } {
   const result = applyMany(player, effects, random, 0, decks, null, "tile");
   return { player: result.player, changes: result.changes, trace: result.trace };
+}
+
+/**
+ * Everything the per-player effect walk produced, for callers that need more
+ * than `applyEffectDescriptors`' three fields.
+ *
+ * The gameplay-v2 resolver (`effects-v2/`) applies v1 effects to *targets other
+ * than the actor*, and has to know whether one of them granted an extra roll or
+ * opened an audit — outcomes that only make sense once you know which player
+ * they landed on. Rather than duplicate the walk, it calls `applySelfEffects`
+ * per target and folds these flags into its own report.
+ */
+export type SelfEffectResolution = {
+  readonly player: PlayerState;
+  readonly changes: readonly TileEffectChange[];
+  readonly trace: readonly TileEffectTraceEntry[];
+  readonly grantedExtraRoll: boolean;
+  readonly openAuditPrompt: boolean;
+  readonly ignoredNegativeEffects: number;
+};
+
+/**
+ * The v1 effect walk, applied to one player, with the full outcome reported.
+ *
+ * Additive: `applyEffectDescriptors` and `resolveTileEffects` are untouched and
+ * keep their exact signatures and semantics, because several other mechanics
+ * resolve through them. This is the same `applyMany` those two already use — no
+ * second interpreter, so a v1 effect behaves identically whether it arrives via
+ * a tile, a decision branch, or a v2 target.
+ *
+ * `shield` is the acting *target's* `ignoreNegativeEffect` allowance, when they
+ * have one; pass `null` (the default) for a walk no passive applies to.
+ */
+export function applySelfEffects(
+  player: PlayerState,
+  effects: readonly EffectDescriptor[],
+  random: RandomSource,
+  decks: readonly DeckConfig[] = [],
+  origin: EffectOrigin = "tile",
+  shield: {
+    readonly remaining: number;
+    readonly sources: readonly EffectOrigin[];
+  } | null = null,
+): SelfEffectResolution {
+  const result = applyMany(player, effects, random, 0, decks, shield, origin);
+
+  return {
+    player: result.player,
+    changes: result.changes,
+    trace: result.trace,
+    grantedExtraRoll: result.extraRoll,
+    openAuditPrompt: result.openAuditPrompt,
+    ignoredNegativeEffects: result.ignoredNegativeEffects,
+  };
+}
+
+/**
+ * The `ignoreNegativeEffect` allowance a player has left this lap, if their
+ * character has that passive at all. Exported so the v2 resolver can honour a
+ * *target's* own passive when an effect lands on them from across the table —
+ * the shield belongs to whoever is being hit, not to whoever is hitting.
+ */
+export function negativeEffectShieldFor(
+  player: PlayerState,
+  passive: CharacterAbilityDescriptor | undefined,
+): { readonly remaining: number; readonly sources: readonly EffectOrigin[] } | null {
+  return createNegativeEffectShield(player, passive);
 }
 
 /**
