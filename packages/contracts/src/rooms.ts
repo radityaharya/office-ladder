@@ -1,6 +1,13 @@
+import type { LegalActionSummary } from "./legal-actions";
+import {
+  parseModeRules,
+  type ModeRules,
+  type ModeRulesValidationOptions,
+} from "./mode-rules";
 import {
   ContractValidationError,
   parseOpaqueId,
+  requireEnum,
   requireExactKeys,
   requireKnownKeys,
   requireObject,
@@ -12,7 +19,56 @@ export { ContractValidationError, parseOpaqueId };
 
 export const ROOM_CAPACITIES = [3, 4, 5, 6] as const;
 
-export const ROOM_MODES = ["mode.quick", "mode.marathon"] as const;
+/**
+ * Every mode a room may be created in — one per preset the content pack ships,
+ * in the order a lobby should offer them (ascending session length).
+ *
+ * **Why this is a hand-kept mirror of `ModeId` rather than derived.** Deriving it
+ * would mean `@office-ladder/contracts` importing `@office-ladder/content`, and
+ * this package declares no dependency on it — not at runtime and not as a dev
+ * dependency, so the tuple cannot even be *asserted* equal here. That is the same
+ * deliberate boundary {@link ModeRules} documents: this is the layer that
+ * validates what a browser sent, and a validator that imports the thing it
+ * validates against tends to end up trusting it. A `mode` field is also the one
+ * place a widened list is load-bearing rather than convenient — it decides which
+ * preset a match is played under, so it should be a value this file states
+ * outright, not one it inherits.
+ *
+ * Drift is caught where both halves are actually in front of each other: the
+ * server imports `deadlineDashModes` *and* this tuple, and indexing the pack by a
+ * `RoomMode` (`resolveModeRules`, `setupContentFor`) does not typecheck if an id
+ * here has no preset. Note the asymmetry — that catches an id this file invents,
+ * not a preset the pack adds and this file never hears about, which is the drift
+ * that produced this widening in the first place and wants an explicit
+ * `Record<ModeId, …>`-shaped assertion on the server side.
+ *
+ * `mode.custom` is deliberately absent, matching the content pack's own `ModeId`:
+ * a custom ruleset is not a preset. It rides on a preset id and replaces that
+ * preset's rules block — see {@link CreateRoomRequest.rules}.
+ */
+export const ROOM_MODES = [
+  "mode.quick",
+  "mode.standard",
+  "mode.marathon",
+  "mode.campaign",
+] as const;
+
+/**
+ * The mode a lobby should pre-select, per spec §4.2: `mode.standard` is "**The
+ * default**", the fixed-length 4×4-quarter preset with everything on but
+ * elimination, DMs and role win conditions.
+ *
+ * Exported so the create form and any server-side default read the same value
+ * instead of each hardcoding one — which is exactly how every room ever created
+ * ended up being Quick.
+ *
+ * Distinct from the *migration* fallback in `apps/server/src/rooms/room-snapshot.ts`,
+ * which reads an unrecognised persisted mode as `mode.quick`. That answers "what
+ * was this old row played under", not "what should a new room be", and the two
+ * must not be collapsed: changing the default must never retroactively re-rule a
+ * stored match.
+ */
+export const DEFAULT_ROOM_MODE = "mode.standard" satisfies RoomMode;
 
 export const BOT_DIFFICULTIES = ["easy", "standard", "ruthless"] as const;
 
@@ -47,6 +103,44 @@ export type CreateRoomRequest = {
   readonly capacity: RoomCapacity;
   readonly playerName: string;
   readonly characterId: string | null;
+  /**
+   * A lobby-authored ruleset for this room (spec §8.4), or `null` — the ordinary
+   * case — meaning "play `mode`'s shipped preset exactly as it ships".
+   *
+   * **This replaces, it does not overlay.** When present it is a *complete*
+   * `ModeRules` object that stands in for the preset's `rules` block wholesale;
+   * no field is merged with, or defaulted from, the preset. Three reasons, in
+   * order of weight:
+   *
+   * 1. **A partial ruleset cannot be validated safely here.** {@link parseModeRules}
+   *    requires every field, deliberately: an omitted field is a field the host
+   *    did not agree to, and there is no honest way to fill it in at this layer —
+   *    contracts has no access to the content pack, so it cannot see the preset it
+   *    would be merging into. An overlay validator would either drag that
+   *    dependency in or take the base as a parameter and then have to answer,
+   *    per field, whether a bound applies to the value the host chose or the one
+   *    they inherited.
+   * 2. **Every player must be shown the exact terms before they sit down.** A
+   *    stored delta means the effective ruleset depends on a preset that can
+   *    change under a room that is already open; a complete snapshot cannot drift.
+   * 3. **The friendly lobby flow survives anyway.** "Start from Standard, flip
+   *    three switches" is a *client* concern: the form seeds itself from the
+   *    preset's own `rules` and posts the whole resulting object. Nothing about
+   *    the transport has to be partial for the lobby to feel like an overlay.
+   *
+   * `mode` stays required and stays meaningful when this is present: only the
+   * rules block is replaced. Starting resources, token caps, the hand limit, the
+   * board and the per-mode rank costs are *content*, not ruleset, and still come
+   * from the named preset — the server's `setupContentFor` shallow-overrides that
+   * one mode entry and nothing else.
+   *
+   * Absent and `null` are the same fact. `{}` is not: an empty object is a
+   * ruleset that agreed to nothing, and is rejected. (Contrast
+   * {@link CreateRoomRequest.characterId}, where an empty string *is* read as "no
+   * choice" — an empty string cannot name a character, so there is nothing
+   * ambiguous to resolve, whereas an empty ruleset is a malformed one.)
+   */
+  readonly rules: ModeRules | null;
 };
 
 export type JoinRoomRequest = {
@@ -260,22 +354,16 @@ export type ReactionProjection = {
   readonly hasPlayed: boolean;
 };
 
-export type LegalActionSummary =
-  | {
-      readonly type: "game.start";
-      readonly expectedRevision: number;
-    }
-  | {
-      readonly type: "turn.roll";
-      readonly expectedRevision: number;
-    }
-  | {
-      readonly type: "prompt.respond";
-      readonly expectedRevision: number;
-      readonly decisionPointId: string;
-      readonly kind: string;
-      readonly options: readonly string[];
-    };
+/**
+ * Re-exported so `GameBootstrap` and every existing importer keep resolving it
+ * from this module.
+ *
+ * The union itself lives in `legal-actions.ts`, where it grew from three members
+ * to one per player command. It is a type-only import in both directions, so
+ * moving it created no runtime edge and no import cycle: `legal-actions.ts`
+ * imports request bounds from `commands.ts`, which imports parsers from here.
+ */
+export type { LegalActionSummary };
 
 type SafeEventSummaryMetadata = {
   readonly id: string;
@@ -344,12 +432,14 @@ function requirePlayerName(value: unknown, path: string): string {
   return name;
 }
 
+/**
+ * Reads {@link ROOM_MODES} rather than restating it: the previous hand-written
+ * pair of comparisons was the reason two of the four shipped presets could not be
+ * selected even after the list was known — the tuple and the check drifted, and
+ * only the check was load-bearing.
+ */
 function requireRoomMode(value: unknown, path: string): RoomMode {
-  if (value !== "mode.quick" && value !== "mode.marathon") {
-    throw new ContractValidationError(path, "must be a supported room mode");
-  }
-
-  return value;
+  return requireEnum(value, ROOM_MODES, path, "a supported room mode");
 }
 
 function requireBotDifficulty(value: unknown, path: string): BotDifficulty {
@@ -564,12 +654,48 @@ function parseOptionalCharacterId(value: unknown, path: string): string | null {
   return parseOpaqueId(value, path);
 }
 
-export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
+/**
+ * An absent or `null` `rules` key means "play the preset", which is the ordinary
+ * case and must stay free: a client that predates custom modes is still a valid
+ * client, and its rooms must come out byte-identical to before this field
+ * existed.
+ *
+ * Anything else is run through {@link parseModeRules} in full. There is no
+ * lenient branch — no clamping, no defaulting, no "close enough" — because every
+ * field of this object is a lever on the match: an unbounded `maxPipAdjust` lets
+ * a player choose their roll outright, a negative `interestBasisPoints` turns a
+ * loan into a grant, an all-false `winPaths` makes the match unwinnable, a
+ * short `upkeepByRankIndex` makes the top of the ladder rent-free. A failure
+ * throws, and because this is called from the middle of building the request,
+ * the *whole* create is refused rather than downgraded to a preset room the host
+ * did not ask for.
+ *
+ * The reported paths need no prefixing: `parseModeRules` already reports under
+ * `rules.…`, which is the field's name in this body.
+ */
+function parseOptionalModeRules(
+  value: unknown,
+  options: ModeRulesValidationOptions,
+): ModeRules | null {
+  if (value === undefined || value === null) return null;
+  return parseModeRules(value, options);
+}
+
+/**
+ * @param options.rankLadderLength how many ranks the ladder this room will be
+ * played on has, for validating a custom ruleset's `upkeepByRankIndex`. Defaults
+ * to the Deadline Dash ladder; the server passes the content pack's real length,
+ * which is the value that actually binds.
+ */
+export function parseCreateRoomRequest(
+  value: unknown,
+  options: ModeRulesValidationOptions = {},
+): CreateRoomRequest {
   const input = requireObject(value, "createRoom");
   requireKnownKeys(
     input,
     ["mode", "capacity", "playerName"],
-    ["characterId"],
+    ["characterId", "rules"],
     "createRoom",
   );
 
@@ -578,6 +704,7 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
     capacity: requireRoomCapacity(input["capacity"], "capacity"),
     playerName: requirePlayerName(input["playerName"], "playerName"),
     characterId: parseOptionalCharacterId(input["characterId"], "characterId"),
+    rules: parseOptionalModeRules(input["rules"], options),
   };
 }
 

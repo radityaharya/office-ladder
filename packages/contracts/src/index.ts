@@ -3,6 +3,7 @@ export {
   BOT_COMMAND_ID_PREFIX,
   BOT_DIFFICULTIES,
   ContractValidationError,
+  DEFAULT_ROOM_MODE,
   isServerActorCommandId,
   parseAddBotRequest,
   parseAvatarUrl,
@@ -185,6 +186,25 @@ export type {
   UpkeepProjection,
   WinPath,
 } from "./gameplay";
+export {
+  LEGAL_ACTIONS_COVER_EVERY_PLAYER_COMMAND,
+  toLegalActionSummaries,
+  toLegalActionSummary,
+} from "./legal-actions";
+export type {
+  BallotCastOptions,
+  EnumeratedLegalAction,
+  LegalActionAgreementTerms,
+  LegalActionBallotTerms,
+  LegalActionContext,
+  LegalActionSpendable,
+  LegalActionSummaryType,
+  PlaceableSummary,
+  PlayableCardId,
+  ReactionWindowKind,
+  RepayableLoanSummary,
+  SpendableTokenSummary,
+} from "./legal-actions";
 export {
   BANKRUPTCY_RULES,
   BOT_PACINGS,

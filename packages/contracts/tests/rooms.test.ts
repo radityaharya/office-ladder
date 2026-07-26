@@ -4,6 +4,7 @@ import {
   AVATAR_URL_MAX_LENGTH,
   BOT_DIFFICULTIES,
   ContractValidationError,
+  DEFAULT_ROOM_MODE,
   isServerActorCommandId,
   parseAddBotRequest,
   parseAvatarUrl,
@@ -14,8 +15,10 @@ import {
   parseRollRequest,
   parseSelectCharacterRequest,
   parseStartGameRequest,
+  ROOM_MODES,
   SERVER_ACTOR_COMMAND_ID_PREFIXES,
 } from "../src/rooms";
+import { validRules, withBlock } from "./fixtures/mode-rules";
 
 describe("room API contracts", () => {
   it("Given valid room command bodies, When parsing them at the API boundary, Then each produces its typed request", () => {
@@ -39,6 +42,7 @@ describe("room API contracts", () => {
       capacity: 3,
       playerName: "Alex",
       characterId: null,
+      rules: null,
     });
     expect(join).toEqual({ roomCode: "AB12CD", playerName: "Sam", characterId: null });
     expect(start).toEqual({ commandId: "command-start-1", expectedRevision: 0 });
@@ -175,6 +179,254 @@ describe("room API contracts", () => {
         expectedRevision: -1,
       }),
     ).toThrow(ContractValidationError);
+  });
+});
+
+describe("room modes", () => {
+  it("Given the shipped content pack, When reading the selectable modes, Then all four presets are offered in lobby order", () => {
+    // Read off `packages/content/src/deadline-dash/modes.ts`, in its own
+    // declaration order, which is also ascending session length and therefore the
+    // order a lobby should list them in. Written out rather than derived: this
+    // package has no dependency on the content pack (see ROOM_MODES' docstring),
+    // so this literal *is* the mirror, and a test that computed it from the same
+    // constant it is checking would prove nothing.
+    expect(ROOM_MODES).toEqual([
+      "mode.quick",
+      "mode.standard",
+      "mode.marathon",
+      "mode.campaign",
+    ]);
+    // A custom ruleset is not a preset: it rides on one of the four above and
+    // replaces that preset's rules block. Admitting a `mode.custom` id here would
+    // also demand a rank-cost column the content pack does not have.
+    expect(ROOM_MODES).not.toContain("mode.custom");
+  });
+
+  it("Given spec §4.2's stated default, When reading it, Then the lobby's pre-selection is Standard and is a real mode", () => {
+    expect(DEFAULT_ROOM_MODE).toBe("mode.standard");
+    expect(ROOM_MODES).toContain(DEFAULT_ROOM_MODE);
+  });
+
+  it.each(ROOM_MODES)(
+    "Given a create body naming %s, When parsing it, Then the room can actually be created in that preset",
+    (mode) => {
+      // The point of the whole change: before it, two of these four were
+      // unrepresentable, so `mode.standard` — the intended default — could not be
+      // validated, let alone played.
+      expect(
+        parseCreateRoomRequest({ mode, capacity: 4, playerName: "Alex" }),
+      ).toEqual({
+        mode,
+        capacity: 4,
+        playerName: "Alex",
+        characterId: null,
+        rules: null,
+      });
+    },
+  );
+
+  it.each([
+    ["a custom-mode id, which is a ruleset and not a preset", "mode.custom"],
+    ["an id the content pack does not ship", "mode.endless"],
+    ["a bare preset name with no namespace", "quick"],
+    ["a differently-cased id", "MODE.QUICK"],
+    ["an id with trailing whitespace, which is not normalized away", "mode.quick "],
+    ["a non-string", 7],
+    ["null", null],
+  ])(
+    "Given a create body whose mode is %s, When parsing it, Then it is rejected",
+    (_label, mode) => {
+      expect(() =>
+        parseCreateRoomRequest({ mode, capacity: 4, playerName: "Alex" }),
+      ).toThrow(ContractValidationError);
+    },
+  );
+});
+
+describe("create-room with a custom ruleset", () => {
+  const base = { mode: "mode.standard", capacity: 4, playerName: "Alex" } as const;
+
+  it("Given a create body with no rules key, When parsing it, Then the room plays its preset untouched", () => {
+    // The load-bearing property for "the shipped presets stay byte-identical":
+    // contracts hands the server a `null`, so there is nothing for it to
+    // substitute and `resolveModeRules` returns the preset's own object. An
+    // absent key and an explicit null are the same fact, so a client that
+    // predates custom modes is still a valid client.
+    expect(parseCreateRoomRequest(base).rules).toBeNull();
+    expect(parseCreateRoomRequest({ ...base, rules: null }).rules).toBeNull();
+    expect(parseCreateRoomRequest({ ...base, rules: undefined }).rules).toBeNull();
+    expect(parseCreateRoomRequest({ ...base, rules: null })).toEqual(
+      parseCreateRoomRequest(base),
+    );
+  });
+
+  it("Given a create body carrying a complete ruleset, When parsing it, Then it survives field for field alongside the mode", () => {
+    const request = parseCreateRoomRequest({ ...base, rules: validRules() });
+
+    expect(request.rules).toEqual(validRules());
+    // `mode` stays meaningful when rules are supplied: the ruleset replaces only
+    // the preset's rules block, and the preset still supplies starting
+    // resources, token caps, the board and the per-mode rank costs.
+    expect(request.mode).toBe("mode.standard");
+  });
+
+  it("Given a create body that has been through the wire, When parsing it, Then it round trips", () => {
+    const sent = { ...base, characterId: "character.workaholic", rules: validRules() };
+    const received: unknown = JSON.parse(JSON.stringify(sent));
+
+    const once = parseCreateRoomRequest(received);
+    // Re-parsing the parser's own output must be a no-op: the server persists
+    // this object and re-validates it on the way back out of storage, so a
+    // ruleset that only survives one pass would fail on reload.
+    const twice = parseCreateRoomRequest(JSON.parse(JSON.stringify(once)));
+
+    expect(once).toEqual({
+      mode: "mode.standard",
+      capacity: 4,
+      playerName: "Alex",
+      characterId: "character.workaholic",
+      rules: validRules(),
+    });
+    expect(twice).toEqual(once);
+  });
+
+  it.each([
+    [
+      "an unbounded pip adjustment, which lets a player select their roll",
+      withBlock("agency", { maxPipAdjust: 12 }),
+    ],
+    [
+      "a negative interest rate, which turns a loan into a grant",
+      withBlock("economy", { interestBasisPoints: -5_000 }),
+    ],
+    [
+      "an all-false winPaths, which makes the match unwinnable",
+      withBlock("winPaths", {
+        promotion: false,
+        wealth: false,
+        influence: false,
+        survival: false,
+      }),
+    ],
+    [
+      "a short upkeep ladder, which makes the top ranks rent-free",
+      withBlock("economy", { upkeepByRankIndex: [0, 50, 100] }),
+    ],
+    [
+      "an over-long upkeep ladder, which hides charges nobody saw in the lobby",
+      withBlock("economy", { upkeepByRankIndex: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] }),
+    ],
+    [
+      "a turn clock short enough to hand every turn to the timeout driver",
+      withBlock("timers", { turnSeconds: 0 }),
+    ],
+    [
+      "direct messages switched on, which are not a v1 feature",
+      withBlock("social", { directMessages: true }),
+    ],
+  ])(
+    "Given a create body whose ruleset carries %s, When parsing it, Then the whole request is refused",
+    (_label, rules) => {
+      expect(() => parseCreateRoomRequest({ ...base, rules })).toThrow(
+        ContractValidationError,
+      );
+      // ...and the create itself was fine. So the ruleset is what killed it, and
+      // the failure mode is a refusal rather than a room quietly created under
+      // the preset the host did not ask for.
+      expect(() => parseCreateRoomRequest(base)).not.toThrow();
+    },
+  );
+
+  it("Given a create body whose ruleset is missing fields, When parsing it, Then it is refused rather than filled in from the preset", () => {
+    // This is the replace-versus-overlay decision made observable. A partial
+    // ruleset is not a friendlier request, it is an unanswerable one: contracts
+    // cannot see the preset it would be merging into, so an omitted field would
+    // have to be invented here. The lobby composes the complete object client-side
+    // from the preset's own rules and posts that.
+    const missingBlock: Record<string, unknown> = { ...validRules() };
+    delete missingBlock["economy"];
+
+    expect(() => parseCreateRoomRequest({ ...base, rules: missingBlock })).toThrow(
+      ContractValidationError,
+    );
+    expect(() =>
+      parseCreateRoomRequest({
+        ...base,
+        rules: withBlock("agency", { maxPipAdjust: undefined }),
+      }),
+    ).toThrow(ContractValidationError);
+    // An empty object is a ruleset that agreed to nothing — refused, unlike an
+    // empty *string* character id, which is read as "skipped the picker" because
+    // an empty string cannot name a character and so is never ambiguous.
+    expect(() => parseCreateRoomRequest({ ...base, rules: {} })).toThrow(
+      ContractValidationError,
+    );
+    expect(parseCreateRoomRequest({ ...base, characterId: "" }).characterId).toBeNull();
+  });
+
+  it.each([
+    ["a string", "mode.marathon"],
+    ["a number", 1],
+    ["an array of rulesets", [validRules()]],
+    ["a boolean", true],
+  ])(
+    "Given a create body whose rules field is %s, When parsing it, Then it is rejected",
+    (_label, rules) => {
+      expect(() => parseCreateRoomRequest({ ...base, rules })).toThrow(
+        ContractValidationError,
+      );
+    },
+  );
+
+  it("Given a ruleset carrying a field this build does not read, When parsing it, Then the request is refused outright", () => {
+    // Not silently dropped: an unknown key is either a client this server does
+    // not understand or an attempt to seed a field a *later* build will start
+    // reading out of the stored blob. Both are worth a 400.
+    expect(() =>
+      parseCreateRoomRequest({ ...base, rules: { ...validRules(), cheatMode: true } }),
+    ).toThrow(ContractValidationError);
+    expect(() =>
+      parseCreateRoomRequest({
+        ...base,
+        rules: withBlock("agency", { unlimitedActions: true }),
+      }),
+    ).toThrow(ContractValidationError);
+  });
+
+  it("Given a room played on a different rank ladder, When parsing a create body for it, Then the upkeep table is validated against that ladder", () => {
+    // The server passes the content pack's real ladder length, which is the value
+    // that actually binds; the mirrored constant in mode-rules.ts is only the
+    // fallback. A three-rank pack must not be validated against a nine-rank table.
+    const rules = withBlock("economy", { upkeepByRankIndex: [0, 100, 250] });
+
+    expect(() => parseCreateRoomRequest({ ...base, rules })).toThrow(
+      ContractValidationError,
+    );
+    expect(
+      parseCreateRoomRequest({ ...base, rules }, { rankLadderLength: 3 }).rules?.economy
+        .upkeepByRankIndex,
+    ).toEqual([0, 100, 250]);
+  });
+
+  it("Given a create body with a ruleset and an unknown top-level field, When parsing it, Then the unknown field is still refused", () => {
+    // The optional `rules` key must not become a hole in the exact-key check that
+    // guards everything beside it.
+    expect(() =>
+      parseCreateRoomRequest({ ...base, rules: validRules(), autoStart: true }),
+    ).toThrow(ContractValidationError);
+  });
+
+  it("Given a create body with a ruleset but no mode, When parsing it, Then it is refused because a ruleset is not a mode", () => {
+    // A custom ruleset replaces the preset's *rules*, not the preset. Everything
+    // outside `ModeRules` — starting resources, token caps, hand limit, rank
+    // costs — still comes from the named mode, so there is no such thing as a
+    // room with rules and no mode.
+    const withoutMode: Record<string, unknown> = { ...base };
+    delete withoutMode["mode"];
+
+    expect(() => parseCreateRoomRequest({ ...withoutMode, rules: validRules() })).toThrow(
+      ContractValidationError,
+    );
   });
 });
 
