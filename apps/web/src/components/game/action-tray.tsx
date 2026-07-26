@@ -1,6 +1,6 @@
-import { RiErrorWarningLine, RiRefreshLine } from "@remixicon/react";
+import { RiErrorWarningLine } from "@remixicon/react";
 
-import { Button } from "@/components/ui/button";
+import { DiceReadout, type DiceRollFeedItem } from "./dice";
 
 type ActionTrayProps = {
   readonly activePlayerName: string;
@@ -8,55 +8,63 @@ type ActionTrayProps = {
   readonly isRolling: boolean;
   readonly rollError: string | null;
   readonly onRoll: () => void;
+  /** Latest committed roll, from `useDiceFeed`. Null until one is recorded. */
+  readonly dice?: DiceRollFeedItem | null;
+  /** Cells to show while the local roll is in flight — movement is one die. */
+  readonly pendingDiceCount?: number;
 };
 
+/**
+ * The shell's bottom action bar: one primary action, the dice instrument, and
+ * the roll error as a log-style status entry. Edge-to-edge with a hairline top
+ * seam and a one-step tonal move off the board plane (DESIGN.md §4.1, §4.3) —
+ * deliberately not a floating pill.
+ */
 export function ActionTray({
   activePlayerName,
   canRoll,
   isRolling,
   rollError,
   onRoll,
+  dice = null,
+  pendingDiceCount = 1,
 }: ActionTrayProps) {
   return (
-    <section
-      aria-label="Current action"
-      className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex flex-col items-center gap-2 px-3 sm:bottom-5"
-      data-slot="action-tray"
-    >
+    <section aria-label="Current action" className="dice-tray" data-slot="action-tray">
       {rollError ? (
         <p
-          className="pointer-events-auto flex max-w-md items-start gap-2 rounded-full border border-destructive/40 bg-card/95 px-4 py-1.5 text-xs text-destructive backdrop-blur"
+          className="dice-tray-alert status-message status-message-error"
+          data-slot="action-tray-error"
           role="alert"
         >
-          <RiErrorWarningLine aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-          {rollError}
+          <RiErrorWarningLine aria-hidden="true" className="dice-tray-alert-icon" />
+          <span>{rollError}</span>
         </p>
       ) : null}
-      {canRoll ? (
-        <span className="pointer-events-auto relative">
-          {!isRolling ? (
-            <span
-              aria-hidden="true"
-              className="absolute inset-0 animate-pulse rounded-full bg-primary/50 blur-xl"
-            />
-          ) : null}
-          <Button
+      <div className="dice-tray-row">
+        {canRoll ? (
+          <button
             aria-busy={isRolling}
-            className="relative h-14 min-w-48 rounded-full text-sm shadow-[0_8px_24px_-4px_rgba(0,0,0,0.5)] sm:h-16 sm:min-w-56"
+            className="dice-tray-primary"
+            data-slot="action-tray-roll"
             disabled={isRolling}
             onClick={onRoll}
-            size="lg"
             type="button"
           >
-            {isRolling ? <RiRefreshLine aria-hidden="true" className="animate-spin" /> : null}
-            {isRolling ? "Rolling…" : "Roll dice"}
-          </Button>
-        </span>
-      ) : (
-        <p className="pointer-events-auto rounded-full border border-border bg-card/90 px-4 py-2 text-xs text-muted-foreground backdrop-blur">
-          Waiting on <span className="font-semibold text-foreground">{activePlayerName}</span>
-        </p>
-      )}
+            {isRolling ? "Rolling" : "Roll die"}
+          </button>
+        ) : (
+          <p className="dice-tray-wait" data-slot="action-tray-wait">
+            <span className="dice-tray-wait-label">Waiting on</span>
+            <span className="dice-tray-wait-value">{activePlayerName}</span>
+          </p>
+        )}
+        <DiceReadout
+          isRolling={isRolling}
+          pendingDiceCount={pendingDiceCount}
+          roll={dice}
+        />
+      </div>
     </section>
   );
 }
