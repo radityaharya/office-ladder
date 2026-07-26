@@ -152,6 +152,13 @@ export interface PlayerState {
   readonly abilities: readonly AbilityState[];
   readonly skipTurns: number;
   readonly inAudit: boolean;
+  /**
+   * How many negative effects this player's `ignoreNegativeEffect` passive has
+   * already absorbed during the lap they are currently on. Lives in canonical
+   * state (not a closure) so it serializes and replays; reset to 0 by the
+   * movement that completes a lap.
+   */
+  readonly negativeEffectsIgnoredThisLap: number;
 }
 
 export type CardZone =

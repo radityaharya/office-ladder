@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import type { DeckConfig } from "@office-ladder/content";
+import { deadlineDashContent } from "@office-ladder/content";
+import type { BoardTile, DeckConfig } from "@office-ladder/content";
 
 import { applyCommand, createScriptedRandomSource } from "../src";
-import type { CommandId, DecisionPointId, FrameId, PromptOptionId } from "../src";
+import type {
+  CommandId,
+  DecisionPointId,
+  FrameId,
+  GameState,
+  PromptOptionId,
+} from "../src";
 import { resolveTileEffects } from "../src/execution/resolve-tile-effects";
-import { accepted, context, logicalTimestamp, rollCommand, rollState } from "./turn-loop-fixtures";
+import {
+  accepted,
+  boardIndexOfKind,
+  context,
+  logicalTimestamp,
+  rollCommand,
+  rollState,
+} from "./turn-loop-fixtures";
 import { fixtureIds } from "./fixtures";
 
 const brand = <Id extends string>(value: string) => value as Id;
@@ -28,21 +42,117 @@ const authoredTestDecks = [
   },
 ] as const satisfies readonly DeckConfig[];
 
+/** A copy of `state` whose canonical (server-owned) dice stream sits at `value`. */
+function withDiceStreamState(state: GameState, value: string): GameState {
+  const dice = state.rng.streams.dice;
+  if (dice === undefined) throw new Error("fixture missing a dice stream");
+
+  return {
+    ...state,
+    rng: { streams: { ...state.rng.streams, dice: { ...dice, state: value } } },
+  };
+}
+
+/**
+ * The first variant of `state` whose roll draws `cardId`.
+ *
+ * The tile-effect RNG is seeded from server-owned canonical state, so the dice
+ * stream's state is the knob that steers a draw. Searching for it keeps this
+ * test aimed at a specific authored card without pinning any client-supplied
+ * value, which is what the command id used to be.
+ */
+function stateDrawing(state: GameState, cardId: string): GameState {
+  for (let candidate = 1; candidate <= 200; candidate += 1) {
+    const attempt = withDiceStreamState(state, String(candidate));
+    const result = applyCommand(attempt, rollCommand(attempt), context([0]));
+    if (!result.ok) continue;
+    const drew = result.value.events.some(
+      (event) => event.type === "CardDrawn" && event.payload.cardId === cardId,
+    );
+    if (drew) return attempt;
+  }
+
+  throw new Error(`no dice-stream state drew ${cardId}`);
+}
+
+/**
+ * The amount the authored finance tile takes, read off the tile rather than
+ * restated, so a change to the content is what moves this test.
+ */
+function financePaymentAmount(): number {
+  const spaces: readonly BoardTile[] = deadlineDashContent.board.spaces;
+  const effect = spaces[boardIndexOfKind("finance")]?.effects[0];
+  if (effect === undefined || effect.type !== "payResource") {
+    throw new Error("the finance tile no longer leads with a payResource effect");
+  }
+
+  return effect.amount;
+}
+
+const FINANCE_PAYMENT = financePaymentAmount();
+
+/** A copy of `state` whose owner holds `value` money. */
+function withOwnerMoney(state: GameState, value: number): GameState {
+  const owner = state.players[fixtureIds.owner];
+  if (owner === undefined) throw new Error("fixture missing owner player");
+
+  return {
+    ...state,
+    players: {
+      ...state.players,
+      [fixtureIds.owner]: {
+        ...owner,
+        resources: { ...owner.resources, money: { ...owner.resources.money, value } },
+      },
+    },
+  };
+}
+
 describe("tile effects", () => {
-  it("Given a player one space from the finance tile, when they roll onto it, then payResource deducts money", () => {
-    const state = rollState(0);
-    const before = state.players[fixtureIds.owner]?.resources.money?.value ?? 0;
+  it("Given a player who can cover it, when they roll onto the finance tile, then exactly the authored amount is deducted and reported", () => {
+    // The canonical fixture holds 12 money — less than the authored payment — so
+    // `pay-up-to-available` clamps and the amount becomes unobservable: every
+    // authored value of 12 or more empties the wallet identically. Funding it is
+    // what makes the authored number the thing this assertion reads.
+    const state = withOwnerMoney(rollState(boardIndexOfKind("finance") - 1), 1000);
 
-    const result = applyCommand(state, rollCommand(state), context([0]));
-    const { state: nextState } = accepted(result);
+    const { state: nextState, events } = accepted(
+      applyCommand(state, rollCommand(state), context([0])),
+    );
 
-    const after = nextState.players[fixtureIds.owner]?.resources.money?.value ?? 0;
-    expect(after).toBeLessThan(before);
-    expect(after).toBeGreaterThanOrEqual(0);
+    // Landing on the finance tile is half the claim. Without it the deduction
+    // could come from whatever tile the board order happens to put here, which
+    // is exactly how this test survived the amount being changed to 30.
+    expect(nextState.players[fixtureIds.owner]?.position).toBe(boardIndexOfKind("finance"));
+    expect(nextState.players[fixtureIds.owner]?.resources.money.value).toBe(1000 - FINANCE_PAYMENT);
+    // Reported too, so a client replaying events agrees with canonical state.
+    const changed = events.find((event) => event.type === "ResourceChanged");
+    expect(changed?.payload).toMatchObject({
+      playerId: fixtureIds.owner,
+      previousValue: 1000,
+      newValue: 1000 - FINANCE_PAYMENT,
+      reason: "tile-effect",
+    });
+  });
+
+  it("Given a player who cannot cover it, when they roll onto the finance tile, then pay-up-to-available takes what there is and stops at zero", () => {
+    const state = rollState(boardIndexOfKind("finance") - 1);
+    const before = state.players[fixtureIds.owner]?.resources.money.value ?? 0;
+    // The authored `insufficientFunds: "pay-up-to-available"` mode is the whole
+    // subject here, so the fixture has to actually be short of the payment.
+    expect(before).toBeLessThan(FINANCE_PAYMENT);
+    expect(before).toBeGreaterThan(0);
+
+    const { state: nextState } = accepted(
+      applyCommand(state, rollCommand(state), context([0])),
+    );
+
+    expect(nextState.players[fixtureIds.owner]?.position).toBe(boardIndexOfKind("finance"));
+    expect(nextState.players[fixtureIds.owner]?.resources.money.value).toBe(0);
   });
 
   it("Given a player one space from the energy-restore tile, when they roll onto it, then energy is restored to its maximum", () => {
-    const state = rollState(0);
+    const state = rollState(boardIndexOfKind("energy-restore") - 1);
     const owner = state.players[fixtureIds.owner];
     if (owner === undefined) throw new Error("fixture missing owner player");
 
@@ -66,9 +176,15 @@ describe("tile effects", () => {
       },
     };
 
-    const result = applyCommand(drainedState, rollCommand(drainedState), context([0.2]));
+    // die = 1, so the restore comes from the tile itself. Rolling further would
+    // risk crossing a Work tile, whose authored deck contains a card that also
+    // restores energy — the assertion would then pass without the tile working.
+    const result = applyCommand(drainedState, rollCommand(drainedState), context([0]));
     const { state: nextState } = accepted(result);
 
+    expect(nextState.players[fixtureIds.owner]?.position).toBe(
+      boardIndexOfKind("energy-restore"),
+    );
     const energy = nextState.players[fixtureIds.owner]?.resources.energy;
     expect(energy?.value).toBe(10);
   });
@@ -137,7 +253,7 @@ describe("authored card draws", () => {
     const baseState = rollState(15);
     const owner = baseState.players[fixtureIds.owner];
     if (owner === undefined) throw new Error("fixture missing owner player");
-    const state: typeof baseState = {
+    const withReputation: typeof baseState = {
       ...baseState,
       players: {
         ...baseState.players,
@@ -156,7 +272,13 @@ describe("authored card draws", () => {
         },
       },
     };
-    const command = rollCommand(state, { commandId: brand<CommandId>("card-order-3") });
+    // Which card a draw lands on is steered by the canonical dice-stream state,
+    // because the tile-effect RNG is seeded from server-owned state — a client
+    // picks its own command id, so that must not reach any outcome (see
+    // ephemeral-random.ts). Search for a stream state that draws the two-effect
+    // jackpot card rather than pinning a hand-picked command id.
+    const state = stateDrawing(withReputation, "card.event.jackpot");
+    const command = rollCommand(state);
 
     const transition = accepted(applyCommand(state, command, context([0])));
 
@@ -422,6 +544,19 @@ describe("applyStatus tile effect and its consumers", () => {
     // die=1 (fraction 0) + 2 bonus spaces = position 3, not the usual position 1.
     expect(nextState.players[fixtureIds.owner]?.position).toBe(3);
     expect(nextState.players[fixtureIds.owner]?.statuses).toEqual([]);
+    // PlayerMoved must report the three spaces actually traversed, while
+    // DiceRolled still reports the raw face — a client animating the token off
+    // `distance` would otherwise stop two spaces short of the real position.
+    const { events } = accepted(result);
+    expect(events.find((event) => event.type === "PlayerMoved")?.payload).toMatchObject({
+      from: 0,
+      to: 3,
+      distance: 3,
+    });
+    expect(events.find((event) => event.type === "DiceRolled")?.payload).toMatchObject({
+      dice: [1],
+      total: 1,
+    });
   });
 
   it("Given status.next-salary-multiplier (2x), when the player passes the receptionist, then the awarded salary doubles and the status is consumed", () => {
@@ -568,6 +703,47 @@ describe("promotion and win condition", () => {
     expect(nextState.outcome?.reason).toBe("director-reached");
     expect(nextState.outcome?.winnerPlayerIds).toContain(fixtureIds.owner);
     expect(nextState.players[fixtureIds.owner]?.rank.kind).toBe("rank.director");
+  });
+
+  it("Given a landing that both confines the player and promotes them to Director, when they roll, then the match ends and no audit prompt is left open", () => {
+    const state = rollState(16);
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const promotableState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          rank: { ...owner.rank, kind: "rank.general-manager" },
+          resources: {
+            ...owner.resources,
+            money: { ...owner.resources.money, value: 999_999 },
+            reputation: owner.resources.reputation
+              ? { ...owner.resources.reputation, value: 999 }
+              : {
+                  id: owner.resources.money.id,
+                  kind: "resource.reputation",
+                  value: 999,
+                  minimum: 0,
+                  maximum: null,
+                },
+          },
+        },
+      },
+    };
+
+    // die = 6 lands on tile.board.22.audit, which normally opens a prompt.
+    const result = applyCommand(promotableState, rollCommand(promotableState), context([0.9]));
+    const { state: nextState, events } = accepted(result);
+
+    expect(nextState.status).toBe("ended");
+    expect(nextState.outcome?.reason).toBe("director-reached");
+    // An ended match must not carry an unanswerable prompt: rolling is refused
+    // once the game is over, so the confinement could never be resolved.
+    expect(nextState.prompts).toEqual([]);
+    expect(events.some((event) => event.type === "PromptOpened")).toBe(false);
   });
 
   it("Given a player who cannot afford the next promotion, when they roll, then rank and status are unchanged", () => {

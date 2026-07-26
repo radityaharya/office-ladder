@@ -378,6 +378,10 @@ function assertPlayer(value: unknown, path: string): void {
   });
   assertInteger(value.skipTurns, `${path}.skipTurns`);
   assertBoolean(value.inAudit, `${path}.inAudit`);
+  assertInteger(
+    value.negativeEffectsIgnoredThisLap,
+    `${path}.negativeEffectsIgnoredThisLap`,
+  );
 }
 
 function assertTurn(value: unknown): void {

@@ -117,6 +117,7 @@ function createPlayer(
     abilities: [],
     skipTurns: 0,
     inAudit: false,
+    negativeEffectsIgnoredThisLap: 0,
   };
 }
 

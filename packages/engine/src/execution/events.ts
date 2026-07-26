@@ -21,7 +21,12 @@ export function createEventMetadata(
   sequence: number,
 ): EventMetadata {
   return {
-    eventId: `${command.commandId}:event:${sequence}` as EventId,
+    // Derived from server-owned state, never from the command. `sequence` is the
+    // game's own strictly-increasing event counter, so this is unique within the
+    // game and identical on replay — where deriving it from the client-supplied
+    // command id let a client mint (or deliberately collide with) another
+    // player's event ids. The command id is still recorded, as causation.
+    eventId: `${state.gameId}:event:${sequence}` as EventId,
     gameId: state.gameId,
     sequence,
     revision: state.revision + 1,

@@ -17,6 +17,24 @@ export const logicalTimestamp = "2026-07-18T12:00:00.000Z";
 
 const branded = <Id extends string>(value: string) => value as Id;
 
+type BoardSpace = (typeof deadlineDashContent.board.spaces)[number];
+
+/**
+ * The board index of the first authored tile of `kind`.
+ *
+ * Tests that need a particular tile say *which tile* rather than which index:
+ * board order is the design workbook's ordering column, it has been wrong once
+ * already (every side was internally reversed), and the order itself is pinned
+ * in exactly one place — `packages/content/tests/board-order.test.ts`. A literal
+ * index here would silently re-aim a test at whatever tile moved into its slot.
+ */
+export function boardIndexOfKind(kind: BoardSpace["kind"]): number {
+  const index = deadlineDashContent.board.spaces.findIndex((tile) => tile.kind === kind);
+  if (index < 0) throw new Error(`no authored board tile of kind ${kind}`);
+
+  return index;
+}
+
 type ApplyContext = {
   readonly logicalTimestamp: string;
   readonly random: RandomSource;

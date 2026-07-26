@@ -53,7 +53,16 @@ const setup = {
   authorizedStarterId: playerIds[0],
 } as const;
 
-const seed = "public-api-scenario-seed";
+/**
+ * Load-bearing, not arbitrary: this scenario is deliberately three *plain*
+ * rolls, so its turn/round/revision bookkeeping can be asserted exactly. Some
+ * seeds land a player on a tile that opens a prompt (Training, or the Audit
+ * corner), which holds the turn open and makes `prompt.respond` the only legal
+ * action — a different scenario, covered by `tile-decision-prompt.test.ts` and
+ * `rule-invariants.test.ts`. The `PromptOpened` assertion below is what keeps
+ * that requirement visible instead of leaving it implicit in the seed.
+ */
+const seed = "public-api-scenario-seed-2";
 const timestamps = [
   "2026-07-18T12:00:00.000Z",
   "2026-07-18T12:01:00.000Z",
@@ -157,6 +166,9 @@ describe("public API game scenario", () => {
     expect(firstRun.state.turn.number).toBe(4);
     expect(firstRun.state.revision).toBe(4);
     expect(firstRun.state.rng.streams.dice?.cursor).toBe(3);
+
+    // Then: no roll opened a prompt, so all three really were plain rolls.
+    expect(firstRun.events.some((event) => event.type === "PromptOpened")).toBe(false);
 
     // Then: event sequences are contiguous across start and all three rolls.
     expect(firstRun.events.map((event) => event.sequence)).toEqual(

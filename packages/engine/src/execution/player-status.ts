@@ -46,6 +46,26 @@ export function applyStatusEffect(
   };
 }
 
+/**
+ * Movement this player loses to a turns-based status, read once at the start of
+ * their own turn. Only `status.burnout-tile` slows a player down today; its
+ * `movementPenalty` parameter is authored on the burnout tile.
+ *
+ * The caller clamps the result so a penalty can never stop a player dead: a
+ * zero-space "move" would re-resolve the tile they are already standing on.
+ */
+export function statusMovementPenalty(player: PlayerState): number {
+  const burnout = findActiveStatus(player, "status.burnout-tile");
+  if (burnout === null) return 0;
+
+  const penalty = burnout.data["movementPenalty"];
+  if (typeof penalty !== "number" || !Number.isFinite(penalty) || penalty <= 0) {
+    return 0;
+  }
+
+  return Math.floor(penalty);
+}
+
 /** Decrements remainingTurns for every turns-based status the player holds, dropping expired ones. */
 export function tickStatusTurns(player: PlayerState): PlayerState {
   const statuses = player.statuses

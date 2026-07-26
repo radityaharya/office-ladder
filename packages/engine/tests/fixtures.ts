@@ -171,6 +171,7 @@ export function createCanonicalGameState(): GameState {
         ],
         skipTurns: 0,
         inAudit: false,
+        negativeEffectsIgnoredThisLap: 0,
       },
       [fixtureIds.hiddenOpponent]: {
         id: fixtureIds.hiddenOpponent,
@@ -207,6 +208,7 @@ export function createCanonicalGameState(): GameState {
         ],
         skipTurns: 1,
         inAudit: true,
+        negativeEffectsIgnoredThisLap: 0,
       },
       [fixtureIds.revealedOpponent]: {
         id: fixtureIds.revealedOpponent,
@@ -234,6 +236,7 @@ export function createCanonicalGameState(): GameState {
         abilities: [],
         skipTurns: 0,
         inAudit: false,
+        negativeEffectsIgnoredThisLap: 0,
       },
     },
     turn: {

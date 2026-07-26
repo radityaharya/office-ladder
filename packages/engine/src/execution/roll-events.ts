@@ -19,9 +19,21 @@ export type RollEventInput = {
   readonly context: TransitionContext;
   readonly player: PlayerState;
   readonly die: number;
+  /**
+   * Spaces actually traversed, which is the die adjusted by any movement
+   * status the player carries. `die` stays the raw face for DiceRolled.
+   */
+  readonly spaces: number;
   readonly rngCursor: number;
   readonly movement: BoardMovementResult;
   readonly salary: SalaryResolution;
+  /**
+   * Money actually credited, which is `salary.amount` after any
+   * `status.next-salary-multiplier` the player held. `salary.amount` stays the
+   * unmultiplied rank figure; reporting *that* would leave a client summing
+   * SalaryAwarded permanently out of step with canonical money.
+   */
+  readonly awardedSalary: number;
   readonly tileId: TileId;
 };
 
@@ -54,7 +66,7 @@ export function createRollEvents(input: RollEventInput): readonly GameEvent[] {
       playerId: input.player.id,
       from: input.player.position,
       to: input.movement.destination,
-      distance: input.die,
+      distance: input.spaces,
       direction: "forward",
       lapsGained: input.movement.laps,
     },
@@ -67,7 +79,7 @@ export function createRollEvents(input: RollEventInput): readonly GameEvent[] {
       type: "SalaryAwarded",
       payload: {
         playerId: input.player.id,
-        amount: input.salary.amount,
+        amount: input.awardedSalary,
         rankId: input.salary.rankId,
       },
     };
@@ -79,7 +91,7 @@ export function createRollEvents(input: RollEventInput): readonly GameEvent[] {
         playerId: input.player.id,
         resourceId: input.salary.moneyResource.id,
         previousValue: input.salary.moneyResource.value,
-        newValue: input.salary.moneyResource.value + input.salary.amount,
+        newValue: input.salary.moneyResource.value + input.awardedSalary,
         reason: "salary",
       },
     };
