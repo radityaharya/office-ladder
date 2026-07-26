@@ -1,6 +1,8 @@
 import {
   BOT_DIFFICULTIES,
+  ContractValidationError,
   parseAvatarUrl,
+  parseModeRules,
   ROOM_CAPACITIES,
   ROOM_MODES,
   ROOM_STATUSES,
@@ -12,6 +14,7 @@ import {
 } from "@office-ladder/contracts";
 import {
   deadlineDashModes,
+  deadlineDashRanks,
   type ModeConfig,
   type ModeRules,
 } from "@office-ladder/content";
@@ -179,6 +182,7 @@ export function fromRoomSnapshot(
     memberAvatars: normalizeMemberAvatars(record["memberAvatars"], memberIds),
     memberCharacters: normalizeMemberCharacters(record["memberCharacters"], memberIds),
     modeId,
+    customRules: normalizeCustomRules(record["customRules"]),
     capacity: normalizeCapacity(record["capacity"], memberIds.length),
     status: normalizeStatus(record["status"], game.value),
     revision: storedRevision ?? asIndex(record["revision"]) ?? 0,
@@ -505,6 +509,34 @@ function normalizeMemberAvatars(
     avatars[createStableId("PlayerId", memberId)] = avatarUrl;
   }
   return avatars;
+}
+
+/**
+ * Re-validates a persisted lobby-authored ruleset through the same parser that
+ * admitted it, for the same reason {@link normalizeMemberAvatars} does.
+ *
+ * This one is the sharper case: a `ModeRules` blob is the only persisted field
+ * that becomes *rules the engine enforces*, and it originally arrived from a
+ * browser. A row written by a build whose bounds were looser — or edited by hand
+ * — would otherwise be snapshotted straight into `GameState.rules` at the next
+ * `game.start`. Re-checking on read means the reader's bounds are the ones that
+ * hold, so a bound tightened later takes effect for rooms that already exist.
+ *
+ * A ruleset that no longer validates is dropped rather than repaired: the room
+ * falls back to its mode preset, which is a ruleset every player can still be
+ * shown, whereas a partially-repaired one is a ruleset nobody ever agreed to.
+ */
+function normalizeCustomRules(value: unknown): ModeRules | null {
+  if (value === null || value === undefined) return null;
+  try {
+    return parseModeRules(value, { rankLadderLength: deadlineDashRanks.length });
+  } catch (error) {
+    if (error instanceof ContractValidationError) {
+      log("warn", "room.snapshot-custom-rules-rejected", { reason: error.message });
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**

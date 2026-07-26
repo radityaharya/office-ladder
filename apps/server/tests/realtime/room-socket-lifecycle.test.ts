@@ -105,6 +105,31 @@ describe("room socket lifecycle", () => {
     expect(harness.released).toEqual([subscriber]);
   });
 
+  it("Given a path parameter that disagrees with the authorizer, When the socket opens, Then it is registered under the authorized topic and subscriber", async () => {
+    // The subscriber id registered here is the identity the per-socket fan-out
+    // later projects with (§7.2, §11.3), so it has to come from the authorizer's
+    // answer and from nowhere else. The path parameter is attacker-controlled:
+    // a socket registered under it would be subscribed to a room, and projected
+    // as a player, that the session never authorized.
+    const harness = createHarness({
+      authorization: {
+        ok: true,
+        value: { roomTopic, subscriberId: subscriber },
+      },
+    });
+
+    await harness.lifecycle.open(
+      request(),
+      "room-somebody-else-is-playing-in",
+      harness.ws,
+    );
+    harness.lifecycle.close();
+
+    expect(harness.registered).toEqual([
+      { roomTopic, subscriberId: subscriber, ws: harness.ws },
+    ]);
+  });
+
   it("Given a close that arrives while authorization is in flight, When the open finishes, Then the registration is released rather than leaked", async () => {
     let closeDuringAuthorize: () => void = () => undefined;
     const harness = createHarness({

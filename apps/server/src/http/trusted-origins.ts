@@ -21,15 +21,44 @@ export function trustedOrigins(): ReadonlySet<string> {
     .filter((origin) => origin.length > 0)
     .map((origin) => originOf(origin, "BETTER_AUTH_EXTRA_ORIGINS"));
 
-  // The dev origin is trusted only outside production. It has to be trusted in
-  // development (that is where `bun run dev` serves the app from, and where
+  // The dev origins are trusted only outside production. They have to be trusted
+  // in development (that is where `bun run dev` serves the app from, and where
   // BETTER_AUTH_URL is legitimately unset), but a deployed site has no reason to
   // accept requests initiated by a page on the visitor's own localhost — and
   // BETTER_AUTH_URL is mandatory in production anyway (config/environment.ts), so
   // dropping it there cannot leave the allow-list empty.
-  const localOrigins = process.env.NODE_ENV === "production" ? [] : [LOCAL_ORIGIN];
+  //
+  // Both dev ports are listed, because in development the app is genuinely
+  // reachable on two of them: Vite on 3072 (the intended one, which proxies
+  // /api to the server) and the server's own port, because serve.ts mounts the
+  // static client unconditionally. Trusting only 3072 meant a request from a
+  // page THIS PROCESS had just served was rejected as cross-origin, logged as
+  // `origin-rejected ... fetchSite=same-origin` — a self-contradiction, since
+  // the browser was attesting the request came from the origin we served.
+  // See the note in serve.ts: browsing the server port directly gets a stale
+  // built client, so 3072 is still the right URL to use.
+  const localOrigins =
+    process.env.NODE_ENV === "production"
+      ? []
+      : [LOCAL_ORIGIN, ...serverOrigins()];
 
   return new Set([...localOrigins, configuredOrigin, ...extraOrigins]);
+}
+
+/**
+ * The origin(s) this process is actually listening on, for development only.
+ *
+ * `PORT` is what the server binds; `scripts/dev.ts` sets it from `API_PORT`
+ * (default 3073) so the two dev processes do not collide. A malformed value is
+ * ignored rather than thrown on, because the port is validated separately at
+ * startup (config/environment.ts) and this set must not be the thing that
+ * reports it.
+ */
+function serverOrigins(): readonly string[] {
+  const port = Number((process.env.PORT ?? "").trim());
+  if (!Number.isSafeInteger(port) || port <= 0 || port > 65535) return [];
+
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
 }
 
 /**

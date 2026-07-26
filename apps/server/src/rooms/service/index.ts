@@ -1,5 +1,7 @@
 export { createRoomService } from "./create-room-service";
 export { roomRepository, roomService } from "../default-service";
+export { serverActorId } from "./commands";
+export { resolveModeRules } from "./game-setup";
 export type {
   ActiveStoredRoom,
   AddBotInput,
@@ -7,9 +9,12 @@ export type {
   CreateRoomInput,
   JoinRoomByCodeInput,
   JoinRoomInput,
+  PlayerCommandSelection,
   RemoveBotInput,
+  RespondToPromptRoomInput,
   RollRoomInput,
   RoomActorInput,
+  RoomActorKind,
   RoomBotSeat,
   RoomRepository,
   RoomService,
@@ -19,5 +24,9 @@ export type {
   RoomServiceResult,
   RoomTurnTimer,
   SelectCharacterInput,
+  SetModeRulesInput,
   StoredRoom,
+  SubmitCommandInput,
+  SubmitServerCommandInput,
+  SubmittableCommandType,
 } from "./types";

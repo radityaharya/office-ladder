@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 
+import { deadlineDashRanks } from "@office-ladder/content";
 import {
   ContractValidationError,
   parseAddBotRequest,
@@ -7,174 +8,43 @@ import {
   parseCreateRoomRequest,
   parseJoinRoomRequest,
   parseOpaqueId,
-  parseRespondToPromptRequest,
-  parseRollRequest,
   parseSelectCharacterRequest,
   parseStartGameRequest,
 } from "@office-ladder/contracts";
 import { requireSession } from "@/auth/require-session";
-import { json, parseJson, requireSameOriginMutation } from "@/http";
-import { log, logException } from "@/observability/log";
+import { json, parseJson } from "@/http";
+import { log } from "@/observability/log";
 import { publishProjectionUpdate } from "@/realtime/publish-projection-update";
 import { botDriver } from "@/rooms/bots/default-driver";
 import { shouldDriveBots } from "@/rooms/bots/should-drive";
 import { roomService } from "@/rooms/service";
-import { commandRejectionLevel } from "@/rooms/service/rejection";
-import type { RoomServiceErrorCode } from "@/rooms/service/types";
 import { turnTimeoutDriver } from "@/rooms/turn-timer/default-driver";
 import { shouldEnforceTurnTimer } from "@/rooms/turn-timer/should-enforce";
+import { windowExpiryDriver } from "@/rooms/window-timer/default-driver";
+import { shouldSweepWindows } from "@/rooms/window-timer/should-sweep";
+import {
+  announce,
+  applied,
+  commandContext,
+  defaultCommandRouteDependencies,
+  errorResponse,
+  handled,
+  originRejection,
+  registerCommandRoutes,
+  rejected,
+} from "./commands";
 
 export const roomsRouter = new Hono();
 
-function errorResponse(code: string, status: number) {
-  return json({ error: { code } }, { status });
-}
-
-function serviceErrorResponse(code: string) {
-  switch (code) {
-    case "ROOM_NOT_FOUND":
-    case "ROOM_CODE_NOT_FOUND":
-      return errorResponse(code, 404);
-    // ACTOR_IS_BOT / ACTOR_NOT_BOT: a session actor naming a bot seat, or the bot
-    // driver naming a human member. Neither is reachable from a well-behaved
-    // client, and both are a refusal to act as somebody else — 403, not 400.
-    case "ACTOR_NOT_HOST":
-    case "ACTOR_NOT_MEMBER":
-    case "ACTOR_NOT_AUTHORIZED":
-    case "ACTOR_IS_BOT":
-    case "ACTOR_NOT_BOT":
-      return errorResponse(code, 403);
-    // ROOM_CODE_UNAVAILABLE: every draw collided with a live room's code.
-    // Retryable, and the client's next attempt draws fresh codes.
-    // CHARACTER_TAKEN: somebody claimed it first. A conflict with another
-    // member's state, not a malformed request — the client re-picks.
-    case "ROOM_FULL":
-    case "ROOM_NOT_OPEN":
-    case "MINIMUM_PLAYERS_NOT_MET":
-    case "STALE_REVISION":
-    case "LAST_HUMAN_REQUIRED":
-    case "ROOM_CODE_UNAVAILABLE":
-    case "CHARACTER_TAKEN":
-      return errorResponse(code, 409);
-    case "MEMBER_NOT_BOT":
-      return errorResponse(code, 404);
-    // The state could not be represented for storage, so the write was refused
-    // rather than persisted lossily. Nothing the caller sent caused it and
-    // retrying the same request cannot help — that is a 500, not a 400.
-    case "SERIALIZATION_FAILED":
-      return errorResponse(code, 500);
-    default:
-      return errorResponse(code, 400);
-  }
-}
-
 /**
- * Who was trying to do what. Threaded through every log line a request can
- * emit, so one `grep` on a room id reconstructs the whole attempt without a
- * debugger.
+ * Room lifecycle: create, join, read, seat management.
  *
- * `room` is the *raw* path parameter, captured before validation on purpose: "a
- * client keeps sending a malformed room id" is worth being able to see. Raw
- * request input is safe here because the formatter escapes any value that is not
- * plainly id-shaped, so a header or a path segment cannot forge a second line.
+ * Everything that mutates *game* state — all twenty-seven player commands —
+ * lives behind the single endpoint in routes/commands.ts, which also owns the
+ * shared HTTP plumbing this file imports (origin check, rejection mapping,
+ * command logging). That direction is deliberate and one-way: commands.ts must
+ * never import this file, so the two cannot form a cycle.
  */
-type CommandContext = {
-  /** Same vocabulary as the log event name: `room.roll`, `room.bot-add`, … */
-  readonly command: string;
-  readonly room: string | null;
-  readonly actor: string | null;
-};
-
-function commandContext(
-  command: string,
-  actor: string | null,
-  room?: string | null,
-): CommandContext {
-  return { command, room: room ?? null, actor };
-}
-
-/**
- * A rejection the service returned as a value. The level comes from the code
- * (rooms/service/rejection.ts): a stale revision from a double-click is `info`,
- * an `INVARIANT_VIOLATION` is our own bug and is `warn`.
- */
-function rejected(context: CommandContext, code: RoomServiceErrorCode): Response {
-  log(commandRejectionLevel(code), "command.rejected", { ...context, code });
-  return serviceErrorResponse(code);
-}
-
-/**
- * A committed mutation — the only success line in this file. Roughly one per
- * player action, which for a turn-based board game is nowhere near spam, and it
- * is the difference between being able to reconstruct a match afterwards and
- * not. The polled GET bootstrap deliberately has no equivalent.
- */
-function applied(context: CommandContext, revision: number, gameRevision?: number): void {
-  log("info", "command.applied", { ...context, revision, gameRevision });
-}
-
-/**
- * The one place a thrown error inside a handler can still be seen.
- *
- * Every handler used to end in `catch (error) { … return 500 }` that discarded
- * `error` entirely, so a Postgres outage, a malformed BETTER_AUTH_EXTRA_ORIGINS
- * and projections.ts's "Active room is missing its canonical game" all produced
- * one identical opaque 500 with no trace anywhere in the process. The responses
- * are deliberately unchanged — a client must not learn internals — but they are
- * no longer the only record.
- */
-async function handled(
-  context: CommandContext,
-  run: () => Promise<Response>,
-): Promise<Response> {
-  try {
-    return await run();
-  } catch (error) {
-    if (error instanceof ContractValidationError) {
-      log("info", "command.invalid-request", {
-        ...context,
-        field: error.path,
-        reason: error.reason,
-      });
-      return errorResponse("INVALID_REQUEST", 400);
-    }
-
-    logException("error", "command.failed", error, context);
-    return errorResponse("INTERNAL_SERVER_ERROR", 500);
-  }
-}
-
-/**
- * Everything that has to happen after a game command commits: tell the clients,
- * then give both server-side actors a chance to move the match on.
- *
- * The two drivers are kicked together on purpose. Each is idempotent and
- * per-room serialized, so a kick that has nothing to do is one repository read;
- * a kick that is *missed* is a match that sits still until somebody's next poll.
- * The bot driver takes over when the new active player is a bot; the timeout
- * driver arms the clock when it is a human, and enforces it when it runs out.
- */
-async function announce(roomId: string, revision: number, messageId: string): Promise<void> {
-  await publishProjectionUpdate(roomId, revision, messageId);
-  botDriver.schedule(roomId);
-  turnTimeoutDriver.schedule(roomId);
-}
-
-/**
- * A cross-origin mutation attempt is rare and security-relevant, so unlike the
- * very common expired-session 401 it is reported rather than merely refused.
- */
-function originRejection(request: Request, command: string): Response | null {
-  const origin = requireSameOriginMutation(request);
-  if (origin.ok) return null;
-
-  log("warn", "http.origin-rejected", {
-    command,
-    origin: request.headers.get("origin"),
-    fetchSite: request.headers.get("sec-fetch-site"),
-  });
-  return errorResponse(origin.error.code, origin.error.status);
-}
 
 roomsRouter.post("/", async (c) => {
   const blocked = originRejection(c.req.raw, "room.create");
@@ -188,13 +58,58 @@ roomsRouter.post("/", async (c) => {
 
   const context = commandContext("room.create", session.value.user.id);
   return handled(context, async () => {
-    const input = parseCreateRoomRequest(body.value);
+    let input;
+    try {
+      // The ladder length is passed rather than defaulted, for the same reason
+      // the room service and room-snapshot.ts pass it: it is what a custom
+      // ruleset's `upkeepByRankIndex` is measured against, and contracts cannot
+      // see the content pack, so its own fallback is a hand-kept number. Both
+      // happen to be 9 today. If the pack's ladder ever grows, a defaulted
+      // parse here would refuse a ruleset the service would have accepted —
+      // a 400 on the *host's* screen with nothing wrong on the host's side.
+      input = parseCreateRoomRequest(body.value, {
+        rankLadderLength: deadlineDashRanks.length,
+      });
+    } catch (error) {
+      // A rejected *ruleset* keeps its own code rather than collapsing into the
+      // generic `INVALID_REQUEST` that `handled` gives every other malformed
+      // field. Before `rules` was part of the DTO, the ruleset was validated one
+      // layer down by the room service and a bad one came back as
+      // `INVALID_MODE_RULES`; a host who authored 26 fields and got back "bad
+      // request" would have no idea which layer objected. `parseModeRules`
+      // reports every path under `rules.…`, which is exactly this field's name
+      // in this body, so the two cannot be confused.
+      if (error instanceof ContractValidationError && error.path.startsWith("rules")) {
+        return rejected(context, "INVALID_MODE_RULES");
+      }
+      throw error;
+    }
+
     const result = await roomService.create({
       hostId: session.value.user.id,
       playerName: input.playerName,
+      // The host's chosen preset, carried through as-is. `parseCreateRoomRequest`
+      // has already checked it against ROOM_MODES, and the room service refuses
+      // to start a match whose mode this content release does not provide, so a
+      // mode never silently becomes a different one.
       modeId: input.mode,
       capacity: input.capacity,
       characterId: input.characterId,
+      // Spec §8.4's lobby-authored ruleset, under the DTO's own field name.
+      //
+      // This route previously read a `customRules` key off the *raw* body and
+      // stripped it before parsing, because `parseCreateRoomRequest` did not yet
+      // model the field. It does now, as `rules` — and the client posts `rules`.
+      // While the two names disagreed the outcome was the worst possible one:
+      // the body parsed cleanly (`rules` is a known optional key), the ruleset
+      // was validated, and then the route dropped it on the floor and stored
+      // `null`, so every custom room silently played its base preset. Reading
+      // the parsed DTO is what keeps that from being expressible again.
+      //
+      // Still passed on as `unknown` and re-parsed by the room service: this
+      // handler is not the only door onto `create`, and the service is the one
+      // place that must not be able to store an unvalidated ruleset.
+      customRules: input.rules,
       // Captured from the session's own user row, never from the request body: a
       // client must not be able to name somebody else's picture, or any picture.
       avatarUrl: parseAvatarUrl(session.value.user.image),
@@ -263,10 +178,24 @@ roomsRouter.get("/:roomId", async (c) => {
     // in-flight map collapses concurrent kicks into a single pass.
     if (shouldDriveBots(result.value)) botDriver.schedule(roomId);
     if (shouldEnforceTurnTimer(result.value)) turnTimeoutDriver.schedule(roomId);
+    // Same self-healing argument for the third driver (spec §7.1): a restart
+    // mid-window leaves a deadline in the database that no wakeup is watching,
+    // and this read path is what re-arms it. `shouldSweepWindows` keeps it off
+    // lobby and finished-match reads.
+    if (shouldSweepWindows(result.value)) windowExpiryDriver.schedule(roomId);
     return json(result.value);
   });
 });
 
+/**
+ * Starting the match.
+ *
+ * Kept as its own route rather than folded into `/commands`, even though
+ * `game.start` *is* a player command: this is the lifecycle boundary where the
+ * room stops being a lobby, and the room service builds the game here rather
+ * than advancing one that already exists. `/commands` accepts `game.start` too
+ * and routes it to the same service call, so the two cannot diverge.
+ */
 roomsRouter.post("/:roomId/start", async (c) => {
   const blocked = originRejection(c.req.raw, "room.start");
   if (blocked !== null) return blocked;
@@ -289,68 +218,6 @@ roomsRouter.post("/:roomId/start", async (c) => {
       actorKind: "human",
       commandId: input.commandId,
       expectedRevision: input.expectedRevision,
-    });
-
-    if (!result.ok) return rejected(context, result.error.code);
-
-    applied(context, result.value.revision, result.value.game.revision);
-    await announce(roomId, result.value.revision, input.commandId);
-    return json({ room: { id: result.value.id, revision: result.value.revision } });
-  });
-});
-
-roomsRouter.post("/:roomId/roll", async (c) => {
-  const blocked = originRejection(c.req.raw, "room.roll");
-  if (blocked !== null) return blocked;
-
-  const session = await requireSession(c.req.raw.headers);
-  if (!session.ok) return errorResponse(session.error.code, session.error.status);
-
-  const body = await parseJson(c.req.raw);
-  if (!body.ok) return errorResponse(body.error.code, body.error.status);
-
-  const context = commandContext("room.roll", session.value.user.id, c.req.param("roomId"));
-  return handled(context, async () => {
-    const roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
-    const input = parseRollRequest(body.value);
-    const result = await roomService.roll({
-      roomId,
-      actorId: session.value.user.id,
-      actorKind: "human",
-      commandId: input.commandId,
-      expectedRevision: input.expectedRevision,
-    });
-
-    if (!result.ok) return rejected(context, result.error.code);
-
-    applied(context, result.value.revision, result.value.game.revision);
-    await announce(roomId, result.value.revision, input.commandId);
-    return json({ room: { id: result.value.id, revision: result.value.revision } });
-  });
-});
-
-roomsRouter.post("/:roomId/respond", async (c) => {
-  const blocked = originRejection(c.req.raw, "room.respond");
-  if (blocked !== null) return blocked;
-
-  const session = await requireSession(c.req.raw.headers);
-  if (!session.ok) return errorResponse(session.error.code, session.error.status);
-
-  const body = await parseJson(c.req.raw);
-  if (!body.ok) return errorResponse(body.error.code, body.error.status);
-
-  const context = commandContext("room.respond", session.value.user.id, c.req.param("roomId"));
-  return handled(context, async () => {
-    const roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
-    const input = parseRespondToPromptRequest(body.value);
-    const result = await roomService.respondToPrompt({
-      roomId,
-      actorId: session.value.user.id,
-      actorKind: "human",
-      commandId: input.commandId,
-      expectedRevision: input.expectedRevision,
-      decisionPointId: input.decisionPointId,
-      optionId: input.optionId,
     });
 
     if (!result.ok) return rejected(context, result.error.code);
@@ -498,3 +365,8 @@ roomsRouter.delete("/:roomId/bots/:memberId", async (c) => {
     });
   });
 });
+
+// POST /:roomId/commands, plus the deprecated /roll and /respond aliases that
+// forward into the very same handler. Registered last so the literal segments
+// above are never shadowed.
+registerCommandRoutes(roomsRouter, defaultCommandRouteDependencies);

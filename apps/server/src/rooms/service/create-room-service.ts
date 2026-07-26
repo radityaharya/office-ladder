@@ -1,9 +1,17 @@
-import { deadlineDashContent } from "@office-ladder/content";
-import { parseRoomCode } from "@office-ladder/contracts";
+import { deadlineDashContent, deadlineDashRanks } from "@office-ladder/content";
+import {
+  ContractValidationError,
+  parseModeRules,
+  parseRoomCode,
+  SERVER_ACTOR_COMMAND_ID_PREFIXES,
+} from "@office-ladder/contracts";
 import {
   applyCommand,
-  createDeadlineDashGame,
+  createGame,
   createStableId,
+  type GameCommand,
+  type GameState,
+  type ModeRules,
   type PlayerId,
 } from "@office-ladder/engine";
 import {
@@ -18,7 +26,13 @@ import {
 import { claimedCharacters, isKnownCharacterId } from "@/rooms/characters";
 import { appendEventSummaries } from "@/rooms/room-snapshot";
 import { nextTurnTimer } from "@/rooms/turn-timer/turn-timer";
-import { eventSummaries, setupFor } from "./game-setup";
+import { toGameCommand, toServerCommand } from "./commands";
+import {
+  eventSummaries,
+  resolveModeRules,
+  setupContentFor,
+  setupFor,
+} from "./game-setup";
 import { createBootstrap, createRoomBootstrap } from "./projections";
 import type {
   ActiveStoredRoom,
@@ -30,6 +44,7 @@ import type {
   RoomServiceErrorCode,
   RoomServiceResult,
   StoredRoom,
+  SubmitCommandInput,
 } from "./types";
 
 const MINIMUM_PLAYERS = 3;
@@ -97,6 +112,41 @@ function withMemberAvatar(
 ): Readonly<Partial<Record<PlayerId, string>>> {
   if (avatarUrl === null || avatarUrl === undefined) return avatars;
   return { ...avatars, [playerId]: avatarUrl };
+}
+
+/**
+ * Validates a lobby-authored ruleset, or refuses the whole thing.
+ *
+ * Two properties matter more than the individual bounds:
+ *
+ * - **Wholesale.** `parseModeRules` rebuilds the object field by field and
+ *   throws on the first failure, so there is no partial acceptance, no clamping
+ *   and no defaulting. A body with one bad number is rejected entire — a
+ *   half-applied ruleset is one nobody at the table ever agreed to, and a clamped
+ *   one silently answers a different question than the host asked.
+ * - **Nothing unread survives.** What is stored is the parser's own output, not
+ *   the caller's object, so a field this build does not know about cannot ride
+ *   along in the jsonb blob waiting for a later build to start reading it.
+ *
+ * The ladder length comes from the content pack rather than from contracts'
+ * mirrored constant: `upkeepByRankIndex` has to have one entry per rank of the
+ * ladder this ruleset will actually be played on, and the server is the layer
+ * that has both halves in front of it.
+ */
+function parseCustomRules(value: unknown): RoomServiceResult<ModeRules | null> {
+  if (value === null || value === undefined) return { ok: true, value: null };
+
+  try {
+    return {
+      ok: true,
+      value: parseModeRules(value, { rankLadderLength: deadlineDashRanks.length }),
+    };
+  } catch (error) {
+    // Only a validation failure is a client error. Anything else is this
+    // server's fault and must not be reported as a bad ruleset.
+    if (error instanceof ContractValidationError) return fail("INVALID_MODE_RULES");
+    throw error;
+  }
 }
 
 function withCharacterClaim(
@@ -231,6 +281,81 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
     };
   }
 
+  /**
+   * Applies one already-built command to a room's canonical game and commits it.
+   *
+   * The whole shared half of every mutating verb, in one place: apply, map the
+   * engine's rejection straight through, append the safe event summaries,
+   * re-derive the turn clock, and write conditionally on the revision the room
+   * was read at. Twenty-six commands go through this; none of them gets to skip
+   * a step, which is the entire argument for it existing (spec §11.1).
+   *
+   * @param summaryActorId whose name the non-specific event summaries are
+   * attributed to. Deliberately not always `command.actorId`: a server-injected
+   * timeout acts *for* the active player, so attributing its events to the
+   * scheduler's synthetic id would put a player id nobody has ever seen into
+   * every client's activity log.
+   */
+  async function applyToGame(
+    room: StoredRoom,
+    game: GameState,
+    command: GameCommand,
+    summaryActorId: PlayerId | null,
+  ): Promise<RoomServiceResult<ActiveStoredRoom>> {
+    const applied = applyCommand(game, command, {
+      logicalTimestamp: now(),
+      content: deadlineDashContent,
+    });
+    if (!applied.ok) return fail(applied.error.code);
+
+    const updated = withTurnTimer({
+      ...room,
+      status: "active",
+      revision: room.revision + 1,
+      game: applied.value.state,
+      eventSummaries: appendEventSummaries(
+        room.eventSummaries,
+        eventSummaries(applied.value.events, summaryActorId),
+      ),
+    } satisfies ActiveStoredRoom);
+    return commit(updated, room.revision);
+  }
+
+  /**
+   * The single player-command path.
+   *
+   * Identity is checked here, legality in the engine, and both are required
+   * (spec §11.1): membership and actor-kind say *this session owns this seat*,
+   * which no engine transition can see; the engine says whether that seat may do
+   * this now, which no route can know. Neither substitutes for the other.
+   *
+   * `window.expire`, `quarter.advance` and `turn.timeout` cannot reach this
+   * function at all — they are not members of `SubmittableCommandType`, contracts
+   * exports no parser that produces them, and `toGameCommand`'s switch has no
+   * case for them. The refusal is an absence, not a check.
+   */
+  async function submitPlayerCommand(
+    input: SubmitCommandInput,
+  ): Promise<RoomServiceResult<ActiveStoredRoom>> {
+    return withRoomLock(input.roomId, async () => {
+      const room = await loadRoom(input.roomId);
+      if (room === null) return fail("ROOM_NOT_FOUND");
+      const actorId = createStableId("PlayerId", input.actorId);
+      if (!room.memberIds.includes(actorId)) return fail("ACTOR_NOT_MEMBER");
+      const mismatch = actorKindMismatch(room, actorId, input.actorKind);
+      if (mismatch !== null) return { ok: false, error: mismatch };
+      const game = room.game;
+      if (game === null || room.status !== "active") return fail("GAME_NOT_ACTIVE");
+
+      const command = toGameCommand(input, {
+        commandId: createStableId("CommandId", input.request.commandId),
+        gameId: game.gameId,
+        actorId,
+      });
+      return applyToGame(room, game, command, actorId);
+    });
+  }
+
   async function joinByRoomId(
     roomId: string,
     input: { readonly actorId: string; readonly playerName: string } & Pick<
@@ -265,6 +390,13 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
     async create(input) {
       const modeId = input.modeId ?? input.mode;
       if (modeId === undefined) return fail("UNSUPPORTED_MODE");
+      // Before the code is drawn, because `allocateRoomCode` costs a read per
+      // attempt and a rejected ruleset means no room is created at all. It is
+      // the same `parseModeRules` the lobby's own `setModeRules` runs: a
+      // ruleset must not be able to enter storage through the one door that
+      // happens to be reached before any lobby control exists.
+      const customRules = parseCustomRules(input.customRules);
+      if (!customRules.ok) return customRules;
       const code = await allocateRoomCode();
       if (!code.ok) return code;
       const id = ids.roomId();
@@ -285,6 +417,7 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
         memberAvatars: withMemberAvatar({}, hostId, input.avatarUrl),
         memberCharacters: characterId === null ? {} : { [hostId]: characterId },
         modeId,
+        customRules: customRules.value,
         capacity: input.capacity ?? DEFAULT_CAPACITY,
         status: "open",
         revision: 0,
@@ -421,11 +554,22 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
         }
         if (room.memberIds.length < MINIMUM_PLAYERS) return fail("MINIMUM_PLAYERS_NOT_MET");
 
+        // Resolved once, here, and then frozen into GameState.rules by
+        // createGame (spec §5.9). Nothing downstream re-reads the content pack
+        // for a rule, so a content deploy mid-match — or between a match and its
+        // replay — cannot change how it plays.
+        const rules = resolveModeRules(room);
+        if (rules === null) return fail("UNSUPPORTED_MODE");
+
         // One seed for the whole match: the engine seeds its own streams from it,
         // and setupFor derives the hidden-role assignment from a `:roles`-suffixed
         // stream of its own, so both are reproducible from this single value.
         const seed = gameSeed();
-        const created = createDeadlineDashGame(setupFor(room, ids.gameId(), seed), seed);
+        const created = createGame(
+          setupFor(room, ids.gameId(), seed, rules),
+          seed,
+          setupContentFor(room, rules),
+        );
         if (!created.ok) return fail(created.error.code);
         const commandId = createStableId(
           "CommandId",
@@ -458,82 +602,86 @@ export function createRoomService(dependencies: RoomServiceDependencies): RoomSe
         return commit(updated, room.revision);
       });
     },
-    async roll(input) {
+    async setModeRules(input) {
       return withRoomLock(input.roomId, async () => {
         const room = await loadRoom(input.roomId);
         if (room === null) return fail("ROOM_NOT_FOUND");
         const actorId = createStableId("PlayerId", input.actorId);
-        if (!room.memberIds.includes(actorId)) return fail("ACTOR_NOT_MEMBER");
-        const mismatch = actorKindMismatch(room, actorId, input.actorKind);
-        if (mismatch !== null) return { ok: false, error: mismatch };
-        if (room.game === null || room.status !== "active") return fail("GAME_NOT_ACTIVE");
+        // Host only. A ruleset is the terms every other player is agreeing to
+        // when they take a seat, so it is not a per-member preference.
+        if (room.hostId !== actorId) return fail("ACTOR_NOT_HOST");
+        // Lobby only. After `game.start` the ruleset lives in canonical state and
+        // is frozen for the match; a room-level edit would be a rule change no
+        // replay could reproduce.
+        if (room.status !== "open") return fail("ROOM_NOT_OPEN");
 
-        const rolled = applyCommand(
-          room.game,
-          {
-            commandId: createStableId("CommandId", input.commandId ?? ids.commandId()),
-            gameId: room.game.gameId,
-            actorId,
-            expectedRevision: input.expectedRevision,
-            type: "turn.roll",
-            payload: {},
-          },
-          { logicalTimestamp: now(), content: deadlineDashContent },
-        );
-        if (!rolled.ok) return fail(rolled.error.code);
+        const customRules = parseCustomRules(input.rules);
+        if (!customRules.ok) return customRules;
 
-        const updated = withTurnTimer({
+        const updated = {
           ...room,
-          status: "active",
+          customRules: customRules.value,
           revision: room.revision + 1,
-          game: rolled.value.state,
-          eventSummaries: appendEventSummaries(
-            room.eventSummaries,
-            eventSummaries(rolled.value.events, actorId),
-          ),
-        } satisfies ActiveStoredRoom);
+        } satisfies StoredRoom;
         return commit(updated, room.revision);
       });
     },
-    async respondToPrompt(input) {
+    submitCommand: submitPlayerCommand,
+    async submitServerCommand(input) {
+      // Structural, not advisory: a caller that reached this method without one
+      // of the reserved prefixes is either a bug or a request body that found a
+      // way through, and contracts refuses a *client*-supplied command id
+      // carrying one — so the two checks together mean no browser-originated id
+      // can ever expire a window.
+      if (!SERVER_ACTOR_COMMAND_ID_PREFIXES.some((p) => input.commandId.startsWith(p))) {
+        return fail("ACTOR_NOT_AUTHORIZED");
+      }
+
       return withRoomLock(input.roomId, async () => {
         const room = await loadRoom(input.roomId);
         if (room === null) return fail("ROOM_NOT_FOUND");
-        const actorId = createStableId("PlayerId", input.actorId);
-        if (!room.memberIds.includes(actorId)) return fail("ACTOR_NOT_MEMBER");
-        const mismatch = actorKindMismatch(room, actorId, input.actorKind);
-        if (mismatch !== null) return { ok: false, error: mismatch };
-        if (room.game === null || room.status !== "active") return fail("GAME_NOT_ACTIVE");
+        const game = room.game;
+        if (game === null || room.status !== "active") return fail("GAME_NOT_ACTIVE");
 
-        const responded = applyCommand(
-          room.game,
-          {
-            commandId: createStableId("CommandId", input.commandId ?? ids.commandId()),
-            gameId: room.game.gameId,
-            actorId,
-            expectedRevision: input.expectedRevision,
-            decisionPointId: createStableId("DecisionPointId", input.decisionPointId),
-            type: "prompt.respond",
-            payload: {
-              optionId: createStableId("PromptOptionId", input.optionId),
-              value: null,
-            },
-          },
-          { logicalTimestamp: now(), content: deadlineDashContent },
-        );
-        if (!responded.ok) return fail(responded.error.code);
+        const command = toServerCommand(input, {
+          commandId: createStableId("CommandId", input.commandId),
+          gameId: game.gameId,
+        });
+        if (command === null) return fail("INVALID_COMMAND");
 
-        const updated = withTurnTimer({
-          ...room,
-          status: "active",
-          revision: room.revision + 1,
-          game: responded.value.state,
-          eventSummaries: appendEventSummaries(
-            room.eventSummaries,
-            eventSummaries(responded.value.events, actorId),
-          ),
-        } satisfies ActiveStoredRoom);
-        return commit(updated, room.revision);
+        // The scheduler acts *for* whoever is on the clock, so its events read as
+        // theirs. Deliberately not a precondition: a reaction window still open
+        // when the match ended has no active player and must still be drainable
+        // (§7.1), or it sits in every projection forever with nothing able to
+        // close it. Whether *this* command needs a turn is the engine's call —
+        // `turn.timeout` says so itself — not a guess made out here.
+        return applyToGame(room, game, command, game.turn.activePlayerId);
+      });
+    },
+    async roll(input) {
+      return submitPlayerCommand({
+        roomId: input.roomId,
+        actorId: input.actorId,
+        actorKind: input.actorKind,
+        type: "turn.roll",
+        request: {
+          commandId: input.commandId ?? ids.commandId(),
+          expectedRevision: input.expectedRevision,
+        },
+      });
+    },
+    async respondToPrompt(input) {
+      return submitPlayerCommand({
+        roomId: input.roomId,
+        actorId: input.actorId,
+        actorKind: input.actorKind,
+        type: "prompt.respond",
+        request: {
+          commandId: input.commandId ?? ids.commandId(),
+          expectedRevision: input.expectedRevision,
+          decisionPointId: input.decisionPointId,
+          optionId: input.optionId,
+        },
       });
     },
   };

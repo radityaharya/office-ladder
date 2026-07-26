@@ -118,6 +118,32 @@ describe("room socket authorization", () => {
     });
   });
 
+  it("Given a handshake that asks to be somebody else, When it is authorized, Then the subscriber is still the session's own user", async () => {
+    // This is the identity the per-socket fan-out projects with (§11.3: "never
+    // derive a viewer's identity from anything the client sent in the socket
+    // message — resolve it from the authenticated session at upgrade time").
+    // Every channel a client controls is loaded with somebody else's id here.
+    const { authorize } = await harness();
+    const impersonating = new Request(
+      `http://localhost:3072/ws/rooms/${roomId}?viewerId=${host}&playerId=${host}`,
+      {
+        headers: {
+          cookie: "better-auth.session_token=abc",
+          origin: "http://localhost:3072",
+          "x-player-id": host,
+          "sec-websocket-protocol": `viewer.${host}`,
+        },
+      },
+    );
+
+    const result = await authorize(impersonating, roomId);
+
+    expect(result).toEqual({
+      ok: true,
+      value: { roomTopic: roomId, subscriberId: member },
+    });
+  });
+
   it("Given an authenticated stranger who knows the room id, When the handshake is authorized, Then it is refused", async () => {
     const { authorize } = await harness({ userId: stranger });
 

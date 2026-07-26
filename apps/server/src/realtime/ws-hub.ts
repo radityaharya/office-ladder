@@ -45,6 +45,35 @@ export type RegisterRoomSocketResult =
   | { readonly ok: true; readonly value: { readonly unregister: () => void } }
   | { readonly ok: false; readonly error: { readonly code: "SOCKET_LIMIT_REACHED" } };
 
+/**
+ * The messages one subscriber is entitled to for this broadcast.
+ *
+ * Called with the **authenticated** subscriber id the socket was registered
+ * with (authorize-room-socket.ts resolves that from the session at upgrade
+ * time, never from anything the client sent), so a builder cannot be tricked
+ * into projecting somebody else's view.
+ *
+ * Returning an empty array is a legitimate answer: a `window-opened` push for a
+ * player who is not eligible for that window has nothing to say to them, and
+ * saying nothing is different from saying "null".
+ */
+export type PerSubscriberMessageBuilder = (
+  subscriberId: string,
+) => readonly unknown[];
+
+/**
+ * What one per-subscriber fan-out cost. `viewers` is the number of times the
+ * builder actually ran — the unit of work for a per-viewer projection — while
+ * `recipients` counts sockets and `messages` counts frames. The three diverge
+ * exactly where it matters: six players with two tabs each is twelve sockets,
+ * six projections.
+ */
+export type BroadcastStats = {
+  readonly recipients: number;
+  readonly viewers: number;
+  readonly messages: number;
+};
+
 const rooms = new Map<string, Set<RoomSocket>>();
 const socketsPerSubscriber = new Map<string, number>();
 
@@ -123,9 +152,102 @@ export function broadcastToRoom(roomTopic: string, payload: unknown): number {
   return sent;
 }
 
+/**
+ * Fans out a payload built **per subscriber**, which is what hidden information
+ * makes mandatory: one shared frame on a topic cannot carry a hand, a secret
+ * objective or a sealed ballot without carrying it to everybody (spec §7.2,
+ * §11.3).
+ *
+ * The builder runs once per *distinct subscriber*, not once per socket. Three
+ * tabs on one account are three sockets but one view of the game, so they cost
+ * one projection and one JSON.stringify between them — see `BroadcastStats`,
+ * which reports both numbers so the difference is measurable rather than
+ * assumed.
+ *
+ * A builder that throws takes out that one viewer's frame and nothing else. The
+ * alternative is worse than it looks: `projectGameView` throws on a state that
+ * names a player it does not hold, and letting that escape here would abort the
+ * fan-out mid-Set, silently cutting off every socket after the bad one.
+ */
+export function broadcastToRoomPerSubscriber(
+  roomTopic: string,
+  build: PerSubscriberMessageBuilder,
+): BroadcastStats {
+  const sockets = rooms.get(roomTopic);
+  if (sockets === undefined || sockets.size === 0) {
+    return { recipients: 0, viewers: 0, messages: 0 };
+  }
+
+  const encodedByViewer = new Map<string, readonly string[]>();
+  let recipients = 0;
+  let messages = 0;
+
+  for (const socket of sockets) {
+    let encoded = encodedByViewer.get(socket.subscriberId);
+    if (encoded === undefined) {
+      encoded = encodeFor(roomTopic, socket.subscriberId, build);
+      encodedByViewer.set(socket.subscriberId, encoded);
+    }
+    if (encoded.length === 0) continue;
+
+    let delivered = false;
+    for (const message of encoded) {
+      try {
+        socket.ws.send(message);
+        messages += 1;
+        delivered = true;
+      } catch (error) {
+        // Same release path as broadcastToRoom: a socket that cannot be written
+        // to is gone, and dropping it from the topic without returning its
+        // subscriber's quota would eventually lock that account out of its own
+        // rooms. Stop writing to it — the frames after this one would only
+        // throw again.
+        release(roomTopic, socket, "send-failed", describeError(error));
+        delivered = false;
+        break;
+      }
+    }
+    if (delivered) recipients += 1;
+  }
+
+  return { recipients, viewers: encodedByViewer.size, messages };
+}
+
+/**
+ * The distinct authenticated subscribers attached to a topic on this instance.
+ *
+ * Exposed so a publisher can decide whether the work of building per-viewer
+ * payloads is worth doing at all: a room nobody is watching (a bot-only match, a
+ * host who started before anyone connected) should not cost a repository read.
+ */
+export function roomSubscriberIds(roomTopic: string): readonly string[] {
+  const sockets = rooms.get(roomTopic);
+  if (sockets === undefined) return [];
+  const subscribers = new Set<string>();
+  for (const socket of sockets) subscribers.add(socket.subscriberId);
+  return [...subscribers];
+}
+
 /** Sockets a subscriber currently holds. Exposed for tests and diagnostics. */
 export function socketsHeldBy(subscriberId: string): number {
   return socketsPerSubscriber.get(subscriberId) ?? 0;
+}
+
+function encodeFor(
+  roomTopic: string,
+  subscriberId: string,
+  build: PerSubscriberMessageBuilder,
+): readonly string[] {
+  try {
+    return build(subscriberId).map((message) => JSON.stringify(message));
+  } catch (error) {
+    log("error", "ws.payload-failed", {
+      topic: roomTopic,
+      subscriber: subscriberId,
+      error: describeError(error),
+    });
+    return [];
+  }
 }
 
 /**

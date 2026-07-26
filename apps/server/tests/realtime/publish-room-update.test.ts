@@ -4,7 +4,10 @@ import type { WSContext } from "hono/ws";
 import { describe, expect, it } from "vitest";
 
 import type { ProjectionUpdated } from "@office-ladder/contracts";
-import { publishRoomUpdate } from "../../src/realtime/publish-room-update";
+import {
+  publishRoomUpdate,
+  publishRoomUpdatePerSocket,
+} from "../../src/realtime/publish-room-update";
 import { registerRoomSocket } from "../../src/realtime/ws-hub";
 
 type RecordingSocket = {
@@ -25,12 +28,16 @@ function recordingSocket(): RecordingSocket {
 }
 
 /** See publish-projection-update.test.ts — registration is refusable. */
-function subscribe(roomTopic: string, ws: WSContext): () => void {
-  const registered = registerRoomSocket({ roomTopic, subscriberId: randomUUID(), ws });
+function subscribeAs(roomTopic: string, subscriberId: string, ws: WSContext): () => void {
+  const registered = registerRoomSocket({ roomTopic, subscriberId, ws });
   if (!registered.ok) {
     throw new Error(`socket registration refused: ${registered.error.code}`);
   }
   return registered.value.unregister;
+}
+
+function subscribe(roomTopic: string, ws: WSContext): () => void {
+  return subscribeAs(roomTopic, randomUUID(), ws);
 }
 
 function projectionUpdate(revision: number): ProjectionUpdated {
@@ -92,6 +99,48 @@ describe("publishRoomUpdate", () => {
       update: projectionUpdate(1),
     });
     unregister();
+
+    expect(result).toEqual({ ok: false, error: { kind: "invalid_room_topic" } });
+    expect(socket.sent).toEqual([]);
+  });
+});
+
+describe("publishRoomUpdatePerSocket", () => {
+  it("Given sockets on one room, When it publishes per socket, Then each is served its own payload and the cost is reported", async () => {
+    const roomId = randomUUID();
+    const first = recordingSocket();
+    const second = recordingSocket();
+    const releaseFirst = subscribeAs(roomId, "viewer-one", first.ws);
+    const releaseSecond = subscribeAs(roomId, "viewer-two", second.ws);
+
+    const result = await publishRoomUpdatePerSocket({
+      roomTopic: roomId,
+      messageId: randomUUID(),
+      build: (subscriberId) => [{ kind: "projection", viewerId: subscriberId }],
+    });
+    releaseFirst();
+    releaseSecond();
+
+    expect(result).toEqual({
+      ok: true,
+      value: { recipients: 2, viewers: 2, messages: 2 },
+    });
+    expect(JSON.parse(first.sent[0] ?? "null")).toMatchObject({ viewerId: "viewer-one" });
+    expect(JSON.parse(second.sent[0] ?? "null")).toMatchObject({ viewerId: "viewer-two" });
+  });
+
+  it("Given a six-character room code used as a topic, When publishing per socket, Then it is rejected exactly as the shared path is", async () => {
+    // Both ends of the transport must apply the identical topic rule, or a
+    // topic accepted by one and refused by the other is a silently dead feed.
+    const socket = recordingSocket();
+    const release = subscribeAs("ABC123", "viewer-one", socket.ws);
+
+    const result = await publishRoomUpdatePerSocket({
+      roomTopic: "ABC123",
+      messageId: randomUUID(),
+      build: () => [{ kind: "projection" }],
+    });
+    release();
 
     expect(result).toEqual({ ok: false, error: { kind: "invalid_room_topic" } });
     expect(socket.sent).toEqual([]);

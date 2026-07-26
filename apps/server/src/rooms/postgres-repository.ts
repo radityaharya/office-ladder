@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "@office-ladder/db";
 import { games, rooms, roomProjections } from "@office-ladder/db/schema";
+import type { JsonValue } from "@office-ladder/engine";
 import { log } from "@/observability/log";
 import { fromRoomSnapshot, toRoomSnapshot } from "./room-snapshot";
 import type { RoomRepository, RoomWriteResult, StoredRoom } from "./service/types";
@@ -17,6 +18,43 @@ function toLifecycle(status: StoredRoom["status"]): "open" | "active" | "closed"
   if (status === "open" || status === "starting") return "open";
   if (status === "active") return "active";
   return "closed";
+}
+
+/**
+ * The authored ruleset as `rooms.custom_rules` stores it.
+ *
+ * `JsonValue` rather than `ModeRules` because that is what the column is typed
+ * as (packages/db must not depend on the content pack), and because the value
+ * has already been through contracts' `parseModeRules` by the time a StoredRoom
+ * carries it — see the room service's `create`/`setModeRules`.
+ */
+function toCustomRulesColumn(room: StoredRoom): JsonValue | null {
+  return (room.customRules ?? null) as JsonValue | null;
+}
+
+/**
+ * Overlays the `rooms.custom_rules` column onto the projection blob before the
+ * blob is rebuilt into a StoredRoom.
+ *
+ * The column is the authoritative store for an authored ruleset
+ * (packages/db/src/game-schema.ts says so at the column itself), and it is
+ * written in the same transaction as the blob, so the two cannot diverge for any
+ * room this build wrote. The fallback is what makes the column adoptable rather
+ * than a migration: a room written before it was populated has NULL there and
+ * its ruleset only inside the blob, and dropping that room's ruleset on read
+ * would silently return it to its mode preset — a rule change nobody asked for.
+ *
+ * Deliberately merged *into* the untrusted record rather than assigned onto the
+ * finished StoredRoom: `fromRoomSnapshot` re-validates `customRules` through
+ * `parseModeRules` on the way out, and a value that skipped that step would be
+ * a ruleset the reader's own bounds never judged.
+ */
+function withColumnRules(projection: JsonValue, columnRules: JsonValue | null): unknown {
+  if (columnRules === null) return projection;
+  if (typeof projection !== "object" || projection === null || Array.isArray(projection)) {
+    return projection;
+  }
+  return { ...projection, customRules: columnRules };
 }
 
 const STALE: RoomWriteResult = { ok: false, error: { code: "STALE_REVISION" } };
@@ -67,6 +105,7 @@ export class PostgresRoomRepository implements RoomRepository {
         code: room.code,
         hostUserId: room.hostId,
         lifecycle: toLifecycle(room.status),
+        customRules: toCustomRulesColumn(room),
       });
       await tx.insert(roomProjections).values({
         roomId: room.id,
@@ -80,14 +119,28 @@ export class PostgresRoomRepository implements RoomRepository {
 
   async get(id: string): Promise<StoredRoom | null> {
     const [row] = await db
-      .select({ projection: roomProjections.projection, revision: roomProjections.revision })
+      .select({
+        projection: roomProjections.projection,
+        revision: roomProjections.revision,
+        customRules: rooms.customRules,
+      })
       .from(roomProjections)
+      // Inner, not left: `rooms` and `room_projections` are written in one
+      // transaction and the projection's own primary key references the room,
+      // so a projection with no room row cannot exist. An outer join would only
+      // buy the ability to serve a row that violates a foreign key.
+      .innerJoin(rooms, eq(rooms.id, roomProjections.roomId))
       .where(eq(roomProjections.roomId, id))
       .limit(1);
+    if (row === undefined) return null;
     // The revision *column* wins over the one inside the blob: it is what the
     // conditional UPDATE in save() compares against, so a room whose two copies
-    // ever disagreed would otherwise be unwritable forever.
-    return row === undefined ? null : fromRoomSnapshot(row.projection, row.revision);
+    // ever disagreed would otherwise be unwritable forever. `custom_rules` wins
+    // over the blob's copy for the same reason — see withColumnRules.
+    return fromRoomSnapshot(
+      withColumnRules(row.projection, row.customRules),
+      row.revision,
+    );
   }
 
   async getByCode(code: string): Promise<StoredRoom | null> {
@@ -165,9 +218,16 @@ export class PostgresRoomRepository implements RoomRepository {
           .returning({ roomId: roomProjections.roomId });
         if (updated.length === 0) throw new StaleWriteSignal();
 
+        // Inside the guarded transaction, after the predicate has held: the
+        // ruleset column must move with the revision it belongs to, or a lost
+        // race would leave the room's rules and its projection describing two
+        // different lobbies.
         await tx
           .update(rooms)
-          .set({ lifecycle: toLifecycle(room.status) })
+          .set({
+            lifecycle: toLifecycle(room.status),
+            customRules: toCustomRulesColumn(room),
+          })
           .where(eq(rooms.id, room.id));
 
         return { ok: true };

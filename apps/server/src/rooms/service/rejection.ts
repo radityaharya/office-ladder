@@ -21,6 +21,10 @@ const EXPECTED_REJECTIONS: readonly RoomServiceErrorCode[] = [
   "ACTOR_NOT_FOUND",
   "ACTOR_NOT_HOST",
   "ACTOR_NOT_MEMBER",
+  // Reachable from a well-behaved client now that a hand and a token economy
+  // exist: playing a card somebody else's reaction already removed, or spending
+  // a token past its cap, is a lost race, not a defect.
+  "CARD_NOT_AVAILABLE",
   "DECISION_POINT_NOT_FOUND",
   "DECISION_POINT_REQUIRED",
   "DECISION_POINT_STALE",
@@ -29,6 +33,13 @@ const EXPECTED_REJECTIONS: readonly RoomServiceErrorCode[] = [
   "ILLEGAL_ACTION",
   "INSUFFICIENT_RESOURCE",
   "INVALID_COMMAND",
+  /**
+   * A lobby-authored ruleset that failed the contracts validator. The lobby's
+   * own controls are built from `MODE_RULES_BOUNDS` and cannot produce one, so
+   * this is either a stale client or somebody posting by hand — a refusal, not
+   * this server malfunctioning.
+   */
+  "INVALID_MODE_RULES",
   "INVALID_PHASE",
   "INVALID_PROMPT_RESPONSE",
   "LAST_HUMAN_REQUIRED",
@@ -40,6 +51,7 @@ const EXPECTED_REJECTIONS: readonly RoomServiceErrorCode[] = [
   "ROOM_NOT_FOUND",
   "ROOM_NOT_OPEN",
   "STALE_REVISION",
+  "TOKEN_LIMIT_EXCEEDED",
   "UNSUPPORTED_MODE",
 ];
 
