@@ -426,6 +426,15 @@ function upgradePlayerV1ToV2(
 ): Record<string, unknown> {
   return {
     ...player,
+    // Not a v2 field: this one was added while the schema version stayed at 1,
+    // so "stateSchemaVersion: 1" covers several real shapes and the oldest of
+    // them lack it. The engine requires it, so without this default those rows
+    // read back as null — ROOM_NOT_FOUND for a match that is still on the board.
+    // Two rooms on the live database were in exactly that state; the frozen
+    // fixture could not catch it because it was captured after the field
+    // existed. Zero is also what a lap boundary resets it to, so an absent
+    // counter starts the current lap with its whole allowance.
+    negativeEffectsIgnoredThisLap: asIndex(player["negativeEffectsIgnoredThisLap"]) ?? 0,
     upkeep: asRecord(player["upkeep"]) ?? {
       perRound: legacyUpkeepPerRound(player, rules),
       // Charged from where the match actually is, not from round 0. A legacy

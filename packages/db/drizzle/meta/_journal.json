@@ -29,6 +29,13 @@
       "when": 1785080758141,
       "tag": "0003_room_chat_and_custom_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785105335327,
+      "tag": "0004_jsonb_object_encoding",
+      "breakpoints": true
     }
   ]
 }

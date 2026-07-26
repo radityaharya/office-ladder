@@ -2,7 +2,6 @@ import { relations } from "drizzle-orm";
 import {
   index,
   integer,
-  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -10,14 +9,7 @@ import {
   unique,
 } from "drizzle-orm/pg-core";
 import { user } from "./auth-schema";
-
-type JsonValue =
-  | boolean
-  | null
-  | number
-  | string
-  | { readonly [key: string]: JsonValue }
-  | readonly JsonValue[];
+import { jsonbValue } from "./json-column";
 
 export const roomLifecycle = pgEnum("room_lifecycle", ["open", "active", "closed"]);
 export const membershipStatus = pgEnum("membership_status", ["active", "left"]);
@@ -74,7 +66,7 @@ export const rooms = pgTable(
      * replays against, so editing this row cannot retroactively change a game
      * already in progress.
      */
-    customRules: jsonb("custom_rules").$type<JsonValue>(),
+    customRules: jsonbValue("custom_rules"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     closedAt: timestamp("closed_at"),
   },
@@ -116,7 +108,7 @@ export const games = pgTable(
     status: gameStatus("status").default("setup").notNull(),
     revision: integer("revision").default(0).notNull(),
     eventSequence: integer("event_sequence").default(0).notNull(),
-    canonicalState: jsonb("canonical_state").$type<JsonValue>().notNull(),
+    canonicalState: jsonbValue("canonical_state").notNull(),
     engineVersion: text("engine_version").notNull(),
     rulesetVersion: text("ruleset_version").notNull(),
     contentVersion: text("content_version").notNull(),
@@ -144,7 +136,7 @@ export const gameEvents = pgTable(
     actorId: text("actor_id"),
     type: text("type").notNull(),
     schemaVersion: integer("schema_version").notNull(),
-    canonicalPayload: jsonb("canonical_payload").$type<JsonValue>().notNull(),
+    canonicalPayload: jsonbValue("canonical_payload").notNull(),
     logicalTimestamp: text("logical_timestamp").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
@@ -167,7 +159,7 @@ export const commandReceipts = pgTable(
     requestHash: text("request_hash").notNull(),
     expectedRevision: integer("expected_revision").notNull(),
     status: commandReceiptStatus("status").notNull(),
-    responsePayload: jsonb("response_payload").$type<JsonValue>().notNull(),
+    responsePayload: jsonbValue("response_payload").notNull(),
     resultingRevision: integer("resulting_revision"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
@@ -183,7 +175,7 @@ export const roomProjections = pgTable("room_projections", {
     .references(() => rooms.id, { onDelete: "cascade" }),
   gameId: text("game_id").references(() => games.id, { onDelete: "set null" }),
   revision: integer("revision").notNull(),
-  projection: jsonb("projection").$type<JsonValue>().notNull(),
+  projection: jsonbValue("projection").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -198,7 +190,7 @@ export const playerProjections = pgTable(
       .notNull()
       .references(() => roomMembers.id, { onDelete: "cascade" }),
     revision: integer("revision").notNull(),
-    projection: jsonb("projection").$type<JsonValue>().notNull(),
+    projection: jsonbValue("projection").notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => [
@@ -215,7 +207,7 @@ export const gameOutbox = pgTable(
       .references(() => games.id, { onDelete: "cascade" }),
     revision: integer("revision").notNull(),
     topic: text("topic").notNull(),
-    payload: jsonb("payload").$type<JsonValue>().notNull(),
+    payload: jsonbValue("payload").notNull(),
     status: outboxStatus("status").default("pending").notNull(),
     availableAt: timestamp("available_at").defaultNow().notNull(),
     publishedAt: timestamp("published_at"),

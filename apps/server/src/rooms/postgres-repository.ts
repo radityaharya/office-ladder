@@ -91,6 +91,14 @@ class StaleWriteSignal extends Error {
  *   and repairs legacy shapes on the way out, instead of the JSON.parse(
  *   JSON.stringify(...)) round trip that used to silently drop whatever JSON
  *   could not express.
+ * - **What this hands drizzle for a jsonb column is the value, never a string.**
+ *   Every jsonb column in the schema is `packages/db`'s `jsonbValue`, not
+ *   drizzle's `jsonb()`, because that one stringifies and the bun-sql driver
+ *   then encodes the string again — the column ends up holding a JSON *string*,
+ *   `jsonb_typeof` answers 'string', and nothing about a stored match can be
+ *   indexed or queried in SQL even though every round trip still succeeds. Rows
+ *   written before that fix are repaired by drizzle/0004_jsonb_object_encoding
+ *   and read regardless by `decodeJsonbColumn`; see packages/db/src/json-column.ts.
  */
 export class PostgresRoomRepository implements RoomRepository {
   async create(room: StoredRoom): Promise<RoomWriteResult> {

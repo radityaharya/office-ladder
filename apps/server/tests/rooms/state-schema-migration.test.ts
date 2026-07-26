@@ -171,6 +171,54 @@ describe("a pre-v2 stored game, read by a v2 build", () => {
     }
   });
 
+  it("Given a stored player from before `negativeEffectsIgnoredThisLap` existed, When the room is read, Then the counter is defaulted instead of the room becoming unopenable", () => {
+    // Found on the live database, not reasoned about: two rooms in
+    // `room_projections` could not be opened at all — `deserializeGameState`
+    // rejected them with "negativeEffectsIgnoredThisLap must be an integer
+    // greater than or equal to 0" — while every test here stayed green. The
+    // fixture cannot catch this by itself because that field was added *while
+    // the schema version stayed at 1*, so the capture already has it and
+    // "stateSchemaVersion: 1" in fact covers several real shapes. Stripping it
+    // is what reproduces the oldest of them.
+    const strippedPlayers: Record<string, Record<string, unknown>> = {};
+    for (const [playerId, player] of Object.entries(V1_ROOM_SNAPSHOT.game.players)) {
+      const fields: Record<string, unknown> = { ...player };
+      delete fields["negativeEffectsIgnoredThisLap"];
+      strippedPlayers[playerId] = fields;
+    }
+    const stripped = {
+      ...V1_ROOM_SNAPSHOT,
+      game: { ...V1_ROOM_SNAPSHOT.game, players: strippedPlayers },
+    };
+    for (const player of Object.values(strippedPlayers)) {
+      expect(player).not.toHaveProperty("negativeEffectsIgnoredThisLap");
+    }
+
+    const game = openedGame(stripped);
+
+    for (const playerId of V1_PLAYER_IDS) {
+      // Zero, not "carry on where they left off": zero is also what completing a
+      // lap resets the counter to, so the player starts their current lap with
+      // the whole allowance rather than an invented spend.
+      expect(game.players[playerId]?.negativeEffectsIgnoredThisLap).toBe(0);
+    }
+    // And a value that *is* stored still wins — the step stays additive.
+    const spent = {
+      ...stripped,
+      game: {
+        ...stripped.game,
+        players: {
+          ...strippedPlayers,
+          "user-v1-host": {
+            ...strippedPlayers["user-v1-host"],
+            negativeEffectsIgnoredThisLap: 2,
+          },
+        },
+      },
+    };
+    expect(openedGame(spent).players["user-v1-host"]?.negativeEffectsIgnoredThisLap).toBe(2);
+  });
+
   it("Given a v1 marathon state with a promoted player, When it is read, Then upkeep is read off the rank ladder and heat off the mode's threshold", () => {
     // mode.quick zeroes both tunables, so on that preset "read from config" and
     // "hardcoded 0" are indistinguishable. A mode that switches them on is what
