@@ -3,32 +3,49 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
+/*
+ * DESIGN.md compliance for this shared primitive (§5, §6.1, §8). Both the
+ * overlay and card workflows flagged the previous version and could not edit it:
+ *  - Five states on every variant. Hover steps the fill to `surface-raised` and
+ *    the border to `border-strong`; active steps the fill DOWN to
+ *    `surface-sunken` at 80ms (the control recedes into the desk on press — it
+ *    no longer translates); disabled is opacity .5 and still legible-as-inert.
+ *  - Focus-visible is a hard 2px accent OUTLINE at `outline-offset: 2px`,
+ *    rendered outside the hairline. The previous soft `ring-2 ring-ring/40`
+ *    halo is the one glow-adjacent effect §5 does not permit.
+ *  - Radius: 2px for secondary/outline/ghost/destructive/link; 4px (the system
+ *    ceiling) for the primary CTA only. Never a pill.
+ *  - Heights: 28px pointer-target floor (§8), 36px default, 44px for the single
+ *    largest action. Icon buttons are 28px square even though the glyph is 16px.
+ *  - Tracking is the `label` token's 0.08em, not 0.12em.
+ */
 const buttonVariants = cva(
-  "group/button inline-flex min-h-11 shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-xs font-semibold tracking-[0.12em] whitespace-nowrap uppercase transition-[background-color,border-color,color,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-45 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/30 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex min-h-7 shrink-0 items-center justify-center rounded-sm border border-transparent bg-clip-padding text-xs font-semibold tracking-[0.08em] whitespace-nowrap uppercase transition-[background-color,border-color,color] duration-[120ms] ease-[cubic-bezier(0.2,0,0,1)] select-none focus-visible:[outline:2px_solid_var(--primary)] focus-visible:[outline-offset:2px] active:duration-[80ms] disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/85",
+        default:
+          "rounded-md border-[oklch(0_0_0_/_22%)] bg-primary text-primary-foreground hover:bg-primary/85 active:bg-primary/70",
         outline:
-          "border-border-strong bg-transparent hover:bg-secondary hover:text-foreground aria-expanded:bg-secondary aria-expanded:text-foreground",
+          "border-border-strong bg-transparent hover:bg-surface-raised hover:text-foreground active:bg-surface-sunken aria-expanded:bg-surface-raised aria-expanded:text-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
+          "bg-secondary text-secondary-foreground hover:bg-surface-raised active:bg-surface-sunken aria-expanded:bg-surface-raised aria-expanded:text-secondary-foreground",
         ghost:
-          "text-muted-foreground hover:bg-secondary hover:text-foreground aria-expanded:bg-secondary aria-expanded:text-foreground",
+          "text-muted-foreground hover:bg-surface-raised hover:text-foreground active:bg-surface-sunken aria-expanded:bg-surface-raised aria-expanded:text-foreground",
         destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
-        link: "text-primary underline underline-offset-4 hover:underline",
+          "border-destructive/40 bg-transparent text-destructive hover:bg-destructive/15 active:bg-destructive/25 focus-visible:[outline-color:var(--destructive)]",
+        link: "text-primary underline underline-offset-4 hover:text-primary/85",
       },
       size: {
         default:
-          "h-10 gap-1.5 px-6 has-data-[icon=inline-end]:pr-4 has-data-[icon=inline-start]:pl-4",
-        xs: "h-11 gap-1 px-3 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3",
-        sm: "h-11 gap-1 px-4 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
-        lg: "h-12 gap-2 px-8 has-data-[icon=inline-end]:pr-5 has-data-[icon=inline-start]:pl-5",
-        icon: "size-11",
-        "icon-xs": "size-11 [&_svg:not([class*='size-'])]:size-3",
-        "icon-sm": "size-11",
-        "icon-lg": "size-12",
+          "h-9 gap-2 px-6 has-data-[icon=inline-end]:pr-4 has-data-[icon=inline-start]:pl-4",
+        xs: "h-7 gap-1 px-3 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3",
+        sm: "h-8 gap-1 px-4 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
+        lg: "h-11 gap-2 px-8 has-data-[icon=inline-end]:pr-5 has-data-[icon=inline-start]:pl-5",
+        icon: "size-9",
+        "icon-xs": "size-7 [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm": "size-7",
+        "icon-lg": "size-11",
       },
     },
     defaultVariants: {

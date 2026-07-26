@@ -1,53 +1,94 @@
+import type { RoomStatus } from "@office-ladder/contracts";
+
 import { RoomCodeCopyButton } from "./room-code-copy-button";
 
 type RoomHeaderProps = {
   readonly roomCode: string;
   readonly playerCount: number;
+  readonly capacity?: number;
+  readonly minimumPlayers?: number;
+  readonly status?: RoomStatus;
   readonly title?: string;
   readonly description?: string;
 };
 
+const STATUS_COPY: Record<RoomStatus, { readonly led: string; readonly label: string }> = {
+  open: { led: "shell-led shell-led-active", label: "Open" },
+  starting: { led: "shell-led shell-led-caution", label: "Starting" },
+  active: { led: "shell-led shell-led-info", label: "In progress" },
+  completed: { led: "shell-led shell-led-idle", label: "Completed" },
+  abandoned: { led: "shell-led shell-led-critical", label: "Abandoned" },
+};
+
+/**
+ * Room identity as terminal chrome: a 48px bar, then a telemetry strip whose
+ * readouts are label + mono value separated by 1px vertical rules — no pills,
+ * no icon standing in for a label (DESIGN.md §6.4).
+ */
 export function RoomHeader({
   roomCode,
   playerCount,
-  title = "Team assembly",
-  description = "Choose a character, mark ready, and wait for the host to start.",
+  capacity = 6,
+  minimumPlayers = 3,
+  status = "open",
+  title = "Room assembly",
+  description = "Seat the roster, then the host starts the match. Bot seats count toward the minimum, so a solo host can start with two of them.",
 }: RoomHeaderProps) {
+  const statusCopy = STATUS_COPY[status] ?? STATUS_COPY.open;
+
   return (
-    <header className="surface-panel flex flex-col gap-6 p-5 sm:flex-row sm:items-end sm:justify-between sm:p-6">
-      <div className="max-w-2xl space-y-2">
-        <p className="font-sans text-xs font-semibold tracking-widest text-primary uppercase">
-          Private room
-        </p>
-        <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
-          {title}
-        </h1>
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          {description}
-        </p>
+    <header>
+      <div className="shell-bar">
+        <div className="shell-bar-group">
+          <span className="shell-label shell-high">Office Ladder</span>
+          <span className="shell-caption shell-medium">/ Facilities &mdash; room assembly</span>
+        </div>
+        <div className="shell-bar-group">
+          <span className="shell-status">
+            <span className={statusCopy.led} aria-hidden="true" />
+            <span className="shell-label shell-medium">
+              <span className="shell-sr-only">Room status: </span>
+              {statusCopy.label}
+            </span>
+          </span>
+          <a className="shell-btn shell-btn-ghost shell-btn-sm" href="/">
+            Exit room
+          </a>
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-6 sm:justify-end">
-        <div className="space-y-1">
-          <p className="font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-            Occupancy
-          </p>
-          <p className="font-heading text-lg font-semibold text-foreground">
-            {playerCount} active
-          </p>
-          <p className="text-xs text-muted-foreground">3–6 players</p>
-        </div>
-        <div className="space-y-1">
-          <p className="font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-            Room code
-          </p>
-          <div className="flex items-center gap-3">
-            <code className="font-mono text-lg font-semibold tracking-widest text-foreground">
-              {roomCode}
-            </code>
+      <div className="shell-strip">
+        <div className="shell-strip-cell">
+          <span className="shell-label shell-medium">Room code</span>
+          <span className="shell-strip-cell-inline">
+            <code className="shell-data shell-high shell-input-code">{roomCode}</code>
             <RoomCodeCopyButton roomCode={roomCode} />
-          </div>
+          </span>
         </div>
+
+        <div className="shell-strip-cell">
+          <span className="shell-label shell-medium">Seats</span>
+          <span className="shell-data shell-high">
+            {playerCount} / {capacity}
+          </span>
+        </div>
+
+        <div className="shell-strip-cell">
+          <span className="shell-label shell-medium">Minimum</span>
+          <span className="shell-data shell-high">{minimumPlayers} to start</span>
+        </div>
+
+        <div className="shell-strip-cell">
+          <span className="shell-label shell-medium">Supported</span>
+          <span className="shell-data shell-high">
+            {minimumPlayers}&ndash;{capacity} players
+          </span>
+        </div>
+      </div>
+
+      <div className="shell-region shell-region-surface shell-stack shell-seam-bottom">
+        <h1 className="shell-display shell-high">{title}</h1>
+        <p className="shell-body shell-medium shell-prose">{description}</p>
       </div>
     </header>
   );

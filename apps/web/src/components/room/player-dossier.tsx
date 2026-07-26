@@ -1,113 +1,161 @@
-import { RiShieldUserLine, RiUserLine } from "@remixicon/react";
+import type { CSSProperties } from "react";
 
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "../ui/native-select";
-import { cn } from "../../lib/utils";
-
-import type { CharacterOption, LobbyPlayer } from "./types";
+  botDifficultyLabel,
+  seatColorToken,
+  seatLabel,
+  type CharacterOption,
+  type LobbyPlayer,
+} from "./types";
 
 type PlayerDossierProps = {
   readonly player: LobbyPlayer;
   readonly characterOptions: readonly CharacterOption[];
   readonly onCharacterChange?: (characterId: string) => void;
   readonly onReadyChange?: (isReady: boolean) => void;
+  /** Host-only. Absent for every non-host viewer and for human seats. */
+  readonly onRemoveBot?: () => void;
+  readonly isRemoving?: boolean;
   readonly disabled?: boolean;
 };
 
+/**
+ * One roster row on the facilities terminal. Seat identity is colour *plus* the
+ * mono seat glyph, and a bot seat is marked with the literal word "BOT" beside
+ * its difficulty — neither is ever carried by colour alone (DESIGN.md §8).
+ */
 export function PlayerDossier({
   player,
   characterOptions,
   onCharacterChange,
   onReadyChange,
+  onRemoveBot,
+  isRemoving = false,
   disabled = false,
 }: PlayerDossierProps) {
   const canEditCharacter = player.isCurrentPlayer && onCharacterChange !== undefined;
   const canToggleReady = player.isCurrentPlayer && onReadyChange !== undefined;
+  const seatId = `seat-${player.seat}`;
+  const rowClassName = player.isCurrentPlayer
+    ? "shell-seat shell-seat-self"
+    : "shell-seat";
 
   return (
     <div
       role="listitem"
-      className={cn(
-        "grid gap-4 border-b border-border px-4 py-5 last:border-b-0 sm:grid-cols-[minmax(0,1.25fr)_minmax(12rem,0.9fr)_auto] sm:items-center",
-        player.isCurrentPlayer && "bg-muted/30",
-      )}
+      className={rowClassName}
+      style={{ "--shell-seat-color": seatColorToken(player.seat) } as CSSProperties}
+      data-member-id={player.id}
+      data-seat={player.seat}
+      data-bot={player.isBot ? "true" : "false"}
     >
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center border border-border bg-background text-muted-foreground">
-          {player.isHost ? (
-            <RiShieldUserLine aria-hidden="true" />
-          ) : (
-            <RiUserLine aria-hidden="true" />
-          )}
-        </div>
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <p className="truncate font-heading text-base font-semibold text-foreground">
-              {player.name}
-            </p>
-            {player.isHost ? <Badge>Host</Badge> : null}
-            {player.isCurrentPlayer ? (
-              <Badge variant="secondary">You</Badge>
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {player.characterLabel ?? "Character not assigned"}
-          </p>
-        </div>
+      {/*
+        `role="img"` is load-bearing, not decoration: `aria-label` is PROHIBITED
+        on an element that maps to the generic role (a bare `span`), so assistive
+        tech drops it and announces the raw "01" glyph instead of the seat. The
+        role gives the label something to attach to and replaces the glyph text.
+      */}
+      <span className="shell-seat-num" role="img" aria-label={`Seat ${player.seat + 1}`}>
+        {seatLabel(player.seat)}
+      </span>
+
+      <div className="shell-seat-cell shell-seat-name">
+        <span className="shell-body shell-high shell-truncate" id={`${seatId}-name`}>
+          {player.name}
+        </span>
+        {player.isHost ? <span className="shell-tag shell-tag-strong">Host</span> : null}
+        {player.isCurrentPlayer ? <span className="shell-tag shell-tag-strong">You</span> : null}
       </div>
 
-      <div className="min-w-0">
-        {canEditCharacter ? (
-          <label className="block space-y-1">
-            <span className="font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-              Character
+      <div className="shell-seat-cell" data-label="Type">
+        {player.isBot ? (
+          <span className="shell-status">
+            <span className="shell-led shell-led-info" aria-hidden="true" />
+            <span className="shell-label shell-medium">
+              Bot &middot; {botDifficultyLabel(player.botDifficulty)}
             </span>
-            <NativeSelect
-              className="w-full"
-              value={player.characterId ?? ""}
-              disabled={disabled}
-              aria-label={`Character for ${player.name}`}
-              onChange={(event) => onCharacterChange(event.currentTarget.value)}
-            >
-              <NativeSelectOption value="">Choose character</NativeSelectOption>
-              {characterOptions.map((option) => (
-                <NativeSelectOption key={option.id} value={option.id}>
-                  {option.label}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </label>
+          </span>
         ) : (
-          <div className="space-y-1">
-            <p className="font-sans text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-              Assignment
-            </p>
-            <p className="text-sm text-foreground">
-              {player.characterLabel ?? "Pending selection"}
-            </p>
-          </div>
+          <span className="shell-status">
+            <span
+              className={
+                player.isConnected
+                  ? "shell-led shell-led-active"
+                  : "shell-led shell-led-idle"
+              }
+              aria-hidden="true"
+            />
+            <span className="shell-label shell-medium">
+              {player.isConnected ? "Human" : "Human · Offline"}
+            </span>
+          </span>
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-4 sm:justify-end">
-        <Badge variant={player.isReady ? "default" : "secondary"}>
-          {player.isReady ? "Ready" : "Standby"}
-        </Badge>
+      <div className="shell-seat-cell" data-label="Assignment">
+        {canEditCharacter ? (
+          <label className="shell-field" htmlFor={`${seatId}-character`}>
+            <span className="shell-sr-only">Character for {player.name}</span>
+            <span className="shell-select-wrap">
+              <select
+                id={`${seatId}-character`}
+                className="shell-select"
+                value={player.characterId ?? ""}
+                disabled={disabled}
+                onChange={(event) => onCharacterChange(event.currentTarget.value)}
+              >
+                <option value="">Unassigned</option>
+                {characterOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </label>
+        ) : (
+          <span className="shell-body shell-medium shell-truncate">
+            {player.characterLabel ?? "Assigned at start"}
+          </span>
+        )}
+      </div>
+
+      <div className="shell-seat-actions" data-label="Status">
+        <span className="shell-status">
+          <span
+            className={
+              player.isReady ? "shell-led shell-led-active" : "shell-led shell-led-caution"
+            }
+            aria-hidden="true"
+          />
+          <span className="shell-label shell-medium">
+            {player.isReady ? "Ready" : "Standby"}
+          </span>
+        </span>
+
         {canToggleReady ? (
-          <Button
+          <button
             type="button"
-            size="sm"
-            variant={player.isReady ? "outline" : "default"}
-            disabled={disabled || player.characterId === null}
+            className="shell-btn shell-btn-outline shell-btn-sm"
             aria-pressed={player.isReady}
+            disabled={disabled || player.characterId === null}
             onClick={() => onReadyChange(!player.isReady)}
           >
             {player.isReady ? "Stand down" : "Mark ready"}
-          </Button>
+          </button>
+        ) : null}
+
+        {player.isBot && onRemoveBot !== undefined ? (
+          <button
+            type="button"
+            className="shell-btn shell-btn-danger shell-btn-sm"
+            disabled={disabled || isRemoving}
+            aria-busy={isRemoving}
+            aria-describedby={`${seatId}-name`}
+            onClick={onRemoveBot}
+          >
+            {isRemoving ? "Removing" : "Remove"}
+          </button>
         ) : null}
       </div>
     </div>

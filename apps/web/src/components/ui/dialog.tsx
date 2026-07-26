@@ -7,6 +7,19 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { RiCloseLine } from "@remixicon/react"
 
+/**
+ * Base UI dialog primitive — NOT radix. Two idioms differ and matter:
+ * - `onOpenChange(open, eventDetails)`; call `eventDetails.cancel()` to refuse
+ *   a close (escape key / outside press) while a decision is pending.
+ * - `disablePointerDismissal` blocks outside-press dismissal outright.
+ *
+ * Styling contract (DESIGN.md §4.4): overlays are the one class of element
+ * allowed to break flatness — a single short-throw near-black shadow that
+ * supplements the hairline border. That shadow, and the 160ms entrance, live
+ * in styles/overlays.css (`.overlay-backdrop` / `.overlay-dialog`); fill,
+ * border colour, radius and spacing stay on utility classes here so callers
+ * can still override them through `cn()`.
+ */
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
@@ -31,7 +44,7 @@ function DialogOverlay({
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-background/85 duration-180 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "overlay-backdrop fixed inset-0 isolate z-50 bg-background/85",
         className
       )}
       {...props}
@@ -53,7 +66,7 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-6 rounded-lg border border-border bg-popover p-6 text-sm text-popover-foreground shadow-[0_1px_2px_rgba(0,0,0,0.24)] duration-180 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "overlay-dialog fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-md border border-border-strong bg-popover p-4 text-sm text-popover-foreground outline-none sm:max-w-md",
           className
         )}
         {...props}
@@ -65,13 +78,14 @@ function DialogContent({
             render={
               <Button
                 variant="ghost"
-                className="absolute top-3 right-3"
+                // §6.1 — icon buttons take the 2px hairline radius, not the
+                // 4px control ceiling reserved for the primary CTA.
+                className="absolute top-3 right-3 rounded-sm"
                 size="icon-sm"
               />
             }
           >
-            <RiCloseLine
-            />
+            <RiCloseLine />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}
@@ -122,7 +136,9 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "font-heading text-lg leading-none font-semibold tracking-wider uppercase",
+        // `headline` (§2.1): 16px / 600 / 1.25 / 0.02em, sentence case. A modal
+        // header is a panel header, not a command label — no uppercase here.
+        "font-heading text-base leading-tight font-semibold tracking-[0.02em] text-foreground",
         className
       )}
       {...props}
@@ -138,7 +154,7 @@ function DialogDescription({
     <DialogPrimitive.Description
       data-slot="dialog-description"
       className={cn(
-        "mt-0.5 text-sm leading-relaxed text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
+        "max-w-[70ch] text-sm leading-[1.5] text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
         className
       )}
       {...props}

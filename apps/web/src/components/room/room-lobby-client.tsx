@@ -3,9 +3,20 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { LobbyPanel, RoomHeader } from "@/components/room";
 import type { CharacterOption, LobbyPlayer, LobbyState } from "@/components/room";
-import type { RoomMemberProjection, RoomStatus } from "@office-ladder/contracts";
+import {
+  BOT_DIFFICULTIES,
+  parseAvatarUrl,
+  type BotDifficulty,
+  type RoomMemberProjection,
+  type RoomStatus,
+} from "@office-ladder/contracts";
 import { subscribeRoomUpdates } from "@/realtime/room-channel";
 
+/**
+ * Mirrors MINIMUM_PLAYERS in apps/server/src/rooms/service/create-room-service.ts.
+ * Bot seats are ordinary members, so they count toward it — which is what makes
+ * solo play possible at all.
+ */
 const POLL_INTERVAL_MS = 2_000, MINIMUM_PLAYERS = 3;
 
 type LobbyBootstrap = {
@@ -18,7 +29,6 @@ type LobbyBootstrap = {
   };
   readonly selfMemberId: string;
   readonly gameRevision: number;
-  readonly roomTopic: string | null;
   readonly characterOptions: readonly CharacterOption[];
 };
 
@@ -36,7 +46,13 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
   const navigate = useNavigate();
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [isStarting, setIsStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>("standard");
+  const [botError, setBotError] = useState<string | null>(null);
+  const [isAddingBot, setIsAddingBot] = useState(false);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  const botRequestRef = useRef(false);
 
   const loadLobby = useCallback(async (): Promise<void> => {
     requestRef.current?.abort();
@@ -75,14 +91,13 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
     };
   }, [loadLobby]);
 
-  const roomTopic = loadState.kind === "ready" ? loadState.bootstrap.roomTopic : null;
+  // The room id is the Realtime topic the server publishes to.
   useEffect(() => {
-    if (roomTopic === null) return;
-    const cleanup = subscribeRoomUpdates(roomTopic, () => void loadLobby());
+    const cleanup = subscribeRoomUpdates(roomId, () => void loadLobby());
     return () => {
       void cleanup();
     };
-  }, [loadLobby, roomTopic]);
+  }, [loadLobby, roomId]);
 
   const roomStatus = loadState.kind === "ready" ? loadState.bootstrap.room.status : null;
   useEffect(() => {
@@ -94,6 +109,7 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
   const startMatch = useCallback(async (): Promise<void> => {
     if (loadState.kind !== "ready" || loadState.bootstrap.room.status !== "open") return;
     setIsStarting(true);
+    setStartError(null);
     try {
       const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/start`, {
         method: "POST",
@@ -106,12 +122,13 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
         }),
       });
       if (!response.ok) {
-        throw new LobbyResponseError(await readErrorMessage(response));
+        throw new LobbyResponseError(await readMutationError(response, "start"));
       }
       await loadLobby();
     } catch (error: unknown) {
       if (error instanceof Error) {
-        setLoadState({ kind: "error", message: error.message });
+        // Keep the roster on screen: a rejected start is not a broken lobby.
+        setStartError(error.message);
         return;
       }
       throw error;
@@ -119,6 +136,86 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
       setIsStarting(false);
     }
   }, [loadLobby, loadState, roomId]);
+
+  /**
+   * POST /api/rooms/:roomId/bots — one request per seat, sequentially, so a
+   * partial failure leaves the room in a state the host can see and reason
+   * about. The body is exactly `{ difficulty }`: contracts' parseAddBotRequest
+   * rejects any extra key, so no revision is sent.
+   */
+  const addBots = useCallback(
+    async (count: number): Promise<void> => {
+      if (botRequestRef.current) return;
+      botRequestRef.current = true;
+      setIsAddingBot(true);
+      setBotError(null);
+      try {
+        for (let seat = 0; seat < Math.max(1, count); seat += 1) {
+          const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/bots`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ difficulty: botDifficulty }),
+          });
+          if (!response.ok) {
+            throw new LobbyResponseError(await readMutationError(response, "add-bot"));
+          }
+        }
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          setBotError(error.message);
+        } else {
+          throw error;
+        }
+      } finally {
+        botRequestRef.current = false;
+        setIsAddingBot(false);
+        await loadLobby();
+      }
+    },
+    [botDifficulty, loadLobby, roomId],
+  );
+
+  /**
+   * DELETE /api/rooms/:roomId/bots/:memberId. The landed route reads the member
+   * id from the path and never parses a body; the `{ memberId }` body is sent
+   * anyway because contracts also ships parseRemoveBotRequest for that exact
+   * shape, so either server implementation is satisfied and an unread body
+   * costs nothing.
+   */
+  const removeBot = useCallback(
+    async (memberId: string): Promise<void> => {
+      if (botRequestRef.current) return;
+      botRequestRef.current = true;
+      setRemovingMemberId(memberId);
+      setBotError(null);
+      try {
+        const response = await fetch(
+          `/api/rooms/${encodeURIComponent(roomId)}/bots/${encodeURIComponent(memberId)}`,
+          {
+            method: "DELETE",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ memberId }),
+          },
+        );
+        if (!response.ok) {
+          throw new LobbyResponseError(await readMutationError(response, "remove-bot"));
+        }
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          setBotError(error.message);
+        } else {
+          throw error;
+        }
+      } finally {
+        botRequestRef.current = false;
+        setRemovingMemberId(null);
+        await loadLobby();
+      }
+    },
+    [loadLobby, roomId],
+  );
 
   const bootstrap = loadState.kind === "ready" ? loadState.bootstrap : null;
   let panelState: LobbyState;
@@ -130,47 +227,112 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
     const players = loadState.bootstrap.room.members.map((member): LobbyPlayer => ({
       id: member.id,
       name: member.displayName,
+      seat: member.seat,
       isHost: member.isHost,
       isCurrentPlayer: member.id === loadState.bootstrap.selfMemberId,
       isReady: member.isReady,
+      isConnected: member.isConnected,
+      isBot: member.isBot,
+      botDifficulty: member.botDifficulty,
       characterId: member.characterId,
       characterLabel: member.characterLabel,
     }));
     const self = loadState.bootstrap.room.members.find(
       (member) => member.id === loadState.bootstrap.selfMemberId,
     );
-    const canStart = players.length >= MINIMUM_PLAYERS && loadState.bootstrap.room.status === "open";
+    const isHost = self?.isHost === true;
+    const status = loadState.bootstrap.room.status;
+    const capacity = loadState.bootstrap.room.capacity;
+    const seatsToMinimum = Math.max(0, MINIMUM_PLAYERS - players.length);
+    const canStart = players.length >= MINIMUM_PLAYERS && status === "open";
+    const isRoomFull = players.length >= capacity;
+    const isBusy = isAddingBot || removingMemberId !== null;
+
     panelState = {
       kind: "ready",
       players,
       characterOptions: loadState.bootstrap.characterOptions,
+      roomStatus: status,
       minimumPlayers: MINIMUM_PLAYERS,
-      maximumPlayers: loadState.bootstrap.room.capacity,
-      startControl: !self?.isHost
+      maximumPlayers: capacity,
+      startControl: !isHost
         ? { kind: "hidden" }
-        : isStarting || loadState.bootstrap.room.status === "starting"
+        : isStarting || status === "starting"
           ? { kind: "loading" }
           : canStart
             ? { kind: "enabled" }
-            : { kind: "blocked", reason: "At least 3 players are required to start." },
-      onStart: self?.isHost && canStart ? startMatch : undefined,
+            : {
+                kind: "blocked",
+                // The shortfall and the fix are already stated above this
+                // control; this line only names the gate.
+                reason:
+                  seatsToMinimum > 0
+                    ? `Locked until ${MINIMUM_PLAYERS} seats are filled.`
+                    : "This room can no longer be started.",
+              },
+      startError: isHost ? startError : null,
+      // Host-only: a non-host gets no bot controls at all, not disabled ones.
+      botRequisition: !isHost
+        ? null
+        : {
+            state: isBusy
+              ? "pending"
+              : status !== "open"
+                ? "closed"
+                : isRoomFull
+                  ? "full"
+                  : "open",
+            difficulties: BOT_DIFFICULTIES,
+            difficulty: botDifficulty,
+            seatsToMinimum,
+            // Accent goes to whichever action is genuinely next (DESIGN.md §1.5).
+            emphasis: seatsToMinimum > 0 && !isRoomFull && status === "open"
+              ? "primary"
+              : "secondary",
+            error: botError,
+            onDifficultyChange: setBotDifficulty,
+            onAdd: (count) => void addBots(count),
+          },
+      onRemoveBot: isHost && status === "open" ? (memberId) => void removeBot(memberId) : undefined,
+      removingMemberId,
+      onStart: isHost && canStart ? startMatch : undefined,
     };
   }
 
   return (
-    <main className="app-shell">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+    <main className="shell-page">
+      <div className="shell-frame">
         {bootstrap ? (
-          <RoomHeader roomCode={bootstrap.room.code} playerCount={bootstrap.room.members.length} />
+          <RoomHeader
+            roomCode={bootstrap.room.code}
+            playerCount={bootstrap.room.members.length}
+            capacity={bootstrap.room.capacity}
+            minimumPlayers={MINIMUM_PLAYERS}
+            status={bootstrap.room.status}
+          />
         ) : (
-          <header className="border-b border-border pb-6">
-            <p className="font-sans text-xs font-semibold tracking-widest text-primary uppercase">
-              Private room
-            </p>
-            <h1 className="mt-2 font-heading text-3xl font-semibold tracking-tight">Team assembly</h1>
+          <header>
+            <div className="shell-bar">
+              <div className="shell-bar-group">
+                <span className="shell-label shell-high">Office Ladder</span>
+                <span className="shell-caption shell-medium">/ Facilities &mdash; room assembly</span>
+              </div>
+              <span className="shell-status">
+                <span className="shell-led shell-led-idle" aria-hidden="true" />
+                <span className="shell-label shell-medium">Connecting</span>
+              </span>
+            </div>
+            <div className="shell-region shell-region-surface shell-stack shell-seam-bottom">
+              <h1 className="shell-display shell-high">Room assembly</h1>
+              <p className="shell-body shell-medium shell-prose">
+                Reading the room record.
+              </p>
+            </div>
           </header>
         )}
-        <LobbyPanel state={panelState} />
+        <div className="shell-frame-body">
+          <LobbyPanel state={panelState} />
+        </div>
       </div>
     </main>
   );
@@ -183,7 +345,6 @@ function parseLobbyBootstrap(value: unknown): LobbyBootstrap {
   const members = room["members"];
   if (!Array.isArray(members)) throw new LobbyResponseError("Invalid room.members response.");
   const self = isRecord(payload["self"]) ? payload["self"] : null;
-  const realtime = isRecord(payload["realtime"]) ? payload["realtime"] : null;
   const game = isRecord(payload["publicProjection"])
     ? payload["publicProjection"]
     : isRecord(payload["game"])
@@ -203,7 +364,6 @@ function parseLobbyBootstrap(value: unknown): LobbyBootstrap {
       "selfMemberId",
     ),
     gameRevision: game ? requireNumber(game["revision"], "game.revision") : 0,
-    roomTopic: optionalString(payload["roomTopic"] ?? realtime?.["roomTopic"]),
     characterOptions: parseCharacterOptions(payload["characterOptions"]),
   };
 }
@@ -217,6 +377,14 @@ function parseMember(value: unknown): LobbyMember {
     isHost: requireBoolean(member["isHost"], "member.isHost"),
     isReady: requireBoolean(member["isReady"], "member.isReady"),
     isConnected: requireBoolean(member["isConnected"], "member.isConnected"),
+    isBot: requireBoolean(member["isBot"], "member.isBot"),
+    botDifficulty: optionalBotDifficulty(member["botDifficulty"]),
+    // Re-validated on arrival with the contract's own parser rather than accepted
+    // as a plain string: it answers `null` for every scheme that must never reach
+    // an `img src` (javascript:, data:, blob:, plain http:, protocol-relative
+    // `//host`), so a compromised or older server cannot hand the lobby a URL the
+    // renderer would trust.
+    avatarUrl: parseAvatarUrl(member["avatarUrl"]),
     characterId: optionalString(member["characterId"]),
     characterLabel: optionalString(member["characterLabel"]),
   };
@@ -253,6 +421,12 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function optionalBotDifficulty(value: unknown): BotDifficulty | null {
+  if (value === null || value === undefined) return null;
+  if (value === "easy" || value === "standard" || value === "ruthless") return value;
+  throw new LobbyResponseError("The room returned an unsupported bot difficulty.");
+}
+
 function requireNumber(value: unknown, label: string): number {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
   throw new LobbyResponseError(`Invalid ${label} response.`);
@@ -275,4 +449,65 @@ async function readErrorMessage(response: Response): Promise<string> {
     if (error instanceof SyntaxError) return fallback;
     throw error;
   }
+}
+
+type MutationKind = "start" | "add-bot" | "remove-bot";
+
+/**
+ * The room API answers failures as `{ error: { code } }` with no prose, so the
+ * client owns the copy. Anything unmapped falls through to the raw code rather
+ * than a blank apology — an operator can act on a code.
+ */
+const MUTATION_ERROR_COPY: Readonly<Record<string, string>> = {
+  ACTOR_NOT_HOST: "Only the room host can do that.",
+  ACTOR_NOT_MEMBER: "You are not a member of this room.",
+  ACTOR_NOT_AUTHORIZED: "You are not allowed to do that in this room.",
+  ACTOR_ALREADY_MEMBER: "That seat is already taken.",
+  ROOM_NOT_FOUND: "This room no longer exists.",
+  ROOM_CODE_NOT_FOUND: "That room code does not match an open room.",
+  ROOM_NOT_OPEN: "The room is no longer open, so its seats cannot change.",
+  ROOM_FULL: "Every seat is taken. Remove a bot before adding another.",
+  MEMBER_NOT_BOT: "That seat belongs to a human player and cannot be removed here.",
+  LAST_HUMAN_REQUIRED: "A room has to keep at least one human member.",
+  MINIMUM_PLAYERS_NOT_MET: `At least ${MINIMUM_PLAYERS} members are required to start.`,
+  STALE_REVISION: "The room changed while you were acting. It has been refreshed — try again.",
+  GAME_NOT_ACTIVE: "The match is not running.",
+  FORBIDDEN: "The server rejected the request. Reload the page and sign in again.",
+  UNAUTHORIZED: "Your session has expired. Sign in again.",
+  INVALID_REQUEST: "The server rejected the request as malformed.",
+  INVALID_JSON: "The server rejected the request as malformed.",
+  UNSUPPORTED_MEDIA_TYPE: "The server rejected the request as malformed.",
+  INTERNAL_SERVER_ERROR: "The room service failed. Try again in a moment.",
+};
+
+const MUTATION_FALLBACK: Readonly<Record<MutationKind, string>> = {
+  start: "The match could not be started.",
+  "add-bot": "The bot seat could not be added.",
+  "remove-bot": "The bot seat could not be removed.",
+};
+
+async function readMutationError(response: Response, kind: MutationKind): Promise<string> {
+  const body: unknown = await response.json().catch(() => null);
+  const nested = isRecord(body) && isRecord(body["error"]) ? body["error"] : null;
+
+  const message = isRecord(body) && typeof body["message"] === "string" ? body["message"] : null;
+  const nestedMessage = nested && typeof nested["message"] === "string" ? nested["message"] : null;
+  if (message !== null) return message;
+  if (nestedMessage !== null) return nestedMessage;
+
+  const code =
+    nested && typeof nested["code"] === "string"
+      ? nested["code"]
+      : isRecord(body) && typeof body["code"] === "string"
+        ? body["code"]
+        : isRecord(body) && typeof body["error"] === "string"
+          ? body["error"]
+          : null;
+  if (code !== null) return MUTATION_ERROR_COPY[code] ?? `The room service rejected this: ${code}.`;
+
+  // No code at all on a 404 almost always means the route itself is missing.
+  if (response.status === 404 && kind !== "start") {
+    return "This server build does not support bot seats yet.";
+  }
+  return MUTATION_FALLBACK[kind];
 }

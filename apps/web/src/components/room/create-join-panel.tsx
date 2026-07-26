@@ -1,16 +1,5 @@
 "use client";
 
-import { RiAddLine, RiLoginBoxLine } from "@remixicon/react";
-
-import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { Button } from "../ui/button";
-import { Field, FieldDescription, FieldLabel } from "../ui/field";
-import { Input } from "../ui/input";
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "../ui/native-select";
-
 import type {
   ActionState,
   CharacterOption,
@@ -18,6 +7,11 @@ import type {
   RoomFormSubmitEvent,
 } from "./types";
 
+/**
+ * Room entry as a two-slot requisition form: one vertical hairline between the
+ * two columns, both flush to the shared shell grid — no floating cards
+ * (DESIGN.md §4.1, §4.3, §4.5).
+ */
 export function CreateJoinPanel({
   characterOptions,
   createState = { kind: "idle" },
@@ -26,17 +20,15 @@ export function CreateJoinPanel({
   onJoin,
 }: CreateJoinPanelProps) {
   return (
-    <section className="surface-panel overflow-hidden" aria-labelledby="room-entry-title">
-      <div className="space-y-1 border-b border-border px-4 py-5 sm:px-6">
-        <h2 id="room-entry-title" className="font-heading text-lg font-semibold tracking-wider uppercase">
-          Enter the floor
+    <section className="shell-panel" aria-labelledby="room-entry-title">
+      <div className="shell-panel-head">
+        <h2 id="room-entry-title" className="shell-label shell-high">
+          Room access
         </h2>
-        <p className="text-sm text-muted-foreground">
-          Create a private room or join one with a six-character code.
-        </p>
+        <span className="shell-caption shell-medium">Two routes onto the floor</span>
       </div>
 
-      <div className="grid md:grid-cols-2 md:divide-x md:divide-border">
+      <div className="shell-columns">
         <RoomEntryForm
           kind="create"
           state={createState}
@@ -81,6 +73,7 @@ function RoomEntryForm({
   const isCreate = kind === "create";
   const isLoading = state.kind === "loading";
   const isDisabled = isLoading || state.kind === "disabled";
+  const errorId = `${kind}-error`;
 
   function submit(event: RoomFormSubmitEvent): void {
     event.preventDefault();
@@ -88,93 +81,135 @@ function RoomEntryForm({
   }
 
   return (
-    <form className="space-y-5 px-4 py-6 sm:px-6" onSubmit={submit} aria-busy={isLoading}>
-      <div className="space-y-1">
-        <h3 className="font-heading text-base font-semibold text-foreground">
+    <form
+      className="shell-region shell-stack-wide"
+      onSubmit={submit}
+      aria-busy={isLoading}
+      aria-labelledby={`${kind}-form-title`}
+    >
+      <div className="shell-stack">
+        <h3 id={`${kind}-form-title`} className="shell-headline shell-high">
           {isCreate ? "Open a room" : "Join a room"}
         </h3>
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="shell-body shell-medium shell-prose">
           {isCreate
-            ? "You become host and control when the match starts."
-            : "Use the code shared by the room host."}
+            ? "You become host. Fill the roster with players or bot seats, then start."
+            : "Enter the six-character code the host shared."}
         </p>
       </div>
 
-      <Field>
-        <FieldLabel htmlFor={`${kind}-player-name`}>Display name</FieldLabel>
-        <Input
+      <div className="shell-field">
+        <label className="shell-field-label" htmlFor={`${kind}-player-name`}>
+          Display name
+        </label>
+        <input
           id={`${kind}-player-name`}
+          className="shell-input"
           name="playerName"
+          type="text"
           minLength={2}
           maxLength={24}
           autoComplete="nickname"
           placeholder="Quartermaster"
+          aria-describedby={state.kind === "error" ? errorId : undefined}
+          aria-invalid={state.kind === "error"}
           disabled={isDisabled}
           required
         />
-      </Field>
+      </div>
 
       {isCreate ? null : (
-        <Field>
-          <FieldLabel htmlFor="join-room-code">Room code</FieldLabel>
-          <Input
+        <div className="shell-field">
+          <label className="shell-field-label" htmlFor="join-room-code">
+            Room code
+          </label>
+          <input
             id="join-room-code"
+            className="shell-input shell-input-code"
             name="roomCode"
+            type="text"
             minLength={6}
             maxLength={6}
             autoComplete="off"
             spellCheck={false}
             placeholder="Q4W8ZT"
-            className="uppercase"
+            aria-describedby="join-room-code-hint"
             disabled={isDisabled}
             required
           />
-          <FieldDescription>Six letters or numbers, provided by the host.</FieldDescription>
-        </Field>
+          <span className="shell-field-hint" id="join-room-code-hint">
+            Six letters or numbers, issued to the host.
+          </span>
+        </div>
       )}
 
-      <Field>
-        <FieldLabel htmlFor={`${kind}-character`}>Character</FieldLabel>
-        <NativeSelect
-          id={`${kind}-character`}
-          name="characterId"
-          className="w-full"
-          disabled={isDisabled}
-          required
-          defaultValue=""
-        >
-          <NativeSelectOption value="" disabled>
-            Choose character
-          </NativeSelectOption>
-          {characterOptions.map((option) => (
-            <NativeSelectOption key={option.id} value={option.id}>
-              {option.label}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      </Field>
+      <div className="shell-field">
+        <label className="shell-field-label" htmlFor={`${kind}-character`}>
+          Character
+        </label>
+        <span className="shell-select-wrap">
+          <select
+            id={`${kind}-character`}
+            className="shell-select"
+            name="characterId"
+            defaultValue=""
+            disabled={isDisabled}
+            required
+          >
+            <option value="" disabled>
+              Choose character
+            </option>
+            {characterOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </span>
+      </div>
 
       {state.kind === "error" ? (
-        <Alert variant="destructive">
-          <AlertTitle>{isCreate ? "Room not created" : "Room not joined"}</AlertTitle>
-          <AlertDescription>{state.message}</AlertDescription>
-        </Alert>
+        <p className="shell-msg shell-msg-error" id={errorId} role="alert">
+          <span className="shell-led shell-led-critical shell-msg-led" aria-hidden="true" />
+          <span className="shell-msg-body">
+            <span className="shell-label shell-medium">
+              {isCreate ? "Not created" : "Not joined"}
+            </span>{" "}
+            {state.message}
+          </span>
+        </p>
       ) : null}
 
       {state.kind === "disabled" && state.reason ? (
-        <p className="text-xs text-muted-foreground">{state.reason}</p>
+        <p className="shell-msg shell-msg-info">
+          <span className="shell-led shell-led-info shell-msg-led" aria-hidden="true" />
+          <span className="shell-msg-body">
+            <span className="shell-label shell-medium">Queued</span> {state.reason}
+          </span>
+        </p>
       ) : null}
 
-      <Button className="w-full" type="submit" disabled={isDisabled}>
-        {isCreate ? <RiAddLine aria-hidden="true" /> : <RiLoginBoxLine aria-hidden="true" />}
-        {isLoading
-          ? isCreate
-            ? "Creating room"
-            : "Joining room"
-          : isCreate
-            ? "Create room"
-            : "Join room"}
-      </Button>
+      <div>
+        <button
+          type="submit"
+          className={
+            isCreate
+              ? "shell-btn shell-btn-primary shell-btn-lg shell-btn-block"
+              : "shell-btn shell-btn-outline shell-btn-lg shell-btn-block"
+          }
+          data-action={isCreate ? "create-room" : "join-room"}
+          disabled={isDisabled}
+          aria-busy={isLoading}
+        >
+          {isLoading
+            ? isCreate
+              ? "Creating room"
+              : "Joining room"
+            : isCreate
+              ? "Create room"
+              : "Join room"}
+        </button>
+      </div>
     </form>
   );
 }
