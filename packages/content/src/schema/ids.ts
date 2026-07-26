@@ -8,7 +8,29 @@ export type DeckId =
   | "deck.board-meeting"
   | "deck.annual-event";
 
-export type ModeId = "mode.quick" | "mode.marathon";
+/**
+ * `mode.quick` and `mode.marathon` keep their ids: they are referenced by
+ * `RankCostByMode` and by persisted games. `mode.standard` is the new default
+ * and `mode.campaign` the longest preset — see `deadlineDashModes`.
+ *
+ * `mode.custom` is deliberately **not** a member: a custom ruleset is a
+ * lobby-authored `ModeRules` object stored on the room, not authored content,
+ * so it must never claim a content id (and must never demand a rank cost
+ * column).
+ */
+export type ModeId =
+  | "mode.quick"
+  | "mode.standard"
+  | "mode.marathon"
+  | "mode.campaign";
+
+export type GlobalEventId =
+  | "globalEvent.audit-season"
+  | "globalEvent.layoffs"
+  | "globalEvent.budget-freeze"
+  | "globalEvent.reorg"
+  | "globalEvent.merger-rumour"
+  | "globalEvent.bonus-season";
 
 export type RankId =
   | "rank.intern"

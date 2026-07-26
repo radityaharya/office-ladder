@@ -2,6 +2,8 @@ import {
   deadlineDashBoard,
   deadlineDashCharacters,
   deadlineDashDecks,
+  deadlineDashGlobalEventOrder,
+  deadlineDashGlobalEvents,
   deadlineDashModes,
   deadlineDashRanks,
 } from "../deadline-dash";
@@ -9,6 +11,7 @@ import type {
   BoardConfig,
   CharacterConfig,
   DeckConfig,
+  GlobalEventConfig,
   ModeConfig,
   RankConfig,
 } from "../schema";
@@ -78,6 +81,38 @@ const expectedModes = {
     clockQuantities: { meeting: 15, event: 15, total: 30 },
     endgame: { type: "immediate" },
   },
+  "mode.standard": {
+    targetDurationMinutes: [40, 60],
+    turnTimerSeconds: 25,
+    startingResources: {
+      money: 1200,
+      reputation: 0,
+      energy: 5,
+      workCounter: 0,
+    },
+    startingTokens: { move: 1 },
+    handLimit: 2,
+    tokenCaps: { move: 4, momentum: 4, reputation: 3, money: 3 },
+    deckQuantities: {
+      "deck.work": 38,
+      "deck.meeting": 22,
+      "deck.event": 22,
+      "deck.networking": 36,
+      "deck.board-meeting": 19,
+      "deck.annual-event": 19,
+    },
+    clockQuantities: { meeting: 22, event: 22, total: 44 },
+    endgame: {
+      type: "additional-rounds",
+      rounds: 3,
+      clockExhaustionStillEndsMatch: true,
+      scoring: {
+        rankTierPoints: 1000,
+        moneyMultiplier: 0.1,
+        reputationPoints: 50,
+      },
+    },
+  },
   "mode.marathon": {
     targetDurationMinutes: [60, 120],
     turnTimerSeconds: 30,
@@ -110,6 +145,38 @@ const expectedModes = {
       },
     },
   },
+  "mode.campaign": {
+    targetDurationMinutes: [120, 240],
+    turnTimerSeconds: 45,
+    startingResources: {
+      money: 2000,
+      reputation: 0,
+      energy: 5,
+      workCounter: 0,
+    },
+    startingTokens: { move: 1, momentum: 1 },
+    handLimit: 4,
+    tokenCaps: { move: 6, momentum: 6, reputation: 4, money: 5 },
+    deckQuantities: {
+      "deck.work": 63,
+      "deck.meeting": 38,
+      "deck.event": 38,
+      "deck.networking": 59,
+      "deck.board-meeting": 31,
+      "deck.annual-event": 31,
+    },
+    clockQuantities: { meeting: 38, event: 38, total: 76 },
+    endgame: {
+      type: "additional-rounds",
+      rounds: 3,
+      clockExhaustionStillEndsMatch: true,
+      scoring: {
+        rankTierPoints: 1000,
+        moneyMultiplier: 0.1,
+        reputationPoints: 50,
+      },
+    },
+  },
 } as const;
 
 const expectedRanks = [
@@ -117,13 +184,25 @@ const expectedRanks = [
   {
     id: "rank.staff",
     salary: 400,
-    promotion: { quick: 250, marathon: 500, reputation: 3 },
+    promotion: {
+      quick: 250,
+      standard: 500,
+      marathon: 500,
+      campaign: 625,
+      reputation: 3,
+    },
     benefits: [{ type: "salaryBonusOnReceptionistPass", amount: 100 }],
   },
   {
     id: "rank.senior-staff",
     salary: 600,
-    promotion: { quick: 600, marathon: 1200, reputation: 5 },
+    promotion: {
+      quick: 600,
+      standard: 1200,
+      marathon: 1200,
+      campaign: 1500,
+      reputation: 5,
+    },
     benefits: [
       {
         type: "extraWorkMilestoneReward",
@@ -135,19 +214,37 @@ const expectedRanks = [
   {
     id: "rank.supervisor",
     salary: 800,
-    promotion: { quick: 1000, marathon: 2000, reputation: 7 },
+    promotion: {
+      quick: 1000,
+      standard: 2000,
+      marathon: 2000,
+      campaign: 2500,
+      reputation: 7,
+    },
     benefits: [{ type: "increaseMaximumEnergy", amount: 2 }],
   },
   {
     id: "rank.assistant-manager",
     salary: 1000,
-    promotion: { quick: 1500, marathon: 3000, reputation: 9 },
+    promotion: {
+      quick: 1500,
+      standard: 3000,
+      marathon: 3000,
+      campaign: 3750,
+      reputation: 9,
+    },
     benefits: [{ type: "rerollNormalMovement", usesPerLap: 1 }],
   },
   {
     id: "rank.manager",
     salary: 1200,
-    promotion: { quick: 2250, marathon: 4500, reputation: 11 },
+    promotion: {
+      quick: 2250,
+      standard: 4500,
+      marathon: 4500,
+      campaign: 5625,
+      reputation: 11,
+    },
     benefits: [
       {
         type: "meetingLandingBonus",
@@ -158,13 +255,25 @@ const expectedRanks = [
   {
     id: "rank.senior-manager",
     salary: 1400,
-    promotion: { quick: 3000, marathon: 6000, reputation: 13 },
+    promotion: {
+      quick: 3000,
+      standard: 6000,
+      marathon: 6000,
+      campaign: 7500,
+      reputation: 13,
+    },
     benefits: [{ type: "multiplyAnnualEventReward", multiplier: 2 }],
   },
   {
     id: "rank.general-manager",
     salary: 1600,
-    promotion: { quick: 4000, marathon: 8000, reputation: 15 },
+    promotion: {
+      quick: 4000,
+      standard: 8000,
+      marathon: 8000,
+      campaign: 10000,
+      reputation: 15,
+    },
     benefits: [
       { type: "ignoreNegativeEffect", usesPerLap: 1, sources: ["tile", "card"] },
     ],
@@ -172,7 +281,13 @@ const expectedRanks = [
   {
     id: "rank.director",
     salary: 2000,
-    promotion: { quick: 5000, marathon: 10000, reputation: 17 },
+    promotion: {
+      quick: 5000,
+      standard: 10000,
+      marathon: 10000,
+      campaign: 12500,
+      reputation: 17,
+    },
     benefits: [{ type: "directorOutcome" }],
   },
 ] as const;
@@ -218,6 +333,40 @@ const validStatusIds = new Set([
   "status.next-salary-multiplier",
 ]);
 
+const expectedGlobalEventIds = [
+  "globalEvent.audit-season",
+  "globalEvent.layoffs",
+  "globalEvent.budget-freeze",
+  "globalEvent.reorg",
+  "globalEvent.merger-rumour",
+  "globalEvent.bonus-season",
+] as const;
+
+const validGlobalEventScopes = [
+  "all-players",
+  "leader",
+  "trailing-players",
+  "players-with-heat",
+  "players-in-debt",
+] as const;
+
+/**
+ * Shape of every `GlobalEventModifier` variant, keyed by `type`: the extra
+ * numeric/enum payload each one carries. An empty spec means the discriminant is
+ * the whole modifier.
+ */
+const globalEventModifierShapes = {
+  blockPromotions: {},
+  blockLoans: {},
+  blockTileClaims: {},
+  suspendUpkeep: {},
+  multiplySalary: { multiplier: "non-negative-number" },
+  multiplyProjectPayout: { multiplier: "non-negative-number" },
+  // Signed on purpose: a negative delta tightens scrutiny.
+  adjustHeatThreshold: { delta: "signed-number" },
+  demoteLowest: { resource: "money-or-reputation" },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, string>>>>;
+
 export type DeadlineDashValidationIssueCode =
   | "board.count"
   | "board.index"
@@ -255,6 +404,22 @@ export type DeadlineDashValidationIssueCode =
   | "mode.clock-quantity"
   | "mode.clock-total"
   | "mode.clock-provisional"
+  | "mode.rules-shape"
+  | "mode.rules-enum"
+  | "mode.rules-number"
+  | "mode.rules-upkeep-length"
+  | "mode.rules-win-paths"
+  | "mode.rules-quarters"
+  | "mode.rules-turn-seconds"
+  | "mode.rules-direct-messages"
+  | "globalEvent.ids"
+  | "globalEvent.id"
+  | "globalEvent.name-key"
+  | "globalEvent.scope"
+  | "globalEvent.empty"
+  | "globalEvent.modifier"
+  | "globalEvent.announcement"
+  | "globalEvent.order"
   | "rank.count"
   | "rank.order"
   | "rank.tier"
@@ -288,6 +453,8 @@ export type DeadlineDashContentValidationInput = {
   readonly ranks: readonly RankConfig[];
   readonly characters: Readonly<Record<string, CharacterConfig>>;
   readonly decks: readonly DeckConfig[];
+  readonly globalEvents: Readonly<Record<string, GlobalEventConfig>>;
+  readonly globalEventOrder: readonly string[];
 };
 
 const canonicalContent: DeadlineDashContentValidationInput = {
@@ -296,6 +463,8 @@ const canonicalContent: DeadlineDashContentValidationInput = {
   ranks: deadlineDashRanks,
   characters: deadlineDashCharacters,
   decks: deadlineDashDecks,
+  globalEvents: deadlineDashGlobalEvents,
+  globalEventOrder: deadlineDashGlobalEventOrder,
 };
 
 function formatValue(value: unknown): string {
@@ -1097,9 +1266,530 @@ function validateNumberRecord(
   }
 }
 
+type NumericBound = {
+  readonly integer?: boolean;
+  /** Inclusive; defaults to 0. Above 0 only where a zero is degenerate, not inert. */
+  readonly minimum?: number;
+  /** Inclusive. Present on every numeric: §8.4 treats an unbounded tunable as a cheat. */
+  readonly maximum: number;
+};
+
+type RuleFieldSpec =
+  | { readonly kind: "boolean" }
+  | { readonly kind: "enum"; readonly values: readonly string[] }
+  | ({ readonly kind: "number" } & NumericBound)
+  | ({ readonly kind: "nullable-number" } & NumericBound)
+  | ({ readonly kind: "number-pair" } & NumericBound)
+  | ({ readonly kind: "number-array" } & NumericBound);
+
+const BOOLEAN_FIELD = { kind: "boolean" } as const;
+
+/**
+ * The `ModeRules` shape as data, so one walker can check the authored presets
+ * *and* an untrusted lobby-authored custom ruleset (spec §8.4) against exactly
+ * the same rules. Nothing here may be relaxed for content and tightened for
+ * client input, or the two drift.
+ *
+ * Every numeric carries an inclusive maximum. That is not defensive padding: an
+ * unbounded `maxPipAdjust` or `maxLoanPrincipal` from a lobby is a cheat, and a
+ * multi-thousand-round `quarters.count` is a denial of service. Non-negativity
+ * is enforced for all of them, and signed values are deliberately absent from
+ * this shape — nothing in `ModeRules` is meaningfully negative.
+ *
+ * The bounds mirror `MODE_RULES_BOUNDS` in
+ * `packages/contracts/src/mode-rules.ts` value for value, so that every shipped
+ * preset provably survives the client-input gate as well: if the two tables
+ * disagree, a mode the lobby offers is one the lobby cannot save back.
+ */
+const MODE_RULES_SHAPE = {
+  quarters: {
+    enabled: BOOLEAN_FIELD,
+    count: { kind: "number", integer: true, minimum: 1, maximum: 12 },
+    roundsEach: { kind: "number", integer: true, minimum: 1, maximum: 50 },
+    globalEvents: BOOLEAN_FIELD,
+  },
+  winPaths: {
+    promotion: BOOLEAN_FIELD,
+    wealth: BOOLEAN_FIELD,
+    influence: BOOLEAN_FIELD,
+    survival: BOOLEAN_FIELD,
+  },
+  economy: {
+    upkeepEnabled: BOOLEAN_FIELD,
+    upkeepByRankIndex: { kind: "number-array", integer: true, maximum: 100_000 },
+    loansEnabled: BOOLEAN_FIELD,
+    maxLoanPrincipal: { kind: "number", integer: true, maximum: 1_000_000 },
+    interestBasisPoints: { kind: "number", integer: true, maximum: 10_000 },
+    bankruptcy: { kind: "enum", values: ["none", "demote", "eliminate"] },
+    incomeStreamsEnabled: BOOLEAN_FIELD,
+  },
+  board: {
+    ownershipEnabled: BOOLEAN_FIELD,
+    claimCostMultiplier: { kind: "number", maximum: 10 },
+    tollMultiplier: { kind: "number", maximum: 10 },
+    upgradesEnabled: BOOLEAN_FIELD,
+    placementsEnabled: BOOLEAN_FIELD,
+    maxPlacementsPerPlayer: { kind: "number", integer: true, maximum: 20 },
+  },
+  projects: {
+    enabled: BOOLEAN_FIELD,
+    maxConcurrentPerPlayer: { kind: "number", integer: true, maximum: 10 },
+    joinable: BOOLEAN_FIELD,
+    sabotageable: BOOLEAN_FIELD,
+    deadlineRounds: { kind: "number", integer: true, minimum: 1, maximum: 50 },
+  },
+  conflict: {
+    targetedAttacks: BOOLEAN_FIELD,
+    heatEnabled: BOOLEAN_FIELD,
+    heatPerAttack: { kind: "number", integer: true, maximum: 100 },
+    heatThreshold: { kind: "number", integer: true, minimum: 1, maximum: 1_000 },
+    defenceEnabled: BOOLEAN_FIELD,
+    leaderProtection: { kind: "enum", values: ["none", "soft", "hard"] },
+    elimination: BOOLEAN_FIELD,
+  },
+  agency: {
+    promotionIsChoice: BOOLEAN_FIELD,
+    promotionRaisesUpkeep: BOOLEAN_FIELD,
+    diceAdjustEnabled: BOOLEAN_FIELD,
+    energyPerPip: { kind: "number", integer: true, maximum: 10 },
+    maxPipAdjust: { kind: "number", integer: true, maximum: 6 },
+    freeActionsPerTurn: { kind: "number", integer: true, maximum: 5 },
+    handEnabled: BOOLEAN_FIELD,
+  },
+  interaction: {
+    reactionWindows: BOOLEAN_FIELD,
+    reactionWindowSeconds: { kind: "number", integer: true, minimum: 1, maximum: 120 },
+    votesEnabled: BOOLEAN_FIELD,
+    auctionsEnabled: BOOLEAN_FIELD,
+    tradesEnabled: BOOLEAN_FIELD,
+    promisesRecorded: BOOLEAN_FIELD,
+  },
+  hidden: {
+    rolesEnabled: BOOLEAN_FIELD,
+    roleWinConditions: BOOLEAN_FIELD,
+    secretObjectives: BOOLEAN_FIELD,
+    hiddenHands: BOOLEAN_FIELD,
+  },
+  social: {
+    chat: { kind: "enum", values: ["off", "quick", "full"] },
+    emoteReactions: BOOLEAN_FIELD,
+    directMessages: BOOLEAN_FIELD,
+  },
+  timers: {
+    turnSeconds: { kind: "number", integer: true, minimum: 5, maximum: 600 },
+    onTimeout: { kind: "enum", values: ["auto-roll", "auto-pass", "best-move"] },
+    chessClockSeconds: {
+      kind: "nullable-number",
+      integer: true,
+      minimum: 30,
+      maximum: 7_200,
+    },
+  },
+  bots: {
+    pacing: { kind: "enum", values: ["instant", "paced"] },
+    thinkMsRange: { kind: "number-pair", integer: true, maximum: 60_000 },
+    canNegotiate: BOOLEAN_FIELD,
+  },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, RuleFieldSpec>>>>;
+
+const WIN_SHAPES = ["race", "fixed-length", "objectives", "survival"] as const;
+
+function validateBoundedNumber(
+  value: unknown,
+  spec: NumericBound,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  const minimum = spec.minimum ?? 0;
+  const expected = `${spec.integer ? "integer" : "number"} in ${minimum}-${spec.maximum}`;
+  if (
+    !isFiniteNumber(value) ||
+    value < minimum ||
+    value > spec.maximum ||
+    (spec.integer === true && !Number.isInteger(value))
+  ) {
+    addIssue(issues, "mode.rules-number", path, expected, value);
+  }
+}
+
+function validateRuleField(
+  value: unknown,
+  spec: RuleFieldSpec,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  switch (spec.kind) {
+    case "boolean":
+      if (typeof value !== "boolean") {
+        addIssue(issues, "mode.rules-shape", path, "boolean", value);
+      }
+      return;
+    case "enum":
+      if (typeof value !== "string" || !spec.values.includes(value)) {
+        addIssue(issues, "mode.rules-enum", path, spec.values, value);
+      }
+      return;
+    case "number":
+      validateBoundedNumber(value, spec, path, issues);
+      return;
+    case "nullable-number":
+      if (value !== null) validateBoundedNumber(value, spec, path, issues);
+      return;
+    case "number-pair":
+      if (!Array.isArray(value) || value.length !== 2) {
+        addIssue(issues, "mode.rules-shape", path, "two-element numeric range", value);
+        return;
+      }
+      validateBoundedNumber(value[0], spec, `${path}[0]`, issues);
+      validateBoundedNumber(value[1], spec, `${path}[1]`, issues);
+      if (isFiniteNumber(value[0]) && isFiniteNumber(value[1]) && value[0] > value[1]) {
+        addIssue(issues, "mode.rules-number", path, "ascending range", value);
+      }
+      return;
+    case "number-array":
+      if (!Array.isArray(value)) {
+        addIssue(issues, "mode.rules-shape", path, "numeric array", value);
+        return;
+      }
+      value.forEach((entry, index) => {
+        validateBoundedNumber(entry, spec, `${path}[${index}]`, issues);
+      });
+      return;
+  }
+}
+
+/**
+ * Named to stay distinct from `ModeRulesValidationOptions` in
+ * `@office-ladder/contracts`: that one belongs to the client-input parser and
+ * has a different shape, and the server imports from both packages.
+ */
+export type ModeRulesContentValidationOptions = {
+  /**
+   * `economy.upkeepByRankIndex` must have exactly one charge per rung of the
+   * ladder — a short array silently exempts the top ranks from upkeep, which is
+   * precisely backwards.
+   */
+  readonly rankLadderLength: number;
+  /**
+   * When supplied, `timers.turnSeconds` must match it. `ModeConfig` carries
+   * `turnTimerSeconds` as well, and two turn-timer numbers that disagree is a
+   * bug waiting for whichever consumer reads the other one.
+   */
+  readonly turnTimerSeconds?: number;
+};
+
+/**
+ * Validates a `ModeRules` object structurally and against its cross-field
+ * invariants. Exported so the same walker can be pointed at a lobby-authored
+ * custom ruleset (spec §8.4) instead of at authored content — never trust a
+ * client-supplied rules object.
+ */
+export function validateModeRules(
+  rules: unknown,
+  options: ModeRulesContentValidationOptions,
+  path = "rules",
+): DeadlineDashValidationResult {
+  const issues: DeadlineDashValidationIssue[] = [];
+  appendModeRulesIssues(rules, options, path, issues);
+  return { valid: issues.length === 0, issues };
+}
+
+function appendModeRulesIssues(
+  rules: unknown,
+  options: ModeRulesContentValidationOptions,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  if (!isRecord(rules)) {
+    addIssue(issues, "mode.rules-shape", path, "ModeRules object", rules);
+    return;
+  }
+
+  if (typeof rules.winShape !== "string" || !WIN_SHAPES.includes(rules.winShape as never)) {
+    addIssue(issues, "mode.rules-enum", `${path}.winShape`, WIN_SHAPES, rules.winShape);
+  }
+
+  const expectedKeys = new Set<string>(["winShape", ...Object.keys(MODE_RULES_SHAPE)]);
+  for (const key of Object.keys(rules).sort()) {
+    if (!expectedKeys.has(key)) {
+      addIssue(issues, "mode.rules-shape", `${path}.${key}`, "absent", rules[key]);
+    }
+  }
+
+  for (const [groupName, groupShape] of Object.entries(MODE_RULES_SHAPE)) {
+    const groupPath = `${path}.${groupName}`;
+    const group = rules[groupName];
+    if (!isRecord(group)) {
+      addIssue(issues, "mode.rules-shape", groupPath, `${groupName} rules object`, group);
+      continue;
+    }
+
+    for (const [fieldName, fieldSpec] of Object.entries(groupShape)) {
+      validateRuleField(
+        group[fieldName],
+        fieldSpec as RuleFieldSpec,
+        `${groupPath}.${fieldName}`,
+        issues,
+      );
+    }
+    for (const key of Object.keys(group).sort()) {
+      if (!(key in groupShape)) {
+        addIssue(issues, "mode.rules-shape", `${groupPath}.${key}`, "absent", group[key]);
+      }
+    }
+  }
+
+  const winPaths = rules.winPaths;
+  if (
+    isRecord(winPaths) &&
+    winPaths.promotion === false &&
+    winPaths.wealth === false &&
+    winPaths.influence === false &&
+    winPaths.survival === false
+  ) {
+    addIssue(
+      issues,
+      "mode.rules-win-paths",
+      `${path}.winPaths`,
+      "at least one enabled win path",
+      winPaths,
+    );
+  }
+
+  const economy = rules.economy;
+  if (isRecord(economy) && Array.isArray(economy.upkeepByRankIndex)) {
+    if (economy.upkeepByRankIndex.length !== options.rankLadderLength) {
+      addIssue(
+        issues,
+        "mode.rules-upkeep-length",
+        `${path}.economy.upkeepByRankIndex.length`,
+        options.rankLadderLength,
+        economy.upkeepByRankIndex.length,
+      );
+    }
+  }
+
+  const quarters = rules.quarters;
+  if (isRecord(quarters)) {
+    if (
+      quarters.enabled === true &&
+      (!isPositiveInteger(quarters.count) || !isPositiveInteger(quarters.roundsEach))
+    ) {
+      addIssue(
+        issues,
+        "mode.rules-quarters",
+        `${path}.quarters`,
+        "positive count and roundsEach when quarters are enabled",
+        { count: quarters.count, roundsEach: quarters.roundsEach },
+      );
+    }
+    // A fixed-length match has to know when it ends, and the quarter track is
+    // the only thing in ModeRules that says so.
+    if (rules.winShape === "fixed-length" && quarters.enabled !== true) {
+      addIssue(
+        issues,
+        "mode.rules-quarters",
+        `${path}.quarters.enabled`,
+        "true when winShape is fixed-length",
+        quarters.enabled,
+      );
+    }
+  }
+
+  // Spec §8.1: private channels are an abuse surface and a moderation
+  // obligation, so `directMessages` ships as an off switch, never as a feature.
+  // Enforced here rather than only in the presets so a lobby-authored ruleset
+  // cannot turn them on either.
+  const social = rules.social;
+  if (isRecord(social) && social.directMessages !== false) {
+    addIssue(
+      issues,
+      "mode.rules-direct-messages",
+      `${path}.social.directMessages`,
+      false,
+      social.directMessages,
+    );
+  }
+
+  const timers = rules.timers;
+  if (
+    options.turnTimerSeconds !== undefined &&
+    isRecord(timers) &&
+    timers.turnSeconds !== options.turnTimerSeconds
+  ) {
+    addIssue(
+      issues,
+      "mode.rules-turn-seconds",
+      `${path}.timers.turnSeconds`,
+      options.turnTimerSeconds,
+      timers.turnSeconds,
+    );
+  }
+}
+
+function validateGlobalEvents(
+  globalEvents: DeadlineDashContentValidationInput["globalEvents"],
+  globalEventOrder: DeadlineDashContentValidationInput["globalEventOrder"],
+  issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
+): void {
+  const actualIds = Object.keys(globalEvents).sort();
+  const expectedIds = [...expectedGlobalEventIds].sort();
+  if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
+    addIssue(issues, "globalEvent.ids", "globalEvents.keys", expectedIds, actualIds);
+  }
+
+  for (const [key, event] of Object.entries(globalEvents)) {
+    const path = `globalEvents.${key}`;
+    if (event.id !== key) {
+      addIssue(issues, "globalEvent.id", `${path}.id`, key, event.id);
+    }
+
+    const slug = key.slice("globalEvent.".length);
+    const camel = slug.replace(/-([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+    if (event.displayNameKey !== `deadlineDash.globalEvent.${camel}.name`) {
+      addIssue(
+        issues,
+        "globalEvent.name-key",
+        `${path}.displayNameKey`,
+        `deadlineDash.globalEvent.${camel}.name`,
+        event.displayNameKey,
+      );
+    }
+    if (event.descriptionKey !== `deadlineDash.globalEvent.${camel}.description`) {
+      addIssue(
+        issues,
+        "globalEvent.name-key",
+        `${path}.descriptionKey`,
+        `deadlineDash.globalEvent.${camel}.description`,
+        event.descriptionKey,
+      );
+    }
+
+    if (!validGlobalEventScopes.includes(event.scope as never)) {
+      addIssue(issues, "globalEvent.scope", `${path}.scope`, validGlobalEventScopes, event.scope);
+    }
+
+    // Every authored effect has to be a real effect shape, checked by exactly
+    // the walker the board and the decks go through — a quarter event is
+    // resolved by the same engine resolver, so anything it cannot interpret is
+    // a silent no-op at the worst possible moment.
+    validateEffectList(event.effects, `${path}.effects`, issues, authoredDeckIds);
+
+    if (!Array.isArray(event.modifiers)) {
+      addIssue(issues, "globalEvent.modifier", `${path}.modifiers`, "modifier array", event.modifiers);
+    } else {
+      event.modifiers.forEach((modifier, index) => {
+        validateGlobalEventModifier(modifier, `${path}.modifiers[${index}]`, issues);
+      });
+    }
+
+    const effectCount = Array.isArray(event.effects) ? event.effects.length : 0;
+    const modifierCount = Array.isArray(event.modifiers) ? event.modifiers.length : 0;
+    if (effectCount === 0 && modifierCount === 0) {
+      addIssue(
+        issues,
+        "globalEvent.empty",
+        path,
+        "at least one effect or quarter modifier",
+        { effects: effectCount, modifiers: modifierCount },
+      );
+    }
+
+    // Spec §5.7: a shock the table can prepare for is a decision, an
+    // unannounced one is just variance. Every shipped event is announced.
+    if (event.announcedQuarterAhead !== true) {
+      addIssue(
+        issues,
+        "globalEvent.announcement",
+        `${path}.announcedQuarterAhead`,
+        true,
+        event.announcedQuarterAhead,
+      );
+    }
+  }
+
+  const seenInOrder = new Set<string>();
+  globalEventOrder.forEach((eventId, index) => {
+    if (!(eventId in globalEvents)) {
+      addIssue(
+        issues,
+        "globalEvent.order",
+        `globalEventOrder[${index}]`,
+        Object.keys(globalEvents),
+        eventId,
+      );
+      return;
+    }
+    if (seenInOrder.has(eventId)) {
+      addIssue(issues, "globalEvent.order", `globalEventOrder[${index}]`, "unique entry", eventId);
+    }
+    seenInOrder.add(eventId);
+  });
+  for (const key of Object.keys(globalEvents).sort()) {
+    if (!seenInOrder.has(key)) {
+      addIssue(
+        issues,
+        "globalEvent.order",
+        `globalEventOrder`,
+        `an entry for ${key}`,
+        globalEventOrder,
+      );
+    }
+  }
+}
+
+function validateGlobalEventModifier(
+  modifier: unknown,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  if (!isRecord(modifier) || typeof modifier.type !== "string") {
+    addIssue(issues, "globalEvent.modifier", path, "modifier object with a type", modifier);
+    return;
+  }
+
+  const shape = globalEventModifierShapes[modifier.type as keyof typeof globalEventModifierShapes];
+  if (shape === undefined) {
+    addIssue(
+      issues,
+      "globalEvent.modifier",
+      `${path}.type`,
+      Object.keys(globalEventModifierShapes),
+      modifier.type,
+    );
+    return;
+  }
+
+  for (const [field, rule] of Object.entries(shape as Readonly<Record<string, string>>)) {
+    const value = modifier[field];
+    const fieldPath = `${path}.${field}`;
+    if (rule === "non-negative-number") {
+      if (!isFiniteNumber(value) || value < 0 || value > 100) {
+        addIssue(issues, "globalEvent.modifier", fieldPath, "number in 0-100", value);
+      }
+    } else if (rule === "signed-number") {
+      if (!isFiniteNumber(value) || !Number.isInteger(value) || Math.abs(value) > 100) {
+        addIssue(issues, "globalEvent.modifier", fieldPath, "integer in -100..100", value);
+      }
+    } else if (rule === "money-or-reputation") {
+      if (value !== "money" && value !== "reputation") {
+        addIssue(issues, "globalEvent.modifier", fieldPath, ["money", "reputation"], value);
+      }
+    }
+  }
+
+  for (const key of Object.keys(modifier).sort()) {
+    if (key !== "type" && !(key in shape)) {
+      addIssue(issues, "globalEvent.modifier", `${path}.${key}`, "absent", modifier[key]);
+    }
+  }
+}
+
 function validateModes(
   modes: DeadlineDashContentValidationInput["modes"],
   issues: DeadlineDashValidationIssue[],
+  rankLadderLength: number,
 ): void {
   const expectedIds = Object.keys(expectedModes);
   const actualIds = Object.keys(modes).sort();
@@ -1236,6 +1926,13 @@ function validateModes(
         mode.endgame,
       );
     }
+
+    appendModeRulesIssues(
+      mode.rules,
+      { rankLadderLength, turnTimerSeconds: mode.turnTimerSeconds },
+      `modes.${modeId}.rules`,
+      issues,
+    );
   }
 }
 
@@ -1301,7 +1998,9 @@ function validateRanks(
 
     const expectedCosts = {
       "mode.quick": expected.promotion.quick,
+      "mode.standard": expected.promotion.standard,
       "mode.marathon": expected.promotion.marathon,
+      "mode.campaign": expected.promotion.campaign,
     };
     validateNumberRecord(
       requirement.moneyCost,
@@ -1408,9 +2107,15 @@ export function validateDeadlineDashContent(
 
   const authoredDeckIds = validateDecks(content.decks, issues);
   validateBoard(content.board, issues, authoredDeckIds);
-  validateModes(content.modes, issues);
+  validateModes(content.modes, issues, content.ranks.length);
   validateRanks(content.ranks, issues);
   validateCharacters(content.characters, issues);
+  validateGlobalEvents(
+    content.globalEvents,
+    content.globalEventOrder,
+    issues,
+    authoredDeckIds,
+  );
 
   return { valid: issues.length === 0, issues };
 }
