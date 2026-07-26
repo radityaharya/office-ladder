@@ -338,6 +338,20 @@ function assertNoTurnTakenTwice(harness: Harness): void {
   expect(new Set(revisions).size).toBe(revisions.length);
 }
 
+/**
+ * Every test below plays out a whole match with two drivers contending, which is
+ * tens of seconds of real work — one measured run of this file took 35,970ms.
+ * Vitest's default is 5,000ms, so these were passing only when nothing else was
+ * running and failing whenever the suite had company. That is not flakiness to
+ * live with: it is a timeout an order of magnitude below the work, so which runs
+ * go red is decided by machine load rather than by the code.
+ *
+ * Generous on purpose. The assertions here are about correctness under
+ * contention, and the thing they must never do is fail for being slow — a red
+ * that means "busy laptop" teaches the reader to ignore this file.
+ */
+const MATCH_TIMEOUT_MS = 120_000;
+
 describe.each([
   ["one server process", 1 as const],
   ["two server processes over one database", 2 as const],
@@ -354,7 +368,7 @@ describe.each([
     expect(harness.commits.some((commit) => commit.source === "bot-driver")).toBe(true);
     expect(harness.commits.some((commit) => commit.source === "timeout-driver")).toBe(true);
     expect((await harness.game()).revision).toBeGreaterThan(before.revision);
-  });
+  }, MATCH_TIMEOUT_MS);
 
   it("Given both drivers racing every turn, When commands commit, Then no turn is taken twice and none is lost", async () => {
     const harness = await startMatch({ processes });
@@ -369,7 +383,7 @@ describe.each([
     // both failure modes at once.
     const after = await harness.game();
     expect(harness.commits).toHaveLength(after.revision - before.revision);
-  });
+  }, MATCH_TIMEOUT_MS);
 
   it("Given a player request racing both drivers on every turn, When all three contend, Then exactly one command lands per turn", async () => {
     const harness = await startMatch({ processes });
@@ -389,7 +403,7 @@ describe.each([
     // And the loser was told, rather than being given a 200 over a turn nobody
     // took: every refusal carries a code.
     expect(harness.refusals.every((refusal) => refusal.split(":").length === 3)).toBe(true);
-  });
+  }, MATCH_TIMEOUT_MS);
 
   it("Given both drivers driving the whole match, When nobody human ever acts, Then it terminates with a winner rather than stalling", async () => {
     const harness = await startMatch({ processes });
@@ -406,7 +420,7 @@ describe.each([
     // The clock is cleared once nothing is left to enforce, so a finished match
     // cannot leave a deadline behind for a driver to act on.
     expect((await harness.room()).turnTimer).toBeNull();
-  });
+  }, MATCH_TIMEOUT_MS);
 });
 
 describe("the timer write bypasses the service lock", () => {
@@ -474,5 +488,5 @@ describe("the timer write bypasses the service lock", () => {
     await harness.botDriver.drive(roomId);
     expect((await harness.game()).revision).toBeGreaterThan(before.revision);
     await assertNoCrossedSeats(harness);
-  });
+  }, MATCH_TIMEOUT_MS);
 });

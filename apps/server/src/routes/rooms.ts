@@ -486,7 +486,11 @@ roomsRouter.delete("/:roomId/bots/:memberId", async (c) => {
   });
 });
 
-// POST /:roomId/commands, plus the deprecated /roll and /respond aliases that
-// forward into the very same handler. Registered last so the literal segments
-// above are never shadowed.
+// POST /:roomId/commands — the whole game-command surface, one route.
+//
+// Registered last so the literal segments above (`/join`, `/:roomId/start`,
+// `/:roomId/rules`, …) are never shadowed. The deprecated `/roll` and `/respond`
+// aliases used to be mounted here too; they are retired (spec §11.1's wave-5
+// deletion), so `/commands` is the only path onto a game command and there is no
+// second door for an entitlement or idempotency check to be missing from.
 registerCommandRoutes(roomsRouter, defaultCommandRouteDependencies);

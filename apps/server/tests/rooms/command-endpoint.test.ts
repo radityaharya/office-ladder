@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { SERVER_INJECTED_COMMAND_TYPES } from "@office-ladder/contracts";
 import { createStableId, type GameState, type PlayerId } from "@office-ladder/engine";
 import { Hono } from "hono";
 
@@ -25,9 +26,12 @@ import {
  * validation, the entitlement guard, the revision predicate, idempotency, the
  * per-room queue, and the single refusal shape.
  *
- * `POST /:roomId/roll` and `POST /:roomId/respond` are deliberately included:
- * they are aliases onto the same handler, and a test that only ever hit
- * `/commands` would not notice if they stopped being.
+ * `POST /:roomId/roll` and `POST /:roomId/respond` are **retired** (spec §11.1's
+ * wave-5 deletion, now that the client posts only to `/commands`). Three tests
+ * used to assert they behaved like `/commands`; they are replaced by tests that
+ * assert they are gone, because a route deleted from the source is not the same
+ * claim as a route unreachable over HTTP — a re-added alias, or a `/:roomId/:x`
+ * pattern that happened to swallow the path, would both pass a source-level check.
  */
 
 const players = {
@@ -459,11 +463,31 @@ describe("POST /api/rooms/:roomId/commands — hostile input", () => {
     expect((await currentGame(harness)).revision).toBe(before.revision);
   });
 
-  it("Given the other two server-injected commands, When a player submits them, Then both are refused the same way", async () => {
+  /**
+   * Driven off `SERVER_INJECTED_COMMAND_TYPES` rather than a hand-written list.
+   *
+   * These three are the server acting as the clock (spec §7.1), and the reason a
+   * player must never reach them is concrete: `window.expire` resolves an open
+   * reaction window, so a seat that could submit one could close the window the
+   * instant it opened and deny every other seat the chance to react. Looping the
+   * constant is what makes a *fourth* server-injected type covered the moment it is
+   * declared — the previous hardcoded `["quarter.advance", "turn.timeout"]` would
+   * have gone on passing while the new one went unchecked at this endpoint.
+   */
+  it("Given every server-injected command type, When a player submits it, Then each is refused the same way", async () => {
     const harness = await startedMatch();
     const revision = (await currentGame(harness)).revision;
 
-    for (const type of ["quarter.advance", "turn.timeout"]) {
+    // Pins the constant itself: a type quietly dropped from it would otherwise
+    // shrink this loop rather than fail it, and dropping one is exactly how a
+    // clock-only command becomes player-submittable.
+    expect([...SERVER_INJECTED_COMMAND_TYPES]).toEqual([
+      "window.expire",
+      "quarter.advance",
+      "turn.timeout",
+    ]);
+
+    for (const type of SERVER_INJECTED_COMMAND_TYPES) {
       const response = await post(
         harness,
         { type, commandId: `injected-${type}`, expectedRevision: revision },
@@ -472,9 +496,41 @@ describe("POST /api/rooms/:roomId/commands — hostile input", () => {
 
       expect(response.status).toBe(403);
       expect(await response.json()).toMatchObject({
-        error: { code: "SERVER_INJECTED_COMMAND" },
+        error: { code: "SERVER_INJECTED_COMMAND", command: null, retryable: false },
       });
     }
+    // Not one of them moved the game, and none of them was broadcast: the refusal
+    // is upstream of the gateway, so there is nothing to undo.
+    expect((await currentGame(harness)).revision).toBe(revision);
+    expect(harness.announced).toEqual([]);
+  });
+
+  /**
+   * The same refusal from a seat that is not the active player. The 403 must be
+   * about *what* was submitted, not about whose turn it is — otherwise it would
+   * disappear the moment the clock's authority was claimed by a bystander, which is
+   * the more likely attacker: the seat that wants a reaction window closed early is
+   * usually not the one who opened it.
+   */
+  it("Given a bystander seat, When it submits window.expire, Then it is refused as server-injected too", async () => {
+    const harness = await startedMatch();
+    const revision = (await currentGame(harness)).revision;
+
+    const response = await post(
+      harness,
+      {
+        type: "window.expire",
+        commandId: "expire-bystander",
+        expectedRevision: revision,
+        decisionPointId: "decision-1",
+      },
+      { as: await otherSeat(harness) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: { code: "SERVER_INJECTED_COMMAND", command: null, retryable: false },
+    });
     expect((await currentGame(harness)).revision).toBe(revision);
   });
 
@@ -748,61 +804,77 @@ describe("POST /api/rooms/:roomId/commands — the revision predicate", () => {
   });
 });
 
-describe("the deprecated /roll and /respond aliases", () => {
-  it("Given the shipped client's roll body, When it posts to /roll, Then it applies exactly as /commands would", async () => {
+describe("the retired /roll and /respond aliases", () => {
+  /**
+   * Each alias is probed with the exact body the shipped client used to send it,
+   * from the seat that used to be entitled to it, at a revision that was current.
+   * Every reason to refuse it *other than the route being gone* is therefore
+   * absent — so a 404 here can only mean the path no longer resolves, and the same
+   * body posted to `/commands` in the tests above still applies.
+   */
+  it("Given the roll body the old client sent, When it posts to /roll, Then the path is gone", async () => {
     const harness = await startedMatch();
-
-    const response = await post(
-      harness,
-      { commandId: "alias-roll", expectedRevision: (await currentGame(harness)).revision },
-      { as: await activePlayer(harness), path: "/roll" },
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      room: { id: roomId },
-      command: { type: "turn.roll", replayed: false },
-    });
-  });
-
-  it("Given a body that names a different command, When it posts to /roll, Then the alias refuses to be a second door", async () => {
-    const harness = await startedMatch("mode.marathon");
     const before = await currentGame(harness);
 
     const response = await post(
       harness,
       {
-        type: "loan.take",
-        commandId: "alias-smuggle",
+        type: "turn.roll",
+        commandId: "alias-roll",
         expectedRevision: before.revision,
-        principal: 500,
       },
       { as: await activePlayer(harness), path: "/roll" },
     );
 
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
+    expect(response.status).toBe(404);
+    // Nothing was applied and nothing was broadcast: the request never reached
+    // the gateway, so it cannot have half-committed on its way to a 404.
     expect((await currentGame(harness)).revision).toBe(before.revision);
+    expect(harness.announced).toEqual([]);
   });
 
-  it("Given no open prompt, When /respond is posted, Then it is refused by the same handler and the same shape", async () => {
+  it("Given the respond body the old client sent, When it posts to /respond, Then the path is gone", async () => {
     const harness = await startedMatch();
+    const before = await currentGame(harness);
 
     const response = await post(
       harness,
       {
+        type: "prompt.respond",
         commandId: "alias-respond",
-        expectedRevision: (await currentGame(harness)).revision,
+        expectedRevision: before.revision,
         decisionPointId: "decision-nope",
         optionId: "option-nope",
       },
       { as: await activePlayer(harness), path: "/respond" },
     );
 
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(await response.json()).toMatchObject({
-      error: { command: "prompt.respond", retryable: false },
+    expect(response.status).toBe(404);
+    expect((await currentGame(harness)).revision).toBe(before.revision);
+    expect(harness.announced).toEqual([]);
+  });
+
+  /**
+   * The alias's whole mechanism was a type supplied by the URL rather than by the
+   * body, and the risk it carried was that `/roll` became a second, unaudited door
+   * onto every other command. Retirement has to close that too: a typeless body is
+   * now refused wherever it is posted, so there is no path where the URL decides.
+   */
+  it("Given a body with no type, When it posts to /commands, Then no URL supplies one for it", async () => {
+    const harness = await startedMatch();
+    const before = await currentGame(harness);
+
+    const response = await post(
+      harness,
+      { commandId: "typeless", expectedRevision: before.revision },
+      { as: await activePlayer(harness) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: "INVALID_REQUEST", command: null, retryable: false },
     });
+    expect((await currentGame(harness)).revision).toBe(before.revision);
   });
 });
 

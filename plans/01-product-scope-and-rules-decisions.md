@@ -1,8 +1,10 @@
 # Product Scope And Rules Decisions
 
-Status: Proposed baseline
+Status: Partly implemented — see "Implementation status" below
 Owner: Product and game design owner
-Updated: 2026-07-18
+Updated: 2026-07-27
+
+> **Read this alongside [`../AGENTS.md`](../AGENTS.md).** The rule decisions below are still the design intent and most of them are now built. The "Implementation status" section records which ones are real, which are built-but-unwired, and which the shipped code contradicts. Where this document and AGENTS.md disagree about present-tense behaviour, AGENTS.md wins — it is verified against a running stack; this file is a decision record.
 
 ## Product Identity
 
@@ -25,8 +27,10 @@ Concrete inventory:
 - 9 ranks: Intern through Director.
 - 6 characters.
 - Worker/Management hidden identity assigned separately from character.
-- 6 decks and 247 gameplay card instances.
+- 6 decks and 247 designed gameplay card instances.
 - Quick and Marathon modes represented as separate mode policies.
+
+**Superseded on modes.** "Quick and Marathon" was resolved by gameplay v2 into *four* shipped presets plus lobby-authored custom rulesets: `mode.quick` (race), `mode.standard` (fixed-length, the default), `mode.marathon` (fixed-length with elimination), `mode.campaign` (objectives), and `mode.custom`. A mode is a data-driven `ModeRules` object, not a branch in code — see `24-gameplay-v2-spec.md` §4. The either/or questions this document leaves open ("whether Marathon ships in the first release", "Marathon mode behind a feature flag") stopped being either/or the moment that landed.
 
 ## Recommended First Release Scope
 
@@ -53,14 +57,14 @@ Concrete inventory:
 
 ### Could
 
-- Marathon mode behind a feature flag.
-- Basic deterministic bots for disconnected players.
+- ~~Marathon mode behind a feature flag.~~ **Shipped unflagged**, alongside Standard and Campaign.
+- ~~Basic deterministic bots for disconnected players.~~ **Shipped** — bots take real seats, count toward the minimum headcount, and play whole matches.
 - Player-facing match replay.
 
 ### Later
 
 - Public matchmaking.
-- Chat.
+- ~~Chat.~~ **Shipped** — quick phrases plus emote reactions, server-side, never in `GameState`.
 - Spectator mode.
 - Leaderboards and daily challenges.
 - User-uploaded avatars.
@@ -195,12 +199,31 @@ Each prompt defines a deterministic default. General defaults:
 - Hand overflow discards the newly drawn card.
 - Required target selection uses a content-defined deterministic target rule.
 
+## Implementation status (verified 2026-07-27)
+
+Recorded here so a reader does not mistake a decision for a shipped behaviour.
+
+**Decided and built.** Dice (`1d6` movement, `2d6` checks, true doubles for audit escape); training bands; independent character and Worker/Management assignment, with Management assignment drawn from the server-side game seed rather than anything a projection publishes; board movement and salary-on-pass; resource clamping and partial transfers; Work landings costing energy and drawing a card; the Work Counter's every-fifth-landing reputation reward; burnout; the six decks with their per-mode quantities and `reshufflesWhenEmpty` flags; hand overflow; promotion block as a dedicated reaction window that reveals the blocker and deducts cost only after the window closes; the timeout defaults, with an auto-roll safety net that keeps a table from blocking.
+
+**Built but never reached in play.**
+
+- *Clock deck exhaustion.* The piles are materialised with the right quantities per mode and `deck-depletion.ts` implements draw/discard/recycle/exhaustion, but the tile resolver still draws from the content pack rather than from state, so no card ever leaves a pile. Across all 19 stored games on the live database, every discard pile is empty. `MatchEndReason: "clock-deck-exhausted"` therefore has no producer, and the "Win Precedence" step 4 below is unreachable. **The Clock Deck quantity question in "Release-Blocking Questions" is answered in config and untested in play.**
+- *Objectives.* `mode.campaign`'s win shape is objectives, and `assignObjectives`/`advanceObjectives` are implemented with a full unit suite that is their only caller. Objectives are empty in every stored game.
+- *Ballots.* `ballot.cast` is a real command with a real transition; no authored card opens a ballot, so votes and auctions never occur.
+
+**Contradicted by the shipped code.**
+
+- *Reaction windows must close deterministically.* They do not. The promotion-block window is opened with no deadline, so an eligible player who never answers freezes the match permanently — the active seat is usually a bot, and a bot cannot advance past an open window. Reproduced in three of the four presets. The "Timeouts" section below says Promotion Block passes on timeout; there is no timeout for it to pass on.
+- *Per-mode turn timers.* Each preset declares a turn length (20/25/30/45s) and the lobby prints it on the card the host picks. The runtime uses a single process-wide `TURN_TIMEOUT_SECONDS` constant, defaulting to 60s, for every mode.
+
+**Scope moved forward from "Later".** Chat shipped (quick phrases and emote reactions, server-side only, never in `GameState`) and bots shipped (they fill seats, count toward the three-member minimum, and play whole matches at a per-seat difficulty). Both were listed below as post-release.
+
 ## Release-Blocking Questions
 
 - Final public product name.
 - Exact Clock Deck quantities per mode.
-- Whether two-player mode is supported or hidden.
-- Whether Marathon ships in the first release.
+- Whether two-player mode is supported or hidden. (The lobby currently requires three seats; bot seats count, so a solo host can start.)
+- ~~Whether Marathon ships in the first release.~~ **Resolved**: all four presets ship, plus custom rulesets.
 - Exact reaction priority and timing details.
 - Skip-turn stacking policy.
 - Senior Manager behavior for negative Annual Event effects.

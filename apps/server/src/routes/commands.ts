@@ -779,30 +779,19 @@ function serverInjectedRejection(body: unknown, context: CommandContext): Respon
 }
 
 /**
- * `/roll` and `/respond` send a body with no `type`, so the alias supplies the
- * one it has always meant. A body that names a type as well is refused rather
- * than silently overridden — an alias that accepted `{"type":"loan.take"}` on
- * `/roll` would be a second, unaudited way to reach every command.
- */
-function withForcedType(body: unknown, type: PlayerCommandType): unknown {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return body;
-  const input = body as Record<string, unknown>;
-  if ("type" in input && input["type"] !== type) {
-    throw new ContractValidationError(
-      "type",
-      "is fixed by this endpoint and must not be sent",
-    );
-  }
-
-  return { ...input, type };
-}
-
-/**
  * One handler for every command, and the only place the eight steps happen.
+ *
+ * It takes no per-command configuration, and that is the point: there is exactly
+ * one path onto the command surface, so the entitlement check, the idempotency
+ * lookup and the refusal shape cannot be reached by any route that skipped one of
+ * them. The `/roll` and `/respond` aliases used to pass a `forcedType` here and
+ * inject it into a body that carried none; they are gone (see
+ * `registerCommandRoutes`), and with them the only way a request could arrive with
+ * its command type decided by the URL rather than by the body contracts validates.
  */
-function commandHandler(deps: CommandRouteDependencies, forcedType: PlayerCommandType | null) {
+function commandHandler(deps: CommandRouteDependencies) {
   return async (c: Context): Promise<Response> => {
-    const label = forcedType === null ? "room.command" : `room.${forcedType}`;
+    const label = "room.command";
 
     const blocked = originRejection(c.req.raw, label);
     if (blocked !== null) return blocked;
@@ -822,9 +811,7 @@ function commandHandler(deps: CommandRouteDependencies, forcedType: PlayerComman
       let roomId: string;
       try {
         roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
-        command = parsePlayerCommandBody(
-          forcedType === null ? body.value : withForcedType(body.value, forcedType),
-        );
+        command = parsePlayerCommandBody(body.value);
       } catch (error) {
         if (!(error instanceof ContractValidationError)) throw error;
         log("info", "command.invalid-request", {
@@ -869,17 +856,26 @@ function commandHandler(deps: CommandRouteDependencies, forcedType: PlayerComman
 }
 
 /**
- * Mounts the command surface on the rooms router.
+ * Mounts the command surface on the rooms router. One route, twenty-seven
+ * commands.
  *
- * `/roll` and `/respond` are kept as thin aliases so the shipped client keeps
- * working while the UI migrates to `/commands`; they are deleted in wave 5, not
- * here. They are *aliases*, not copies — every one of the eight steps happens in
- * the same handler, so nothing can be fixed in one and forgotten in the other.
+ * `POST /:roomId/roll` and `POST /:roomId/respond` were mounted here as thin
+ * aliases onto the same handler so the shipped client kept working while the UI
+ * migrated (spec §11.1: "Delete them in wave 5, not before"). The client migrated
+ * — `game-client.tsx` has a single `submitCommand` that posts to `/commands` and
+ * nothing anywhere posts to either alias — so they are gone.
+ *
+ * They are not coming back as a compatibility shim. An alias had to decide a
+ * command's type from its URL and merge it into a body that carried none, which
+ * meant a second way to name a command that `parsePlayerCommandRequest` never saw
+ * as the client wrote it. Two doors onto twenty-seven commands is one door too
+ * many, and the reason the aliases were ever acceptable — a client that could not
+ * yet reach `/commands` — no longer exists. A POST to either path is now a plain
+ * 404, which is what a retired endpoint should look like: the request never
+ * reaches the gateway, so it cannot half-apply.
  */
 export function registerCommandRoutes(router: Hono, deps: CommandRouteDependencies): void {
-  router.post("/:roomId/commands", commandHandler(deps, null));
-  router.post("/:roomId/roll", commandHandler(deps, "turn.roll"));
-  router.post("/:roomId/respond", commandHandler(deps, "prompt.respond"));
+  router.post("/:roomId/commands", commandHandler(deps));
 }
 
 /* ------------------------------------------------------------------ *

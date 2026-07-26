@@ -1,7 +1,9 @@
 # Office Ladder Planning Portfolio
 
 Status: Draft planning baseline
-Updated: 2026-07-26
+Updated: 2026-07-27
+
+> **Most files in this folder are planning intent, not a description of the build.** They were written before gameplay v2 and have not been reconciled with it. For what the code actually does today — including the mechanics that are built but never wired, and the reaction window that can freeze a match — read [`../AGENTS.md`](../AGENTS.md)'s "What the game actually is today" and "Known gaps". `24-gameplay-v2-spec.md` is the exception: it is current and is the build contract.
 
 This folder is the implementation planning source for the Office Ladder application and the Deadline Dash v3.2 game design. Each document owns one concern so architecture, production, and operational decisions do not become mixed into one large plan.
 
@@ -51,7 +53,8 @@ This folder is the implementation planning source for the Office Ladder applicat
 
 Until the governance plan is implemented, use this temporary order:
 
-1. `plans/24-gameplay-v2-spec.md` for the **implementation shape** of gameplay v2 — state, commands, type signatures, authorisation. It explicitly supersedes `AGENTS.md`'s "Known gaps" description of gameplay. Rules *decisions* still land in `01-…` below.
+0. `AGENTS.md` for **what is actually built and what is actually broken**. It is the only document in the repo that is re-verified against a running stack and the live database, and it wins over every plan file about present-tense facts. The plans say what should exist; AGENTS.md says what does.
+1. `plans/24-gameplay-v2-spec.md` for the **implementation shape** of gameplay v2 — state, commands, type signatures, authorisation. Rules *decisions* still land in `01-…` below.
 2. Explicit approved decisions in `plans/01-product-scope-and-rules-decisions.md`.
 3. `docs/DEADLINE_DASH_FULL_GDD.md` for intended v3.2 mechanics.
 4. `docs/Office_Board_Game_Design_Workbook.xlsx` for concrete card and board inventory.
@@ -65,3 +68,5 @@ Until the governance plan is implemented, use this temporary order:
 - Do not silently rewrite accepted decisions. Record a superseding decision and migration impact.
 - Keep root `PLAN.md` concise and link to this folder rather than duplicating detailed plans.
 - Mark implementation work complete only after its verification and documentation gates pass.
+- **"Its own package is green" is not a verification gate for a gameplay mechanic.** Every serious bug in this build was a seam bug: content grew a vocabulary the engine could not consume, the engine grew thirty commands while the transport carried three, the transport reached twenty-seven while the UI branched on two, four presets shipped behind a hardcoded literal. Each of those layers passed its own tests. A mechanic is done when something at the outermost layer a user touches exercises it — for gameplay, a browser playthrough. Two separate rounds of manual play each caught a defect no suite could see.
+- **Do not write a count, a status or a capability into a plan file that nothing re-checks.** This folder has repeatedly carried figures that read as verification and were stale by a wide margin, and one paragraph asserting the database was unreachable — never tested, false, and the direct cause of a shipped foreign-key bug. Quote the command instead of its remembered output.
