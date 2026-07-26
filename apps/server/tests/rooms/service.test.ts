@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { createStableId, type CardDrawnEvent } from "@office-ladder/engine";
+import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
 import { eventSummaries } from "../../src/rooms/service/game-setup";
-import type { RoomRepository, StoredRoom } from "../../src/rooms/service/types";
 
 const players = {
   host: createStableId("PlayerId", "user-host"),
@@ -13,26 +13,9 @@ const players = {
 
 const roomId = "room-service-test";
 
-class InMemoryRoomRepository implements RoomRepository {
-  readonly rooms = new Map<string, StoredRoom>();
-
-  async create(room: StoredRoom): Promise<void> {
-    this.rooms.set(room.id, room);
-  }
-
-  async get(id: string): Promise<StoredRoom | null> {
-    return this.rooms.get(id) ?? null;
-  }
-
-  async getByCode(code: string): Promise<StoredRoom | null> {
-    return [...this.rooms.values()].find((room) => room.code === code) ?? null;
-  }
-
-  async save(room: StoredRoom): Promise<void> {
-    this.rooms.set(room.id, room);
-  }
-}
-
+// The shared implementation, not a local stand-in: it round-trips through the
+// same snapshot boundary and applies the same revision predicate as Postgres, so
+// these tests exercise the semantics production actually has.
 function createService(repository: InMemoryRoomRepository) {
   return createRoomService({
     repository,
@@ -44,6 +27,9 @@ function createService(repository: InMemoryRoomRepository) {
       commandId: () => createStableId("CommandId", "command-service-test"),
     },
     gameSeed: () => "room-service-seed",
+    // Off unless a test needs the clock: an armed deadline in an unrelated
+    // test would be enforcement nobody asked for.
+    turnTimeoutMs: 0,
   });
 }
 
@@ -166,7 +152,7 @@ describe("room service", () => {
       actorId: players.second,
       playerName: "Second",
     });
-    const result = await service.start({ roomId, actorId: players.host });
+    const result = await service.start({ roomId, actorId: players.host, actorKind: "human" });
 
     expect(result).toEqual({ ok: false, error: { code: "MINIMUM_PLAYERS_NOT_MET" } });
   });
@@ -174,7 +160,7 @@ describe("room service", () => {
   it("Given a three-player room, When a non-host starts it, Then start is rejected", async () => {
     const repository = new InMemoryRoomRepository();
     const service = await createThreePlayerRoom(repository);
-    const result = await service.start({ roomId, actorId: players.second });
+    const result = await service.start({ roomId, actorId: players.second, actorKind: "human" });
 
     expect(result).toEqual({ ok: false, error: { code: "ACTOR_NOT_HOST" } });
   });
@@ -184,8 +170,8 @@ describe("room service", () => {
     const secondRepository = new InMemoryRoomRepository();
     const first = await createThreePlayerRoom(firstRepository);
     const second = await createThreePlayerRoom(secondRepository);
-    const firstResult = await first.start({ roomId, actorId: players.host });
-    const secondResult = await second.start({ roomId, actorId: players.host });
+    const firstResult = await first.start({ roomId, actorId: players.host, actorKind: "human" });
+    const secondResult = await second.start({ roomId, actorId: players.host, actorKind: "human" });
 
     expect(firstResult).toMatchObject({
       ok: true,
@@ -204,7 +190,7 @@ describe("room service", () => {
   it("Given an active room, When its active player rolls at the current revision, Then the authoritative game advances", async () => {
     const repository = new InMemoryRoomRepository();
     const service = await createThreePlayerRoom(repository);
-    const started = await service.start({ roomId, actorId: players.host });
+    const started = await service.start({ roomId, actorId: players.host, actorKind: "human" });
 
     expect(started).toMatchObject({ ok: true, value: { game: { revision: 1 } } });
     if (!started.ok) return;
@@ -212,6 +198,7 @@ describe("room service", () => {
     const result = await service.roll({
       roomId,
       actorId: players.host,
+      actorKind: "human",
       expectedRevision: started.value.game.revision,
     });
 
@@ -224,10 +211,11 @@ describe("room service", () => {
   it("Given an active room, When a player rolls with a stale revision, Then no new game transition is accepted", async () => {
     const repository = new InMemoryRoomRepository();
     const service = await createThreePlayerRoom(repository);
-    await service.start({ roomId, actorId: players.host });
+    await service.start({ roomId, actorId: players.host, actorKind: "human" });
     const result = await service.roll({
       roomId,
       actorId: players.host,
+      actorKind: "human",
       expectedRevision: 0,
     });
 
@@ -237,7 +225,7 @@ describe("room service", () => {
   it("Given an active room, When a member bootstraps, Then the response hides canonical server-only state", async () => {
     const repository = new InMemoryRoomRepository();
     const service = await createThreePlayerRoom(repository);
-    await service.start({ roomId, actorId: players.host });
+    await service.start({ roomId, actorId: players.host, actorKind: "human" });
     const response = await service.bootstrap({ roomId, viewerId: players.second });
 
     expect(response).toMatchObject({
@@ -258,7 +246,7 @@ describe("room service", () => {
   it("Given a persisted CardDrawn summary, When a member bootstraps, Then the public projection exposes only its safe card payload", async () => {
     const repository = new InMemoryRoomRepository();
     const service = await createThreePlayerRoom(repository);
-    const started = await service.start({ roomId, actorId: players.host });
+    const started = await service.start({ roomId, actorId: players.host, actorKind: "human" });
 
     expect(started).toMatchObject({ ok: true });
     if (!started.ok) return;
@@ -281,10 +269,13 @@ describe("room service", () => {
         nameKey: "deadlineDash.card.workSmallBonus.name",
       },
     } satisfies CardDrawnEvent;
-    await repository.save({
-      ...started.value,
-      eventSummaries: eventSummaries([cardDrawn], players.host),
-    });
+    await repository.save(
+      {
+        ...started.value,
+        eventSummaries: eventSummaries([cardDrawn], players.host),
+      },
+      started.value.revision,
+    );
 
     const response = await service.bootstrap({ roomId, viewerId: players.third });
 

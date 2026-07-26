@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createStableId,
   type CardDrawnEvent,
+  type DiceRolledEvent,
   type GameStartedEvent,
 } from "@office-ladder/engine";
 import { eventSummaries } from "../../src/rooms/service/game-setup";
@@ -60,5 +61,44 @@ describe("eventSummaries", () => {
         actorPlayerId: "command-actor",
       },
     ]);
+  });
+
+  it("Given a DiceRolled event, When creating summaries, Then the faces are exposed and the RNG bookkeeping is not", () => {
+    const diceRolled = {
+      eventId: createStableId("EventId", "event-dice-rolled"),
+      gameId: createStableId("GameId", "game-event-summary"),
+      sequence: 2,
+      revision: 3,
+      causationCommandId: createStableId("CommandId", "command-event-summary"),
+      correlationFrameId: null,
+      logicalTimestamp: "2026-07-24T12:00:00.000Z",
+      schemaVersion: 1,
+      visibility: { kind: "public" },
+      type: "DiceRolled",
+      payload: {
+        playerId: drawnByPlayerId,
+        dice: [4],
+        total: 4,
+        purpose: "movement",
+        rngStream: "dice",
+        rngCursor: 7,
+      },
+    } satisfies DiceRolledEvent;
+
+    const summaries = eventSummaries([diceRolled], actorId);
+
+    expect(summaries).toEqual([
+      {
+        id: "event-dice-rolled",
+        type: "DiceRolled",
+        revision: 3,
+        occurredAt: "2026-07-24T12:00:00.000Z",
+        actorPlayerId: "card-recipient",
+        dice: [4],
+        total: 4,
+        purpose: "movement",
+      },
+    ]);
+    expect(JSON.stringify(summaries)).not.toContain("rng");
   });
 });
