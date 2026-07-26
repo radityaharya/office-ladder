@@ -1,3 +1,15 @@
+import {
+  ContractValidationError,
+  parseOpaqueId,
+  requireExactKeys,
+  requireKnownKeys,
+  requireObject,
+  requireRevision,
+  requireString,
+} from "./validate";
+
+export { ContractValidationError, parseOpaqueId };
+
 export const ROOM_CAPACITIES = [3, 4, 5, 6] as const;
 
 export const ROOM_MODES = ["mode.quick", "mode.marathon"] as const;
@@ -321,85 +333,7 @@ export type GameBootstrap = {
   readonly serverTime: string;
 };
 
-export class ContractValidationError extends Error {
-  readonly name = "ContractValidationError";
-
-  constructor(
-    readonly path: string,
-    readonly reason: string,
-  ) {
-    super(`${path} ${reason}`);
-  }
-}
-
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function requireObject(value: unknown, path: string): Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new ContractValidationError(path, "must be an object");
-  }
-
-  return value;
-}
-
-function requireExactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): void {
-  const expectedKeys = new Set(keys);
-  const actualKeys = Object.keys(value);
-  if (
-    actualKeys.length !== keys.length ||
-    actualKeys.some((key) => !expectedKeys.has(key))
-  ) {
-    throw new ContractValidationError(path, "contains unknown or missing fields");
-  }
-}
-
-/**
- * requireExactKeys with a declared set of *optional* keys.
- *
- * requireExactKeys compares the key count, so it cannot express "this field may
- * be omitted": adding an optional field with it would reject every client that
- * does not send the new key — including the ones already deployed. This keeps the
- * property that actually matters, that an unknown key is refused so nothing can
- * smuggle a field the server does not read, while letting a field be additive.
- *
- * Own properties only. `"toString" in value` is true for any object, so a
- * presence test with `in` would accept a body that never mentioned the field.
- */
-function requireKnownKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-  path: string,
-): void {
-  const allowed = new Set([...required, ...optional]);
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) {
-      throw new ContractValidationError(path, "contains an unknown field");
-    }
-  }
-  for (const key of required) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) {
-      throw new ContractValidationError(path, "is missing a required field");
-    }
-  }
-}
-
-function requireString(value: unknown, path: string): string {
-  if (typeof value !== "string") {
-    throw new ContractValidationError(path, "must be a string");
-  }
-
-  return value;
-}
 
 function requirePlayerName(value: unknown, path: string): string {
   const name = requireString(value, path).trim();
@@ -408,14 +342,6 @@ function requirePlayerName(value: unknown, path: string): string {
   }
 
   return name;
-}
-
-function requireRevision(value: unknown, path: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new ContractValidationError(path, "must be a non-negative safe integer");
-  }
-
-  return value;
 }
 
 function requireRoomMode(value: unknown, path: string): RoomMode {
@@ -452,15 +378,6 @@ export function parseRoomCode(value: unknown): string {
   }
 
   return normalized;
-}
-
-export function parseOpaqueId(value: unknown, path = "id"): string {
-  const id = requireString(value, path);
-  if (!ID_PATTERN.test(id)) {
-    throw new ContractValidationError(path, "must be a valid opaque identifier");
-  }
-
-  return id;
 }
 
 /**
