@@ -860,7 +860,10 @@
 }
 
 /* A time-limited row states its own deadline in text. §7.1: no countdown
-   animation, no ambient motion — the number is the signal. */
+   animation, no ambient motion — the number is the signal. The one continuous
+   animation this system sanctions is the wall-clock timer bar in the shell's
+   attention region (§12.3); a rail row counting down would be exactly the
+   ambient motion §12.6 bans. */
 .panel-row-deadline {
   font-family: var(--panel-mono);
   font-size: 0.6875rem;
@@ -870,6 +873,22 @@
   font-variant-numeric: tabular-nums;
   color: var(--status-caution);
   white-space: nowrap;
+}
+
+/*
+ * Urgency escalation, and colour is the THIRD carrier here rather than the only
+ * one: the label already reads "Closes in 3 rounds" / "Closes in 1 round" /
+ * "Closing", so a player who cannot distinguish these tokens has lost nothing
+ * (§8). A distant deadline recedes to muted so the rows that matter this round
+ * are the ones that carry warning colour — a list in which every deadline shouts
+ * is a list with no deadline in it.
+ */
+.panel-row-deadline[data-panel-urgency="distant"] {
+  color: var(--muted-foreground);
+}
+
+.panel-row-deadline[data-panel-urgency="now"] {
+  color: var(--status-critical);
 }
 
 /* --------------------------------------------------------------------------

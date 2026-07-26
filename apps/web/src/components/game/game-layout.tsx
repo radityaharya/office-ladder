@@ -96,8 +96,22 @@ export function AttentionNotice({
   tone = "info",
 }: {
   readonly actions?: ReactNode;
-  /** Pre-formatted. The band never runs a clock of its own. */
-  readonly deadline?: string | null;
+  /**
+   * The window this notice is on — a string for a plain readout, or an
+   * instrument.
+   *
+   * Widened from `string | null` so the band can host a `DeadlineMeter`
+   * (game-hud.tsx) instead of a wall-clock instant. The band still runs no clock
+   * of its own and that is still the rule: the meter does not either — its
+   * geometry is `deadlineAt - serverTime`, two server instants, and its motion is
+   * one CSS animation the compositor carries. No interval, no `Date.now()`, no
+   * countdown state, so nothing here re-renders the band on a tick and nothing
+   * depends on the browser's clock being right.
+   *
+   * §12.3 is why this is a bar and not a number: a reaction window is eight
+   * seconds long and a number demands the player read and subtract.
+   */
+  readonly deadline?: ReactNode;
   readonly detail: string;
   readonly label: string;
   readonly tone?: "info" | "caution" | "critical";
@@ -107,7 +121,7 @@ export function AttentionNotice({
       <span aria-hidden="true" className="game-shell-led" data-tone={tone} />
       <span className="game-shell-label">{label}</span>
       <span className="game-shell-attention-detail">{detail}</span>
-      {deadline === null ? null : (
+      {deadline === null || deadline === undefined ? null : (
         <span className="game-shell-value" data-slot="game-attention-deadline">
           {deadline}
         </span>

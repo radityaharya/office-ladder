@@ -1,24 +1,57 @@
 import { RiArrowLeftLine, RiRefreshLine } from "@remixicon/react";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import type { GameBootstrap, PublicPlayerProjection } from "@office-ladder/contracts";
+import { deadlineDashModes } from "@office-ladder/content";
+import type {
+  GameBootstrap,
+  GameplayBootstrap,
+  LegalActionSummary,
+  LegalActionSummaryType,
+  PublicPlayerProjection,
+} from "@office-ladder/contracts";
 import { subscribeRoomUpdates } from "@/realtime/room-channel";
 
+import { ActionControls } from "./actions/action-controls";
+import type { ActionCommandDraft, ActionContext } from "./actions/action-model";
+import { actionPanel, actionSurface } from "./actions/action-registry";
 import { GameBoard } from "./board";
 import { ActionTray } from "./action-tray";
 import { useDiceFeed } from "./dice";
 import { useEventPacing } from "./event-feedback-policy";
-import { GameHud } from "./game-hud";
+import { DeadlineMeter, GameHud } from "./game-hud";
 import { CardDrawFeed, GameFeedback } from "./game-feedback";
 import { shouldShowGameWinner } from "./game-completion-policy";
 import { AttentionNotice, GameLayout } from "./game-layout";
 import {
+  asGameplayBootstrap,
+  createActionContext,
   createAttentionNotice,
   createGameView,
+  createOwnershipViews,
+  createPlacementViews,
   findPromptAction,
-  findRollAction,
+  hasTerritory,
 } from "./game-view";
+import {
+  ActivityPanel,
+  AgreementsPanel,
+  BallotsPanel,
+  derivePanelData,
+  EventsPanel,
+  HandPanel,
+  HeatPanel,
+  MarketPanel,
+  ObjectivesPanel,
+  ProjectsPanel,
+  QuarterPanel,
+  SeatsPanel,
+  type PanelData,
+  type PanelId,
+} from "./panels";
+/* Not re-exported from the panel barrel yet — the chat owner and the panel-kit
+   owner both said so. Importing the module directly is the documented interim. */
+import { RoomChatPanel, type ChatSeat } from "./panels/chat-panel";
 import {
   ActivityLog,
   buildActivityLog,
@@ -28,6 +61,9 @@ import {
   seatSlot,
   tileLabel,
   TurnRail,
+  type RailAttention,
+  type RailDestinationId,
+  type RailPanelContent,
 } from "./turn-rail";
 
 type GameClientProps = {
@@ -48,13 +84,41 @@ class GameRequestError extends Error {
   }
 }
 
+/**
+ * A refusal, attributed to the command it refused.
+ *
+ * Attribution is what lets one message appear where the player was looking: a
+ * rejected `ballot.cast` belongs beside the ballot, not in the bar under the
+ * board. `actionSurface`/`actionPanel` resolve the destination from the same
+ * registry that decided where the control lives, so the two can never disagree.
+ */
+export type CommandFailure = {
+  readonly type: LegalActionSummaryType;
+  readonly message: string;
+};
+
 export function GameClient({ roomId }: GameClientProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [isRolling, setIsRolling] = useState(false);
-  const [rollError, setRollError] = useState<string | null>(null);
-  const [isResponding, setIsResponding] = useState(false);
-  const [respondError, setRespondError] = useState<string | null>(null);
+  const [pendingCommand, setPendingCommand] = useState<LegalActionSummaryType | null>(null);
+  const [failure, setFailure] = useState<CommandFailure | null>(null);
   const [feedbackCompleteRevision, setFeedbackCompleteRevision] = useState<number | null>(null);
+
+  /*
+   * The intent ledger: one command id per distinct intent, held across retries.
+   *
+   * §11.1 keys idempotency on `commandId`, and the point of that is only reached
+   * if a RETRY re-sends the same id — otherwise a retried submit is a second
+   * apply, which with reaction windows and auto-retrying clients stops being
+   * theoretical. So the id is derived from the intent (see `commandIntentKey`)
+   * rather than minted per click: pressing "Cast" twice on the same ballot at the
+   * same revision sends one id twice and the server answers the original outcome;
+   * casting a *different* amount is a different intent and gets a new id.
+   *
+   * `expectedRevision` is part of the key, so the ledger self-expires — every
+   * commit moves the revision and every intent at the old one becomes
+   * unreachable. The cap only bounds memory across a long match.
+   */
+  const intents = useRef<Map<string, string>>(new Map());
 
   const refresh = useCallback(async (signal?: AbortSignal): Promise<void> => {
     try {
@@ -83,7 +147,6 @@ export function GameClient({ roomId }: GameClientProps) {
         return;
       }
       setState({ kind: "ready", bootstrap: shape.bootstrap });
-      setRollError(null);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       if (error instanceof GameRequestError) {
@@ -169,76 +232,186 @@ export function GameClient({ roomId }: GameClientProps) {
    */
   const diceRoll = useDiceFeed(shown);
 
-  const roll = useCallback(async (): Promise<void> => {
-    if (state.kind !== "ready") return;
-    const action = findRollAction(state.bootstrap.legalActions);
-    if (!action || state.bootstrap.publicProjection.activePlayerId !== state.bootstrap.self.playerId) return;
+  /*
+   * ------------------------------------------------------------------------
+   * ONE submit, for all twenty-seven commands.
+   * ------------------------------------------------------------------------
+   *
+   * This replaces the two hand-written fetchers that posted to `/roll` and
+   * `/respond`. Those aliases still work (wave 5 deletes them), but they are the
+   * shape §11.1 rejected: per-command routes, and — because each minted
+   * `crypto.randomUUID()` at the call site — an idempotency key that was fresh on
+   * every attempt, which is the same as having none.
+   *
+   * Four properties this function owns, and nothing else does:
+   *
+   * 1. **The endpoint.** `POST /api/rooms/:roomId/commands`. The command's *type*
+   *    selects the payload; the route does auth, entitlement, revision predicate,
+   *    submit, rejection mapping and publish exactly once.
+   * 2. **The command id.** Stable per intent (see `intents` above), so a retry is
+   *    deduplicated by the server's `command_receipts` rather than applied twice.
+   *    Controls deliberately cannot mint one — `ActionCommandDraft` omits the
+   *    field — because only the layer that owns the retry can know what "the same
+   *    intent" means.
+   * 3. **`expectedRevision` on every command, not just rolls.** It arrives inside
+   *    the draft, taken from the summary the server ADVERTISED the action at, so a
+   *    lost race against any of the twenty-seven is a clean 409 instead of a
+   *    command applied to a board that has already moved on. With reaction windows
+   *    and N-seat ballots that race is the normal case, not the exception.
+   * 4. **Attribution of the refusal** to the surface the command came from, so the
+   *    message appears where the player was looking.
+   *
+   * `pendingCommand` is a type, not a boolean: one control reads busy and the
+   * other twenty-six stay live. It never gates legality (§7.2) — only the control
+   * whose command is in flight.
+   */
+  const submitCommand = useCallback(
+    async (draft: ActionCommandDraft): Promise<void> => {
+      const commandId = reserveCommandId(intents.current, draft);
 
-    setIsRolling(true);
-    setRollError(null);
-    try {
-      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/roll`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ commandId: crypto.randomUUID(), expectedRevision: action.expectedRevision }),
-      });
-      if (!response.ok) throw new GameRequestError(response.status);
-      await refresh();
-    } catch (error) {
-      if (error instanceof GameRequestError) {
-        setRollError(error.status === 409 ? "The turn changed before that roll reached the server. Refreshing the board." : "The roll was not accepted. Try again after the projection refreshes.");
+      setPendingCommand(draft.type);
+      setFailure(null);
+      try {
+        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...draft, commandId }),
+        });
+        if (!response.ok) throw new GameRequestError(response.status);
         await refresh();
-        return;
+      } catch (error) {
+        if (error instanceof GameRequestError) {
+          setFailure({ type: draft.type, message: refusalMessage(error.status) });
+          // A 409 means somebody committed first; re-reading is what makes the
+          // next attempt (a NEW intent, at the new revision) able to succeed.
+          await refresh();
+          return;
+        }
+        if (error instanceof TypeError) {
+          setFailure({
+            type: draft.type,
+            message:
+              "The game server could not be reached. The board will keep polling for the latest projection.",
+          });
+          return;
+        }
+        throw error;
+      } finally {
+        /*
+         * The single termination guarantee: the pending type clears on success, on
+         * a 409, on any other rejected status, on a network `TypeError` and on a
+         * rethrown unexpected error. Every control's busy state is a pure function
+         * of this value, so none of them can stick.
+         */
+        setPendingCommand(null);
       }
-      if (error instanceof TypeError) {
-        setRollError("The game server could not be reached. The board will keep polling for the latest projection.");
-        return;
-      }
-      throw error;
-    } finally {
-      // The single termination guarantee for the optimistic rolling state: it
-      // clears on success, on a 409, on any other rejected status, on a network
-      // TypeError, and on a rethrown unexpected error. The instrument's rolling
-      // phase is a pure function of this flag, so it can never stick on.
-      setIsRolling(false);
-    }
-  }, [refresh, roomId, state]);
+    },
+    [refresh, roomId],
+  );
 
-  const respondToPrompt = useCallback(async (optionId: string): Promise<void> => {
-    if (state.kind !== "ready") return;
-    const action = findPromptAction(state.bootstrap.legalActions);
-    if (!action) return;
+  /**
+   * The prompt dialog's answer, expressed as the same command as everything else.
+   *
+   * `game-feedback.tsx` owns that dialog and hands back an option id, so this
+   * adapts it onto the one submit rather than keeping the `/respond` alias alive
+   * for one caller.
+   */
+  const respondToPrompt = useCallback(
+    async (optionId: string): Promise<void> => {
+      if (state.kind !== "ready") return;
+      const action = findPromptAction(state.bootstrap.legalActions);
+      if (action === null) return;
 
-    setIsResponding(true);
-    setRespondError(null);
-    try {
-      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/respond`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          commandId: crypto.randomUUID(),
-          expectedRevision: action.expectedRevision,
-          decisionPointId: action.decisionPointId,
-          optionId,
-        }),
+      await submitCommand({
+        type: "prompt.respond",
+        expectedRevision: action.expectedRevision,
+        decisionPointId: action.decisionPointId,
+        optionId,
       });
-      if (!response.ok) throw new GameRequestError(response.status);
-      await refresh();
-    } catch (error) {
-      if (error instanceof GameRequestError) {
-        setRespondError(error.status === 409 ? "The turn changed before that response reached the server. Refreshing the board." : "That response was not accepted. Try again after the projection refreshes.");
-        await refresh();
-        return;
-      }
-      if (error instanceof TypeError) {
-        setRespondError("The game server could not be reached.");
-        return;
-      }
-      throw error;
-    } finally {
-      setIsResponding(false);
-    }
-  }, [refresh, roomId, state]);
+    },
+    [state, submitCommand],
+  );
+
+  /*
+   * ------------------------------------------------------------------------
+   * The v2 derivations.
+   * ------------------------------------------------------------------------
+   *
+   * `gameplayCanonical` is the v2 block, narrowed by shape rather than cast: the
+   * payload is declared as an intersection, so nothing in the type of what this
+   * client holds says whether the server sent it. `null` means a server that has
+   * not shipped it yet, and every destination below degrades to its teaching empty
+   * state instead of dereferencing `undefined.rules` during render.
+   *
+   * `gameplayShown` re-attaches that block to the PACED projection. Deliberate
+   * split: the panels' event feed follows the presentation cursor (so a bot's turn
+   * plays out rather than landing as one burst), while the gameplay collections are
+   * canonical — they carry no per-event cursor to pace against, and a stale ballot
+   * list would be a lie about what is open right now.
+   */
+  const gameplayCanonical = useMemo(() => asGameplayBootstrap(canonical), [canonical]);
+  const gameplayShown = useMemo((): GameplayBootstrap | null => {
+    if (gameplayCanonical === null || shown === null) return null;
+    if (shown === canonical) return gameplayCanonical;
+
+    return { ...shown, gameplay: gameplayCanonical.gameplay };
+  }, [canonical, gameplayCanonical, shown]);
+
+  /*
+   * The activity log is an INPUT to the derivation, not something it computes:
+   * `buildActivityLog` already turns the committed event stream into sentences,
+   * and a second sentence table inside the panel kit would drift from this one
+   * within a wave. Paced, for the same reason the log has always been paced — it
+   * is what a player reads to follow the match.
+   */
+  const activity = useMemo(
+    () =>
+      shown === null
+        ? []
+        : buildActivityLog(
+            shown.publicProjection,
+            shown.room,
+            [],
+            shown.self.playerId,
+          )
+            .slice(-RAIL_LOG_ENTRIES)
+            .reverse(),
+    [shown],
+  );
+
+  /*
+   * ONE call, eleven panels. A host that reached into `bootstrap.gameplay` itself
+   * would be a host that eventually renders `castBy`; every redaction guarantee in
+   * the kit lands in the TYPE of what leaves `derivePanelData`, and that only
+   * holds if this is the single place it is called.
+   */
+  const panelData = useMemo(
+    () => (gameplayShown === null ? null : derivePanelData({ bootstrap: gameplayShown, activity })),
+    [activity, gameplayShown],
+  );
+
+  /*
+   * Canonical. What a control may spend, and what it is allowed to know about the
+   * other seats (a name and a slot). Paced balances would price a control against
+   * a projection the server has already moved past, and the player would be shown
+   * a refusal for a number the UI told them was legal.
+   */
+  const actionContext = useMemo(
+    () => (canonical === null ? null : createActionContext(canonical)),
+    [canonical],
+  );
+
+  /* Memoised because the chat hook lists it as a `useMemo` dependency. */
+  const chatSeats = useMemo(
+    (): readonly ChatSeat[] =>
+      (canonical?.room.members ?? []).map((member) => ({
+        playerId: member.id,
+        seat: member.seat,
+        name: member.displayName,
+        isBot: member.isBot,
+      })),
+    [canonical],
+  );
 
   /*
    * Stable identity so `GameFeedback`'s idle effect does not re-run on every
@@ -293,6 +466,19 @@ export function GameClient({ roomId }: GameClientProps) {
     return <GameWinner bootstrap={state.bootstrap} roomId={roomId} />;
   }
 
+  const canonicalBootstrap = state.bootstrap;
+  const actions = canonicalBootstrap.legalActions;
+  /*
+   * Canonical, never paced — this is the same rule the attention band follows and
+   * for the same reason. A control's legality and its price come from what the
+   * server advertised at the revision it advertised it, so playback can delay what
+   * a player READS but never what they may DO (DESIGN.md §7.2).
+   */
+  const context = actionContext ?? EMPTY_ACTION_CONTEXT;
+  const submit = (draft: ActionCommandDraft) => void submitCommand(draft);
+  const surfaceFailure = (surface: "turn" | "decision") =>
+    failure !== null && actionSurface(failure.type) === surface ? failure.message : null;
+
   return (
     <main className="game-viewport">
       {/*
@@ -303,8 +489,8 @@ export function GameClient({ roomId }: GameClientProps) {
       */}
       <GameFeedback
         bootstrap={shown}
-        error={respondError}
-        isResponding={isResponding}
+        error={surfaceFailure("decision")}
+        isResponding={pendingCommand === "prompt.respond"}
         onIdleChange={handleIdleChange}
         onRespond={(optionId) => void respondToPrompt(optionId)}
       />
@@ -314,22 +500,44 @@ export function GameClient({ roomId }: GameClientProps) {
            * Canonical. The HUD reads no events — it reports the local seat's
            * resources, rank and whose turn it is, and every one of those must
            * agree with the roll control beside it rather than with playback.
+           *
+           * `serverTime` is what turns the header's clock from a bar that starts
+           * full into a real proportion: the geometry is `deadlineAt - serverTime`,
+           * two of the server's own instants, so it never consults the browser's
+           * clock (which the contract warns may be minutes wrong). It must come
+           * from the CANONICAL bootstrap — a countdown played back late is a lie
+           * about a deadline.
            */
           <GameHud
-            game={state.bootstrap.publicProjection}
-            room={state.bootstrap.room}
-            selfCharacterId={state.bootstrap.self.characterId}
-            selfPlayerId={state.bootstrap.self.playerId}
+            game={canonicalBootstrap.publicProjection}
+            room={canonicalBootstrap.room}
+            selfCharacterId={canonicalBootstrap.self.characterId}
+            selfPlayerId={canonicalBootstrap.self.playerId}
+            serverTime={canonicalBootstrap.serverTime}
           />
         }
         board={
+          /*
+           * Territory comes from the CANONICAL gameplay block, and `territory`
+           * from the frozen RULESET rather than from whether anything is claimed
+           * yet: the board reserves its per-tile seat gutter for the whole match
+           * from that answer, so the first claim of a game cannot reflow the room
+           * name on all 44 tiles.
+           */
           <GameBoard
             activeTile={view.activeTile}
             incident={view.incident}
             label="Deadline Dash office board"
             landedTile={view.landedTile}
+            ownership={
+              gameplayCanonical === null ? undefined : createOwnershipViews(gameplayCanonical)
+            }
+            placements={
+              gameplayCanonical === null ? undefined : createPlacementViews(gameplayCanonical)
+            }
             players={view.players}
             spaces={view.spaces}
+            territory={gameplayCanonical === null ? undefined : hasTerritory(gameplayCanonical)}
           />
         }
         actionTray={
@@ -340,14 +548,32 @@ export function GameClient({ roomId }: GameClientProps) {
 
             The catch-up control used to sit above this as a second stacked row.
             It now lives in the rail head — see `catchUp` below.
+
+            The `commands` lane is the registry's TURN surface: the roll plus
+            everything else whose object is your own position and your own turn
+            (pips, the free action, the desk you are standing on, the promotion you
+            can afford, the fine you owe). It is `ActionControls`' fixed-height
+            `bar`, which renders a resting readout rather than collapsing, so the
+            region still hosts nothing that comes and goes.
           */
           <ActionTray
-            activePlayerName={activePlayerName(state.bootstrap)}
+            activePlayerName={activePlayerName(canonicalBootstrap)}
             canRoll={view.canRoll}
+            commands={
+              <ActionControls
+                actions={actions}
+                context={context}
+                label="Your commands"
+                onSubmit={submit}
+                pending={pendingCommand}
+                resting={restingTurnCopy(view.canRoll)}
+                surface="turn"
+              />
+            }
             dice={diceRoll}
-            isRolling={isRolling}
-            onRoll={() => void roll()}
-            rollError={rollError}
+            isRolling={pendingCommand === "turn.roll"}
+            onRoll={() => void submitRoll(actions, submit)}
+            rollError={surfaceFailure("turn")}
           />
         }
         turnRail={
@@ -384,26 +610,27 @@ export function GameClient({ roomId }: GameClientProps) {
               ) : null
             }
             game={shown.publicProjection}
-            panels={[
-              {
-                /*
-                  Events, as the TRACK tab's card-feed destination.
-
-                  Non-blocking by construction: a drawn card reports something
-                  the server ALREADY committed, so it never dims, never covers
-                  the board and never needs a click. Living in the rail rather
-                  than in the action stack under the board is what keeps the
-                  board a fixed size — the rail shares the board's grid ROW, so
-                  a card arriving costs the board nothing. `.card-feed`'s
-                  container query reflows the notice to the rail's measure
-                  rather than to the viewport.
-                */
-                content: <CardDrawFeed bootstrap={shown} />,
-                id: "feed",
-              },
-            ]}
-            room={state.bootstrap.room}
-            selfPlayerId={state.bootstrap.self.playerId}
+            panels={buildRailPanels({
+              actions,
+              cardFeed: <CardDrawFeed bootstrap={shown} />,
+              chat: (
+                <RoomChatPanel
+                  chatMode={chatRules(canonicalBootstrap).chat}
+                  chrome="none"
+                  emoteReactionsEnabled={chatRules(canonicalBootstrap).emoteReactions}
+                  roomId={roomId}
+                  seats={chatSeats}
+                  selfPlayerId={canonicalBootstrap.self.playerId}
+                />
+              ),
+              context,
+              data: panelData,
+              failure,
+              onSubmit: submit,
+              pending: pendingCommand,
+            })}
+            room={canonicalBootstrap.room}
+            selfPlayerId={canonicalBootstrap.self.playerId}
           />
         }
         attention={
@@ -412,10 +639,45 @@ export function GameClient({ roomId }: GameClientProps) {
             would be a lie about a real deadline. The band is a permanently
             reserved row, so what changes here is only the text inside it —
             nothing in this prop can move the board.
+
+            The deadline is now an INSTRUMENT rather than a wall-clock string:
+            `DeadlineMeter` renders §12.3's depleting bar, degrades to discrete
+            steps under `prefers-reduced-motion`, and runs no clock of its own —
+            its resting geometry is two server instants and its motion is one CSS
+            animation, re-stated on every projection update so it re-syncs instead
+            of drifting.
+
+            The decision controls sit in the same row. `inline` layout renders
+            nothing when nothing is legal, so an arriving control cannot change the
+            band's height — the band's row is a fixed 40px either way.
           */
           attentionNotice === null ? null : (
             <AttentionNotice
-              deadline={attentionNotice.deadline}
+              actions={
+                <ActionControls
+                  actions={actions}
+                  context={context}
+                  error={surfaceFailure("decision")}
+                  label="Open decision"
+                  layout="inline"
+                  onSubmit={submit}
+                  pending={pendingCommand}
+                  surface="decision"
+                />
+              }
+              deadline={
+                attentionNotice.deadline === null ? null : (
+                  <DeadlineMeter
+                    deadlineAt={attentionNotice.deadline.deadlineAt}
+                    durationMs={attentionNotice.deadline.durationMs}
+                    expiryNote={ATTENTION_EXPIRY_NOTE}
+                    label={attentionNotice.label}
+                    owner="self"
+                    serverTime={canonicalBootstrap.serverTime}
+                    subject="you"
+                  />
+                )
+              }
               detail={attentionNotice.detail}
               label={attentionNotice.label}
               tone={attentionNotice.tone}
@@ -427,9 +689,378 @@ export function GameClient({ roomId }: GameClientProps) {
   );
 }
 
+/**
+ * What the server does when the band's clock reaches zero.
+ *
+ * Stated in words because the bar is deliberately not a number (§12.3) and a
+ * player still has to know the consequence. The bar itself decides nothing: the
+ * server commits on the player's behalf whether or not any client noticed, so a
+ * client acting on its own idea of "now" could only race a decision already made.
+ */
+const ATTENTION_EXPIRY_NOTE =
+  "At zero the server answers for you and the match continues.";
+
+/** How many of the newest log entries the rail's Activity panel keeps rendered. */
+const RAIL_LOG_ENTRIES = 40;
+
+/**
+ * A context with nothing spendable and nobody to target.
+ *
+ * Only reachable in the one frame before the first projection lands, and it is
+ * inert rather than absent on purpose: `ActionControls` renders only what the
+ * server enumerated, and with no bootstrap there is nothing enumerated, so this
+ * can never price a control.
+ */
+const EMPTY_ACTION_CONTEXT: ActionContext = {
+  spendable: { money: 0, energy: 0, work: 0 },
+  seats: [],
+};
+
+function restingTurnCopy(canRoll: boolean): string {
+  return canRoll
+    ? "Roll to continue. Anything else you may do this turn appears here."
+    : "Nothing is yours to do yet. The lane fills when it is your move.";
+}
+
+/**
+ * The tray's legacy `onRoll` path, expressed as the one command.
+ *
+ * `ActionTray` keeps the prop for callers that pass no lane; when a lane is
+ * supplied the lane owns the roll, so this only fires from that legacy path — and
+ * it still goes through the same submit, so there is no second transport.
+ */
+function submitRoll(
+  actions: readonly LegalActionSummary[],
+  submit: (draft: ActionCommandDraft) => void,
+): void {
+  const action = actions.find((candidate) => candidate.type === "turn.roll");
+  if (action === undefined) return;
+
+  submit({ type: "turn.roll", expectedRevision: action.expectedRevision });
+}
+
+/**
+ * The room's social ruleset.
+ *
+ * Read from the mode PRESET because `RoomProjection` does not carry the resolved
+ * `ModeRules` yet — the server resolves it (`chat/room-access.ts`) and now
+ * publishes it on the lobby payload, but contracts has not widened the DTO, so it
+ * is invisible to this app's types. Correct for a shipped preset and wrong for a
+ * lobby-authored custom ruleset, which `RoomChatPanel` then self-corrects from the
+ * server's own refusal (`CHAT_DISABLED` proves `off`, `CHAT_TEXT_NOT_ALLOWED`
+ * proves `quick`). Reported to the contracts owner.
+ */
+function chatRules(bootstrap: GameBootstrap) {
+  return deadlineDashModes[bootstrap.room.mode].rules.social;
+}
+
 function activePlayerName(bootstrap: GameBootstrap): string {
   const activePlayerId = bootstrap.publicProjection.activePlayerId;
   return activePlayerId ? playerName(bootstrap.room, activePlayerId) : "The server";
+}
+
+/* ------------------------------------------------------------------------- */
+/* Idempotency: one command id per intent.                                   */
+/* ------------------------------------------------------------------------- */
+
+/** Ledger cap. Bounds memory across a long match; see `reserveCommandId`. */
+const MAX_TRACKED_INTENTS = 96;
+
+/**
+ * A stable key for "the same intent".
+ *
+ * The whole draft, stably stringified: type, `expectedRevision` and every payload
+ * field. Two identical drafts are one intent and share one command id; a draft
+ * differing in *any* field — a different ballot, a different amount, a different
+ * revision — is a different intent and gets its own.
+ *
+ * Keys are sorted, because `JSON.stringify` preserves insertion order and two
+ * controls building the same payload in a different field order would otherwise
+ * look like two intents. Nested objects are handled the same way; every payload
+ * contracts accepts is plain JSON.
+ *
+ * Exported for tests: this is the function the deduplication rests on, and it is
+ * pure.
+ */
+export function commandIntentKey(draft: ActionCommandDraft): string {
+  return stableStringify(draft);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`);
+
+  return `{${entries.join(",")}}`;
+}
+
+/**
+ * The command id for a draft: the one already minted for this intent, or a new
+ * one.
+ *
+ * This is what makes §11.1's idempotency reachable from the client. Pressing a
+ * control twice, or a retry after a dropped response, re-sends the SAME id, and
+ * the server answers with the original outcome instead of applying twice — which
+ * with reaction windows and N-seat ballots is a live concern rather than a
+ * hypothetical.
+ *
+ * A refused command deliberately keeps its id: the server records receipts only
+ * for commands that APPLIED, so re-sending after a rejection is a fresh attempt
+ * rather than a replay of a refusal.
+ *
+ * Eviction is oldest-first (`Map` preserves insertion order). Safe because
+ * `expectedRevision` is part of the key: every commit moves the revision, so an
+ * evicted entry is one whose intent can no longer be submitted anyway.
+ *
+ * Exported for tests.
+ */
+export function reserveCommandId(
+  ledger: Map<string, string>,
+  draft: ActionCommandDraft,
+): string {
+  const key = commandIntentKey(draft);
+  const existing = ledger.get(key);
+  if (existing !== undefined) return existing;
+
+  const commandId = crypto.randomUUID();
+  ledger.set(key, commandId);
+  while (ledger.size > MAX_TRACKED_INTENTS) {
+    const oldest = ledger.keys().next();
+    if (oldest.done === true) break;
+    ledger.delete(oldest.value);
+  }
+
+  return commandId;
+}
+
+/**
+ * One refusal sentence per status, for any of the twenty-seven commands.
+ *
+ * §11.1 requires that "the client must be able to render a refusal without
+ * knowing which command it was", and this is that: the status carries the
+ * meaning, and the surface the message lands on carries the context. Which
+ * command failed is stated by WHERE the message appears, not by naming it twice.
+ *
+ * Exported for tests.
+ */
+export function refusalMessage(status: number): string {
+  if (status === 409) {
+    return "Somebody committed first, so that was refused. The board is re-reading; try again.";
+  }
+  if (status === 403) {
+    return "That is not yours to do. The board is re-reading the projection.";
+  }
+  if (status === 404) return "That is no longer on the board.";
+  if (status === 401) return "Your session expired. Sign in again to keep playing.";
+  if (status === 429) return "Too many commands too quickly. Wait a moment and try again.";
+  if (status >= 500) return "The server could not commit that. It will accept a retry.";
+
+  return "That command was not accepted. Try again after the projection refreshes.";
+}
+
+/* ------------------------------------------------------------------------- */
+/* The rail: twelve destinations.                                            */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Rail destination id -> panel-kit id.
+ *
+ * The two vocabularies name the same twelve surfaces and differ in exactly one
+ * place: the rail calls the card/event destination `feed`, the kit calls it
+ * `events`. Mapped rather than renamed because both ids are load-bearing in their
+ * own module's tests and its stylesheet.
+ */
+const RAIL_TO_PANEL: Readonly<Record<RailDestinationId, PanelId>> = {
+  seats: "seats",
+  activity: "activity",
+  hand: "hand",
+  projects: "projects",
+  objectives: "objectives",
+  market: "market",
+  agreements: "agreements",
+  heat: "heat",
+  ballots: "ballots",
+  chat: "chat",
+  quarter: "quarter",
+  feed: "events",
+};
+
+type RailPanelInput = {
+  /** Null until the server ships the v2 block; every panel then rests. */
+  readonly data: PanelData | null;
+  readonly actions: readonly LegalActionSummary[];
+  readonly context: ActionContext;
+  readonly onSubmit: (draft: ActionCommandDraft) => void;
+  readonly pending: LegalActionSummaryType | null;
+  readonly failure: CommandFailure | null;
+  readonly chat: ReactNode;
+  readonly cardFeed: ReactNode;
+};
+
+/**
+ * Every rail destination's content, badge and summary — twelve entries.
+ *
+ * The rail used to receive exactly ONE (`feed`), which is why eleven surfaces the
+ * panel kit had already built rendered their empty state forever while a fully
+ * populated `gameplay` block sat unread on the bootstrap. This function is the
+ * seam that closes that gap, and it is the only place the two halves meet.
+ *
+ * Three things it is careful about:
+ *
+ * - **Every panel is mounted `chrome="none"`.** `RailPanel` already draws a 28px
+ *   header, and nesting the kit's own header inside it would put two headings in
+ *   one region.
+ * - **Controls come from the REGISTRY, not from each panel's handler props.** The
+ *   panels expose `onContribute`/`onBid`/`onCast`/... , but `ActionControls
+ *   surface="rail"` is typed against the contracts payload, renders the real
+ *   pickers with the server's own ceilings, and — decisively — renders only what
+ *   the server enumerated. Wiring the bare callbacks as well would give each
+ *   command two paths to two different command ids for one intent.
+ * - **The refusal lands on the panel that owns the command**, resolved through the
+ *   same registry that decided where the control lives, so a rejected `ballot.cast`
+ *   reports itself beside the ballot rather than in the bar under the board.
+ *
+ * Exported so the composition is assertable without mounting the whole client.
+ */
+export function buildRailPanels({
+  data,
+  actions,
+  context,
+  onSubmit,
+  pending,
+  failure,
+  chat,
+  cardFeed,
+}: RailPanelInput): readonly RailPanelContent[] {
+  const failedPanel =
+    failure !== null && actionSurface(failure.type) === "rail"
+      ? actionPanel(failure.type)
+      : null;
+
+  function controls(panelId: PanelId): ReactNode {
+    return (
+      <ActionControls
+        actions={actions}
+        context={context}
+        error={failedPanel === panelId ? failure?.message ?? null : null}
+        onSubmit={onSubmit}
+        panelId={panelId}
+        pending={pending}
+        surface="rail"
+      />
+    );
+  }
+
+  function entry(
+    id: RailDestinationId,
+    body: ReactNode,
+    summary?: string,
+  ): RailPanelContent {
+    const panelId = RAIL_TO_PANEL[id];
+    const attention = railAttention(data, actions, panelId);
+
+    return {
+      id,
+      content: (
+        <>
+          {body}
+          {controls(panelId)}
+        </>
+      ),
+      ...(attention === null ? {} : { attention }),
+      ...(summary === undefined ? {} : { summary }),
+    };
+  }
+
+  /*
+   * With no gameplay block there is nothing to derive, so every destination keeps
+   * its own resting copy — except `feed`, which carries the card notice the v1
+   * projection already supports, and `chat`, which is not game state at all and is
+   * self-sufficient (§8.1). That is the honest degradation: a server that has not
+   * shipped §5 yet shows a rail that teaches instead of a rail that lies.
+   */
+  if (data === null) {
+    return [
+      { id: "feed", content: cardFeed },
+      { id: "chat", content: chat },
+    ];
+  }
+
+  return [
+    entry("seats", <SeatsPanel {...data.seats} chrome="none" />, `${formatNumber(data.seats.seats.length)}/${formatNumber(data.seats.capacity)}`),
+    entry("activity", <ActivityPanel {...data.activity} chrome="none" />, `R${formatNumber(data.activity.revision)}`),
+    entry("hand", <HandPanel {...data.hand} chrome="none" />, handSummary(data)),
+    entry("projects", <ProjectsPanel {...data.projects} chrome="none" />, countSummary(data.projects.projects.length)),
+    entry("objectives", <ObjectivesPanel {...data.objectives} chrome="none" />, countSummary(data.objectives.objectives.length)),
+    entry("market", <MarketPanel {...data.market} chrome="none" />, countSummary(data.market.lots.length)),
+    entry("agreements", <AgreementsPanel {...data.agreements} chrome="none" />, countSummary(data.agreements.agreements.length)),
+    entry("heat", <HeatPanel {...data.heat} chrome="none" />),
+    entry("ballots", <BallotsPanel {...data.ballots} chrome="none" />, countSummary(data.ballots.ballots.length)),
+    /* Chat is not derived and must not be: it is not game state, and it owns its
+       own transport, history pagination and mode narrowing. Self-sufficient — no
+       chat state belongs in this hub. */
+    { id: "chat", content: chat },
+    /* No summary on `quarter` or `heat`: both are single readouts whose own body
+       already states the number, and `quarterSummary` is a SENTENCE — the rail's
+       summary lane is a short mono readout beside a 28px heading, not prose. */
+    entry("quarter", <QuarterPanel {...data.quarter} chrome="none" />),
+    entry(
+      "feed",
+      <>
+        {cardFeed}
+        <EventsPanel {...data.events} chrome="none" />
+      </>,
+      countSummary(data.events.items.length),
+    ),
+  ];
+}
+
+/**
+ * A destination's badge: "something in here needs you", as a number.
+ *
+ * Two independent sources, and the derived one wins where it exists:
+ *
+ * - `data.attention` is populated only for the destinations that can genuinely be
+ *   *waiting on the viewer* (an uncast ballot, an unanswered offer, a hand over its
+ *   limit, heat at the threshold, an announced quarter event). It carries a
+ *   sentence for assistive tech, which a bare count cannot.
+ * - The registry's legal-action count is the fallback: a panel holding a command
+ *   the server says is legal is a panel worth opening.
+ *
+ * A zero is never synthesised — an attention affordance that is always present
+ * stops meaning anything.
+ */
+function railAttention(
+  data: PanelData | null,
+  actions: readonly LegalActionSummary[],
+  panelId: PanelId,
+): RailAttention | null {
+  const derived = data?.attention[panelId] ?? null;
+  if (derived !== null && derived.count > 0) {
+    return { count: derived.count, tone: "caution" };
+  }
+
+  const legal = actions.filter(
+    (action) => actionSurface(action.type) === "rail" && actionPanel(action.type) === panelId,
+  ).length;
+
+  return legal > 0 ? { count: legal, tone: "info" } : null;
+}
+
+function countSummary(count: number): string {
+  return formatNumber(count);
+}
+
+function handSummary(data: PanelData): string {
+  const limit = data.hand.handLimit;
+
+  return limit === null
+    ? formatNumber(data.hand.cards.length)
+    : `${formatNumber(data.hand.cards.length)}/${formatNumber(limit)}`;
 }
 
 export type BootstrapShape =

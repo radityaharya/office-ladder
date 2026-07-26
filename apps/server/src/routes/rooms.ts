@@ -9,6 +9,7 @@ import {
   parseJoinRoomRequest,
   parseOpaqueId,
   parseSelectCharacterRequest,
+  parseSetModeRulesRequest,
   parseStartGameRequest,
 } from "@office-ladder/contracts";
 import { requireSession } from "@/auth/require-session";
@@ -37,7 +38,7 @@ import {
 export const roomsRouter = new Hono();
 
 /**
- * Room lifecycle: create, join, read, seat management.
+ * Room lifecycle: create, join, read, seat management, lobby ruleset.
  *
  * Everything that mutates *game* state — all twenty-seven player commands —
  * lives behind the single endpoint in routes/commands.ts, which also owns the
@@ -275,6 +276,125 @@ roomsRouter.put("/:roomId/character", async (c) => {
       room: { id: result.value.id, revision: result.value.revision },
       character: { memberId: session.value.user.id, characterId: input.characterId },
     });
+  });
+});
+
+/**
+ * Authoring the room's ruleset in the lobby (spec §8.4).
+ *
+ * `roomService.setModeRules` and `parseSetModeRulesRequest` both shipped in
+ * earlier rounds with nothing in between them, which made a ruleset settable
+ * *only* at create time: a host who picked a preset and then wanted elimination
+ * off, or who agreed a change with the table while waiting for a fourth player,
+ * had to abandon the room and make a new one. That is the same class of gap as a
+ * command the UI cannot see — a capability that exists everywhere except where it
+ * can be reached.
+ *
+ * PUT because the body states the ruleset *whole*, exactly like
+ * `PUT /:roomId/character` states the whole of the actor's choice: a retried
+ * request cannot mean something different from the first one, and there is no
+ * partial-ruleset shape to merge (see `CreateRoomRequest.rules` on why a delta is
+ * not representable). Clearing is `DELETE` on the same path rather than a `null`
+ * in this body — `parseSetModeRulesRequest` validates a ruleset and has no way to
+ * express "no ruleset", and inventing one here would put a second, undeclared
+ * meaning into a field contracts owns.
+ *
+ * Two refusals, both the service's and both load-bearing:
+ *
+ * - **Host only** (403 ACTOR_NOT_HOST). The ruleset is the terms every other
+ *   member is agreeing to by taking a seat, not a per-member preference.
+ * - **Lobby only** (409 ROOM_NOT_OPEN). After `game.start` the ruleset is frozen
+ *   into `GameState.rules` (§5.9) and every transition reads it from there; a
+ *   room-level edit mid-match would be a rule change the stored snapshot — and so
+ *   every replay of it — could never reproduce.
+ *
+ * Answers 400 INVALID_MODE_RULES for a ruleset the server's own bounds refuse,
+ * for the same reason the create route does: a host who authored 26 fields and
+ * got back a bare "bad request" would have no idea which layer objected.
+ */
+roomsRouter.put("/:roomId/rules", async (c) => {
+  const blocked = originRejection(c.req.raw, "room.rules");
+  if (blocked !== null) return blocked;
+
+  const session = await requireSession(c.req.raw.headers);
+  if (!session.ok) return errorResponse(session.error.code, session.error.status);
+
+  const body = await parseJson(c.req.raw);
+  if (!body.ok) return errorResponse(body.error.code, body.error.status);
+
+  const context = commandContext("room.rules", session.value.user.id, c.req.param("roomId"));
+  return handled(context, async () => {
+    const roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
+    let input;
+    try {
+      // The pack's real ladder length, not contracts' hand-kept fallback, for the
+      // reason spelled out on the create route: `upkeepByRankIndex` is measured
+      // against it, and a defaulted parse here could refuse a ruleset the room
+      // service would have accepted.
+      input = parseSetModeRulesRequest(body.value, {
+        rankLadderLength: deadlineDashRanks.length,
+      });
+    } catch (error) {
+      if (error instanceof ContractValidationError && error.path.startsWith("rules")) {
+        return rejected(context, "INVALID_MODE_RULES");
+      }
+      throw error;
+    }
+
+    const result = await roomService.setModeRules({
+      roomId,
+      actorId: session.value.user.id,
+      // Still handed over as `unknown` and re-parsed by the service: this handler
+      // is not the only door onto setModeRules, and the service is the one place
+      // that must not be able to store an unvalidated ruleset.
+      rules: input.rules,
+    });
+
+    if (!result.ok) return rejected(context, result.error.code);
+
+    applied(context, result.value.revision);
+    // The host is the message id, exactly like a character claim: authoring a
+    // ruleset has no client-supplied commandId of its own. Every lobby then
+    // re-reads and sees the new terms on `room.rules` (service/projections.ts) —
+    // which is the whole point of publishing them there rather than leaving each
+    // client to infer the rules from the preset name.
+    await publishProjectionUpdate(roomId, result.value.revision, session.value.user.id);
+    return json({ room: { id: result.value.id, revision: result.value.revision } });
+  });
+});
+
+/**
+ * Returning the room to its mode preset — the other half of the PUT above.
+ *
+ * Idempotent and body-less: a room with no authored ruleset is exactly what a
+ * cleared one is, so a repeated DELETE is a no-op that still reports the current
+ * revision. Same two guards, enforced in the same place.
+ */
+roomsRouter.delete("/:roomId/rules", async (c) => {
+  const blocked = originRejection(c.req.raw, "room.rules-clear");
+  if (blocked !== null) return blocked;
+
+  const session = await requireSession(c.req.raw.headers);
+  if (!session.ok) return errorResponse(session.error.code, session.error.status);
+
+  const context = commandContext(
+    "room.rules-clear",
+    session.value.user.id,
+    c.req.param("roomId"),
+  );
+  return handled(context, async () => {
+    const roomId = parseOpaqueId(c.req.param("roomId"), "roomId");
+    const result = await roomService.setModeRules({
+      roomId,
+      actorId: session.value.user.id,
+      rules: null,
+    });
+
+    if (!result.ok) return rejected(context, result.error.code);
+
+    applied(context, result.value.revision);
+    await publishProjectionUpdate(roomId, result.value.revision, session.value.user.id);
+    return json({ room: { id: result.value.id, revision: result.value.revision } });
   });
 });
 

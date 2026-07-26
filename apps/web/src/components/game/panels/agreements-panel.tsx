@@ -2,6 +2,7 @@ import { Panel, type PanelAttention, type PanelChrome } from "./panel";
 import { pluralise } from "./panel-format";
 import { PanelEmpty, PanelList, PanelNote, PanelRow, PanelStamp } from "./panel-parts";
 import { PANEL_DEFINITIONS } from "./panel-registry";
+import { panelDeadlineLabel } from "./panel-semantics";
 
 export type AgreementPanelStatus =
   | "offered"
@@ -175,13 +176,18 @@ function termText(term: AgreementTerm): string {
   return term.enforced ? term.label : `${term.label} (not enforced)`;
 }
 
+/**
+ * An offer states its own clock; a settled deal states the round it closed on.
+ *
+ * The live case goes through the kit's one deadline formatter
+ * (`panel-semantics.ts`) so "lapses in 2 rounds" reads the same here as "closes in
+ * 2 rounds" does on a lot — §12.4's whole point is that the same clock must not
+ * read three ways across eleven panels.
+ */
 function factsFor(agreement: AgreementPanelItem, round: number): readonly string[] {
-  const remaining = agreement.expiresAtRound - round;
   const expiry =
     agreement.status === "offered"
-      ? remaining <= 0
-        ? "Lapses now"
-        : `Lapses in ${pluralise(remaining, "round")}`
+      ? panelDeadlineLabel(agreement.expiresAtRound, round, "lapses")
       : `Round ${agreement.expiresAtRound}`;
   return [expiry, pluralise(agreement.recipientNames.length, "party", "parties")];
 }

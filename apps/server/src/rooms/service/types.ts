@@ -7,6 +7,7 @@ import type {
   RoomBootstrap,
   RoomCapacity,
   RoomMode,
+  RoomProjection,
   RoomStatus,
   SafeEventSummary,
   ServerInjectedCommandType,
@@ -55,6 +56,30 @@ export type RoomTurnTimer = {
   readonly gameRevision: number;
   /** The member on the clock — always the active player, never a bot seat. */
   readonly playerId: PlayerId;
+};
+
+/**
+ * The lobby projection, plus the ruleset the room is actually played under.
+ *
+ * An intersection rather than a field on `RoomProjection` itself only because
+ * that DTO lives in `@office-ladder/contracts`, which this change does not own.
+ * `service/projections.ts`'s `effectiveRules` is where the *why* is written down
+ * — what it resolves, and why the ruleset is the only thing added. Once contracts
+ * carries `readonly rules: ModeRules | null`, these three aliases collapse to
+ * no-ops and can be deleted without touching a call site.
+ */
+export type LobbyRoomProjection = RoomProjection & {
+  readonly rules: ModeRules | null;
+};
+
+/**
+ * The two bootstraps, each carrying the widened lobby projection. Stated here so
+ * the added field is *typed* for every server-side consumer rather than a
+ * property that only exists once the payload has been through `JSON.stringify`.
+ */
+export type LobbyBootstrap = RoomBootstrap & { readonly room: LobbyRoomProjection };
+export type LobbyGameplayBootstrap = GameplayBootstrap & {
+  readonly room: LobbyRoomProjection;
 };
 
 export type StoredRoom = {
@@ -429,9 +454,17 @@ export interface RoomService {
   create(input: CreateRoomInput): Promise<RoomServiceResult<StoredRoom>>;
   join(input: JoinRoomInput): Promise<RoomServiceResult<StoredRoom>>;
   joinByCode(input: JoinRoomByCodeInput): Promise<RoomServiceResult<StoredRoom>>;
+  /**
+   * The lobby or gameplay payload for one viewer.
+   *
+   * Both halves are the `@office-ladder/contracts` DTO *plus* the effective
+   * ruleset on `room` — see `service/projections.ts`'s `LobbyRoomProjection` for
+   * why that lives here rather than in the DTO, and why it is a widening rather
+   * than a second field somewhere else.
+   */
   bootstrap(
     input: BootstrapRoomInput,
-  ): Promise<RoomServiceResult<RoomBootstrap | GameplayBootstrap>>;
+  ): Promise<RoomServiceResult<LobbyBootstrap | LobbyGameplayBootstrap>>;
   /** Resolves the viewer to the room member it may subscribe as. */
   authorizeSubscription(
     input: AuthorizeSubscriptionInput,

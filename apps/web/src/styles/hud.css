@@ -378,6 +378,147 @@
 }
 
 /* --------------------------------------------------------------------------
+   Turn clock — a depleting bar, never a ticking number
+   (plans/24-gameplay-v2-spec.md §12.3)
+
+   WHY A BAR. A number demands the reader read and subtract, which is the whole
+   problem when a reaction window is eight seconds long. A bar is peripherally
+   legible. The mono value beside it states the BUDGET, which is static — it says
+   whether the bar is an 8-second scale or a 90-second one, and it never ticks.
+
+   THE ONE SANCTIONED CONTINUOUS ANIMATION IN THE SYSTEM. Everything else stays
+   one-shot (DESIGN.md §7.2, "if it repeats forever it is wrong"); this is the
+   documented exception, and it is not ambient — it is the only honest rendering of
+   a wall-clock boundary, it runs once per deadline, and it stops at zero.
+
+   NO CLOCK RUNS IN JAVASCRIPT. `game-hud.tsx` sets `animation-duration` to the
+   server's full budget and `animation-delay` to MINUS the time already elapsed, so
+   the browser seeks into a static keyframe pair and the compositor carries it. No
+   interval, no rAF, no local countdown state, and nothing here decides anything —
+   the server commits the turn whether or not a client noticed.
+
+   A DEFINITE LANE. The whole readout is a fixed width whether or not a clock is
+   armed, so a turn ending cannot shift the header the board sits under.
+   -------------------------------------------------------------------------- */
+
+.hud-clock {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  /* Mobile drops the label word, so the lane is the track plus the value. */
+  width: 96px;
+  min-height: 28px;
+  padding-inline: 4px;
+  /* Own versus opponent, structurally and not by reading a name (§12.1): the
+     leading rule is a signal colour when the clock is on the local player and a
+     plain hairline when it is on somebody else. The register, the sr-only
+     sentence and the fill tone all agree. */
+  border-left: 2px solid var(--border-strong);
+}
+
+@media (min-width: 768px) {
+  .hud-clock {
+    width: 136px;
+  }
+}
+
+/* Only while a clock is actually running. A caution rule on a lane holding "—"
+   says something needs you when nothing does, which is exactly the noise §12.1 is
+   trying to remove. Measured in Chrome: the resting lane wore the amber rule. */
+.hud-clock[data-armed="true"][data-owner="self"] {
+  border-left-color: var(--status-caution);
+}
+
+.hud-clock-label {
+  display: none;
+}
+
+/* §9: the value stays legible as text at every width; the label word is what
+   gives way first, because the bar and the mono budget already carry the reading. */
+@media (min-width: 768px) {
+  .hud-clock-label {
+    display: inline;
+  }
+}
+
+/* Sunken track, 1px border, 0 radius, flat fill, no gradient, no glow (§6.4).
+   The hatched band on the LEADING 20% is a redline, not a state: the fill
+   depletes towards the left, so a bar inside the hatch means the last fifth of
+   the budget. It is drawn at rest, so it is a scale marking a reader can learn
+   rather than a colour change they have to catch. */
+.hud-clock-track {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background-color: var(--surface-sunken);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklch, var(--status-critical) 55%, transparent) 0 2px,
+    transparent 2px 4px
+  );
+  background-position: left center;
+  background-repeat: no-repeat;
+  background-size: 20% 100%;
+  overflow: hidden;
+}
+
+.hud-clock-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--hud-clock-tone, var(--status-info));
+  animation-name: hud-clock-deplete;
+  /* A literal progress meter — `easing-linear`, the one non-standard curve
+     DESIGN.md §7 permits, because a deadline does not decelerate. */
+  animation-timing-function: linear;
+  animation-iteration-count: 1;
+  /* Reaches zero and HOLDS there, waiting for the next update rather than
+     resetting or looping. */
+  animation-fill-mode: forwards;
+}
+
+.hud-clock[data-owner="self"] .hud-clock-fill {
+  --hud-clock-tone: var(--status-caution);
+}
+
+/* `.hud-sub` already carries §2.1's mono `caption` metrics and tabular figures;
+   this only pins it out of the flex negotiation so the track keeps its 64px. */
+.hud-clock-budget {
+  flex: 0 0 auto;
+}
+
+@keyframes hud-clock-deplete {
+  from {
+    transform: scaleX(1);
+  }
+
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/*
+ * §12.3: under reduced motion the bar degrades to DISCRETE STEPS rather than
+ * vanishing — the remaining time is information, not decoration, and a player who
+ * gets no animation still has to be able to see a deadline approaching.
+ *
+ * `steps(8, end)` keeps the same animation, the same duration and the same
+ * negative seek; it just quantises the movement into eight visible drops, which is
+ * a state change eight times rather than a continuous one.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .hud-clock-fill {
+    animation-timing-function: steps(8, end);
+  }
+}
+
+/* --------------------------------------------------------------------------
    HUD strip — fixed 40px, surface, bottom hairline, full width (§6.4)
    -------------------------------------------------------------------------- */
 

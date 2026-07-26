@@ -16,12 +16,14 @@
    selector, so import order carries no meaning.
    CSS `@import` is only legal before other rules — these must stay in this
    block, never appended at the end of the file. */
+@import "./actions.css";
 @import "./board.css";
 @import "./cards.css";
 @import "./dice.css";
 @import "./game-shell.css";
 @import "./hud.css";
 @import "./overlays.css";
+@import "./panels.css";
 @import "./room-modes.css";
 @import "./shell.css";
 

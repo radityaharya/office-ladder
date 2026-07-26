@@ -11,7 +11,7 @@ import type {
   RoomProjection,
 } from "@office-ladder/contracts";
 
-import { GameHudStrip, TurnStateIndicator } from "./game-hud";
+import { GameHudStrip, TurnClock, TurnStateIndicator } from "./game-hud";
 import { resolveTurnState } from "./turn-rail";
 
 function member(overrides: Partial<RoomMemberProjection> = {}): RoomMemberProjection {
@@ -419,5 +419,218 @@ describe("hud turn-state indicator", () => {
     // Then
     expect(markup).toContain("Match closed");
     expect(markup).toContain("hud-led--idle");
+  });
+});
+
+/*
+ * The turn clock. What replaced a `/T(\d{2}:\d{2}:\d{2})/` over `deadlineAt`
+ * rendering a static wall-clock time — a timestamp, not a countdown.
+ *
+ * The depletion itself is unobservable in this environment (node, no frame loop,
+ * no CSS) and is deliberately not JavaScript's job anyway: it is one CSS animation
+ * whose duration is the server's budget and whose delay is negative by the elapsed
+ * time. What IS testable, and what the whole design rests on, is that the resting
+ * geometry is a pure function of two SERVER instants — so the same markup renders
+ * on the server, in this test and on the first client paint, and none of it depends
+ * on the browser's clock.
+ */
+const CLOCK_ARMED = {
+  ...game,
+  deadlineAt: "2026-07-27T10:00:30.000Z",
+  turnTimerDurationMs: 30_000,
+} satisfies PublicGameProjection;
+
+function clock(
+  overrides: {
+    readonly game?: PublicGameProjection;
+    readonly selfPlayerId?: string;
+    readonly serverTime?: string | null;
+  } = {},
+): string {
+  return renderToStaticMarkup(
+    <TurnClock
+      game={overrides.game ?? CLOCK_ARMED}
+      selfPlayerId={overrides.selfPlayerId ?? "player-1"}
+      serverTime={overrides.serverTime === undefined ? "2026-07-27T10:00:00.000Z" : overrides.serverTime}
+    />,
+  );
+}
+
+describe("turn clock", () => {
+  it("renders a depleting bar, never a ticking number (§12.3)", () => {
+    // Given a 30s budget armed 0s ago
+    const markup = clock();
+
+    // Then there is a track and a fill, and the only number on screen is the
+    // static budget — nothing here counts down in text.
+    expect(markup).toContain('data-slot="game-turn-clock"');
+    expect(markup).toContain('class="hud-clock-track"');
+    expect(markup).toContain('class="hud-clock-fill"');
+    expect(markup).toContain('data-remaining="100"');
+    expect(markup).toContain(">30s<");
+    // A wall-clock readout is exactly what this replaces.
+    expect(markup).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+
+  it("takes its geometry from the two server instants, not from the browser clock", () => {
+    // Given 12 of the 30 seconds already gone, per the server's own stamps: the
+    // deadline is 10:00:30 and the budget was 30s, so the clock was armed at
+    // 10:00:00 and the projection is stamped 12s later.
+    const markup = clock({ serverTime: "2026-07-27T10:00:12.000Z" });
+
+    // Then the bar rests at 60% and the CSS animation is seeked 12s in — a full
+    // budget as its duration, and the elapsed time as a NEGATIVE delay.
+    expect(markup).toContain('data-remaining="60"');
+    expect(markup).toContain("animation-delay:-12000ms");
+    expect(markup).toContain("animation-duration:30000ms");
+    // The resting transform is what shows if animations never run at all.
+    expect(markup).toContain("transform:scaleX(0.6)");
+    expect(markup).toContain('data-synced="true"');
+  });
+
+  it("stops at zero rather than going negative or looping", () => {
+    // Given a deadline the server has already passed
+    const markup = clock({ serverTime: "2026-07-27T10:01:00.000Z" });
+
+    // Then
+    expect(markup).toContain('data-remaining="0"');
+    expect(markup).toContain("transform:scaleX(0)");
+    expect(markup).toContain("animation-delay:-30000ms");
+  });
+
+  it("holds its lane when no clock is running, so a turn ending cannot move the board", () => {
+    // Given a projection with no deadline — the timer is off, the match is over,
+    // or a bot holds the turn
+    const markup = clock({ game });
+
+    // Then the readout is still there, still the same lane, with no fill.
+    expect(markup).toContain('data-slot="game-turn-clock"');
+    expect(markup).toContain('data-armed="false"');
+    expect(markup).toContain('class="hud-clock-track"');
+    expect(markup).not.toContain("hud-clock-fill");
+    expect(markup).toContain(">—<");
+    expect(markup).toContain("No turn clock is running.");
+  });
+
+  it("says in words whose clock it is and what happens at zero", () => {
+    // Given the local player holds the turn
+    const mine = clock();
+
+    // Then the auto-action is stated, not implied — this is the "kalo abis auto
+    // roll" half of the feature, and a bar alone cannot say it.
+    expect(mine).toContain('data-owner="self"');
+    expect(mine).toContain("a 30 second budget for you");
+    expect(mine).toContain("the server rolls for you");
+  });
+
+  it("distinguishes your own clock from an opponent's structurally", () => {
+    // Given the same armed clock seen by the other seat
+    const theirs = clock({ selfPlayerId: "player-2" });
+
+    // Then own-versus-opponent is an attribute the stylesheet keys the fill tone
+    // and the leading rule off, plus a different sentence naming the seat.
+    expect(theirs).toContain('data-owner="opponent"');
+    expect(theirs).toContain("budget for seat 1");
+    expect(theirs).toContain("the server rolls on their behalf");
+  });
+
+  it("reports itself unsynced rather than guessing from Date.now()", () => {
+    // Given a caller that did not pass `GameBootstrap.serverTime`
+    const markup = clock({ serverTime: null });
+
+    // Then it runs the real budget and says the elapsed portion is unknown — the
+    // client's own clock can be minutes off, so it is never consulted.
+    expect(markup).toContain('data-synced="false"');
+    expect(markup).toContain('data-remaining="100"');
+    expect(markup).toContain("Remaining time is unsynced.");
+  });
+
+  it("ignores a deadline it cannot make a proportion out of", () => {
+    // Given a deadline with no budget beside it, and an unparseable instant
+    const noBudget = clock({
+      game: { ...CLOCK_ARMED, turnTimerDurationMs: null },
+    });
+    const unparseable = clock({
+      game: { ...CLOCK_ARMED, deadlineAt: "not-an-instant" },
+    });
+
+    // Then both degrade to the resting lane instead of rendering a wrong bar.
+    expect(noBudget).toContain('data-armed="false"');
+    expect(unparseable).toContain('data-armed="false"');
+  });
+
+  it("scales a long budget into minutes without ever ticking", () => {
+    // Given a 2-minute turn
+    const markup = clock({
+      game: {
+        ...CLOCK_ARMED,
+        deadlineAt: "2026-07-27T10:02:00.000Z",
+        turnTimerDurationMs: 120_000,
+      },
+    });
+
+    // Then
+    expect(markup).toContain(">2:00<");
+    expect(markup).toContain("a 2 minute budget for you");
+  });
+});
+
+describe("turn clock stylesheet", () => {
+  const stylesheet = readFileSync(
+    fileURLToPath(new URL("../../styles/hud.css", import.meta.url)),
+    "utf8",
+  );
+
+  it("degrades to discrete steps under reduced motion rather than vanishing", () => {
+    // Then — §12.3: the remaining time is information, not decoration, so the
+    // one sanctioned continuous animation in the system quantises instead of
+    // being removed.
+    expect(stylesheet).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.hud-clock-fill \{[^}]*animation-timing-function: steps\(/,
+    );
+  });
+
+  it("runs the bar once, linearly, and holds it at zero", () => {
+    // Given
+    const fill = stylesheet.slice(
+      stylesheet.indexOf(".hud-clock-fill {"),
+      stylesheet.indexOf("}", stylesheet.indexOf(".hud-clock-fill {")),
+    );
+
+    // Then — a literal progress meter is the one place DESIGN.md §7 allows
+    // `easing-linear`, and `forwards` is what makes it stop at zero and wait for
+    // the next update instead of resetting.
+    expect(fill).toContain("animation-timing-function: linear");
+    expect(fill).toContain("animation-iteration-count: 1");
+    expect(fill).toContain("animation-fill-mode: forwards");
+    // The duration and the delay are the server's numbers, set per render.
+    expect(fill).not.toContain("animation-duration");
+    expect(fill).not.toContain("animation-delay");
+  });
+
+  it("reserves the clock's lane at every width", () => {
+    // Given
+    const lane = stylesheet.slice(
+      stylesheet.indexOf(".hud-clock {"),
+      stylesheet.indexOf("}", stylesheet.indexOf(".hud-clock {")),
+    );
+
+    // Then the lane has a definite width whether or not a clock is armed, so the
+    // header the board sits under never changes size.
+    expect(lane).toContain("width: 96px");
+    expect(stylesheet).toMatch(/@media \(min-width: 768px\) \{\s*\.hud-clock \{[^}]*width: 136px/);
+  });
+
+  it("keeps the track flat and sunken, with no glow and no radius (§6.4)", () => {
+    // Given
+    const track = stylesheet.slice(
+      stylesheet.indexOf(".hud-clock-track {"),
+      stylesheet.indexOf("}", stylesheet.indexOf(".hud-clock-track {")),
+    );
+
+    // Then
+    expect(track).toContain("border-radius: 0");
+    expect(track).toContain("background-color: var(--surface-sunken)");
+    expect(track).not.toContain("box-shadow");
   });
 });

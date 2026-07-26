@@ -1,0 +1,605 @@
+/* ==========================================================================
+   Office Ladder — the action layer: the command lane under the board, the
+   decision cluster in the attention band, and the per-panel control clusters
+   in the rail.
+
+   Plain CSS only. Every selector is prefixed `actions-` so this sheet cannot
+   collide with a sibling area's stylesheet. Tokens are read as var(--token)
+   from globals.css; no @apply, no @theme.
+
+   `apps/web/src/components/game/actions/` names this file in its own comments
+   and ships no stylesheet of its own, so this is that sheet. Twenty-seven
+   controls, exactly two shapes (a button and a picker), so this is short by
+   construction — see `action-parts.tsx`.
+
+   Design authority (DESIGN.md):
+     §1.5 accent is spent ONCE per view — `data-variant="primary"` is the spend
+     §1.6 caution/critical are signal colours, never button fills
+     §3   4px spacing grid
+     §4.1 seams are a 1px hairline or one tonal step — never a shadow
+     §4.2 radius 0 structural / 2px interactive
+     §5   five interaction states on every interactive element
+     §6.1 buttons; §6.4 6px square LEDs
+     §7.1 chrome motion: 80/120/160ms, cubic-bezier(0.2, 0, 0, 1), no springs
+     §8   28px pointer floor, no silent overflow, reason stated in text
+
+   THE ONE GEOMETRY RULE THIS SHEET EXISTS TO KEEP
+   `.actions-bar` is a DEFINITE height and always in flow. It hosts the turn's
+   commands, which come and go every turn, and the region it sits in is directly
+   above the board's `1fr` row. A conditional row there re-sized the board by a
+   measured 32px once already (game-shell.css records it), so the lane scrolls
+   horizontally inside itself and never wraps, never grows and never vanishes.
+   ========================================================================== */
+
+:root {
+  --actions-ease: cubic-bezier(0.2, 0, 0, 1);
+  --actions-sans: var(--font-geist-sans, "Inter", sans-serif);
+  --actions-mono: var(--font-mono, "IBM Plex Mono", monospace);
+  /* One 32px control row plus its 4px padding either side. Stated once so the
+     bar's height and the button's floor cannot drift apart. */
+  --actions-control-height: 32px;
+  --actions-bar-height: 40px;
+}
+
+/* --------------------------------------------------------------------------
+   1. The tracks
+   -------------------------------------------------------------------------- */
+
+/*
+ * The fixed-height lane. Rendered whether or not anything is legal — the resting
+ * readout below is what it says when nothing is, and that is why the region
+ * cannot change size as a turn passes between seats.
+ */
+.actions-bar {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: var(--actions-bar-height);
+  background: var(--surface);
+}
+
+.actions-lane {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-inline: 8px;
+  /* Scroll rather than wrap: wrapping would grow the lane, and the lane's height
+     is the reservation the board depends on. Scrollbar suppressed, so the region
+     is a tab stop in the markup (§8) — see `ActionControls`. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.actions-lane::-webkit-scrollbar {
+  display: none;
+}
+
+.actions-lane:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/*
+ * The rail and band clusters. `inline` layout, so this renders nothing at all
+ * when a panel has no legal action — an always-present empty cluster would be one
+ * more thing to read in a twelve-destination interface. Wrapping is allowed here
+ * because a panel body scrolls inside itself and the rail is a definite track, so
+ * nothing above or below can be moved by it.
+ */
+.actions-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.actions-rest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--actions-sans);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.actions-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-family: var(--actions-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--status-critical);
+}
+
+/* --------------------------------------------------------------------------
+   2. Indicators
+   -------------------------------------------------------------------------- */
+
+/* 6px SQUARE, never a circle (§6.4). Decorative: every one of these sits beside
+   text that carries the same meaning, so colour is never the only carrier (§8). */
+.actions-led {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--muted-foreground);
+}
+
+.actions-led[data-tone="idle"] {
+  background: var(--border-strong);
+}
+
+.actions-led[data-tone="critical"] {
+  background: var(--status-critical);
+}
+
+/* --------------------------------------------------------------------------
+   3. Controls
+   -------------------------------------------------------------------------- */
+
+.actions-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.actions-control-label {
+  font-family: var(--actions-sans);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.actions-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  /* 28px is the pointer floor (§8); 32px is the comfortable command height and
+     what the lane is sized around. */
+  min-height: var(--actions-control-height);
+  padding-inline: 10px;
+  background: var(--surface-raised);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  /* §4.2: 2px on interactive elements, and nothing rounder. */
+  border-radius: 2px;
+  cursor: pointer;
+  transition:
+    background-color var(--chrome-fast, 120ms) var(--actions-ease),
+    border-color var(--chrome-fast, 120ms) var(--actions-ease);
+}
+
+.actions-btn:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  border-color: var(--border-inverse);
+}
+
+.actions-btn:active:not(:disabled) {
+  background: var(--muted);
+}
+
+.actions-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.actions-btn:disabled {
+  color: var(--muted-foreground);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+/*
+ * The single accent spend (§1.5). One control per surface carries it — the roll
+ * in the command lane, the play in an open decision, the commit inside a sheet —
+ * and `caution`/`critical` are deliberately NOT fills anywhere in this sheet
+ * (§1.6): a critical command says so in its label and its reason line.
+ */
+.actions-btn[data-variant="primary"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+}
+
+.actions-btn[data-variant="primary"]:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+  border-color: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+}
+
+.actions-btn[data-variant="primary"]:disabled {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+
+.actions-btn[data-variant="ghost"] {
+  background: transparent;
+  border-color: transparent;
+}
+
+.actions-btn[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+}
+
+.actions-btn-label {
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  /* Uppercased here, sentence case in source (§2.2) so assistive tech reads
+     words rather than shouted letters. */
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.actions-btn-more {
+  font-family: var(--actions-mono);
+  font-size: 0.6875rem;
+  color: currentcolor;
+  opacity: 0.7;
+}
+
+/* A price is data: mono, tabular, and never the only thing that changes when the
+   number does. */
+.actions-price {
+  font-family: var(--actions-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.actions-btn[data-variant="primary"] .actions-price {
+  color: color-mix(in oklch, var(--primary-foreground) 80%, transparent);
+}
+
+/*
+ * Why a control is inert, in words beside it.
+ *
+ * "Costs $400, you hold $250." teaches the economy; a missing button teaches
+ * nothing, and a greyed one with no reason teaches less. It is wired to the
+ * button with `aria-describedby`, so the reason is announced rather than merely
+ * drawn (§8).
+ */
+.actions-reason {
+  max-width: 22ch;
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   4. The picker
+   --------------------------------------------------------------------------
+   A top-layer `popover`, which is what keeps a control that needs a target from
+   moving the board: it is out of flow, it is not clipped by the lane's or the
+   rail's `overflow: hidden`, and it light-dismisses with no focus trap and no
+   positioning library. It is not a modal — the player opened it (§12.3 bans
+   modals for what the GAME raises at you, which is the opposite case).
+   -------------------------------------------------------------------------- */
+
+.actions-sheet {
+  position: fixed;
+  inset: auto;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  margin: auto;
+  padding: 0;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  overflow-y: auto;
+}
+
+.actions-sheet:not(:popover-open) {
+  display: none;
+}
+
+/* The one sanctioned elevation (§4.4): a dismissible overlay in the top layer. */
+.actions-sheet::backdrop {
+  background: transparent;
+}
+
+.actions-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 12px;
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border);
+}
+
+.actions-sheet-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+
+.actions-sheet-detail,
+.actions-sheet-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--actions-sans);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.actions-sheet-note {
+  border-top: 1px solid var(--border);
+}
+
+.actions-sheet-note .actions-led {
+  margin-block-start: 6px;
+}
+
+.actions-sheet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+/*
+ * A reserved lane for the cross-field refusal. The sheet must not resize when a
+ * message appears — the same anti-reflow rule the shell applies to the attention
+ * band, one layer in.
+ */
+.actions-sheet-refusal {
+  min-height: 16px;
+  margin: 0;
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--status-critical);
+}
+
+.actions-sheet-foot {
+  display: flex;
+  gap: 8px;
+  padding-block-start: 4px;
+  border-top: 1px solid var(--border);
+}
+
+/* --------------------------------------------------------------------------
+   5. Fields
+   -------------------------------------------------------------------------- */
+
+.actions-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.actions-label {
+  font-family: var(--actions-sans);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.actions-input {
+  width: 100%;
+  min-height: 28px;
+  padding-inline: 8px;
+  background: var(--input);
+  color: var(--foreground);
+  font-family: var(--actions-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+}
+
+.actions-input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.actions-hint {
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+
+.actions-choice {
+  display: flex;
+  flex-direction: column;
+  /* Hairline rows, no zebra (§6.3). */
+  border: 1px solid var(--border);
+}
+
+.actions-choice-row,
+.actions-check {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.actions-choice-row + .actions-choice-row {
+  border-top: 1px solid var(--border);
+}
+
+.actions-choice-row:hover {
+  background: var(--surface-sunken);
+}
+
+.actions-choice-row:has(> input:disabled) {
+  color: var(--muted-foreground);
+  cursor: not-allowed;
+}
+
+.actions-check {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.actions-choice-label {
+  grid-column: 3;
+  font-family: var(--actions-sans);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.35;
+  color: inherit;
+}
+
+.actions-check .actions-choice-label {
+  grid-column: 2;
+}
+
+/* The per-option note wraps under the label rather than beside it: an option is
+   allowed two lines, and truncating the sentence that explains what it does is
+   the one thing this list must not do. */
+.actions-choice-note {
+  grid-column: 3 / -1;
+  font-family: var(--actions-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+
+/*
+ * Seat identity in a picker: the seat NUMBER on the seat colour, so a target is
+ * tied to a board token without relying on colour (§8) and without reading a
+ * name. Same 16px chip as the rail's seat strip and the board's plate.
+ */
+.actions-seat {
+  display: inline-flex;
+  grid-column: 2;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-family: var(--actions-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--background);
+  background: var(--muted-foreground);
+}
+
+.actions-seat-1 .actions-seat {
+  background: var(--player-1);
+}
+.actions-seat-2 .actions-seat {
+  background: var(--player-2);
+}
+.actions-seat-3 .actions-seat {
+  background: var(--player-3);
+}
+.actions-seat-4 .actions-seat {
+  background: var(--player-4);
+}
+.actions-seat-5 .actions-seat {
+  background: var(--player-5);
+}
+.actions-seat-6 .actions-seat {
+  background: var(--player-6);
+}
+
+/* --------------------------------------------------------------------------
+   6. Host context
+   --------------------------------------------------------------------------
+   Three hosts mount this layer and each already owns a box. These are the only
+   selectors in this sheet that name another area's class, and every one is a
+   DESCENDANT qualifier — none redefines a class this sheet does not own.
+   -------------------------------------------------------------------------- */
+
+/*
+ * The command lane inside the action bar (dice.css's `.dice-tray-row`).
+ *
+ * It takes the width the dice instrument does not and drops its own fill, because
+ * the tray is already one tonal step off the board plane and a second would be
+ * two seams for one region (§4.1). Its HEIGHT stays fixed: that is the
+ * reservation the board's `1fr` row depends on.
+ */
+.dice-tray-row > .actions-bar {
+  flex: 1 1 240px;
+  min-width: 0;
+  background: transparent;
+}
+
+.dice-tray-row > .actions-bar .actions-lane {
+  padding-inline: 0;
+}
+
+/*
+ * The decision cluster inside the 40px attention band (game-shell.css).
+ *
+ * One row, `nowrap`, no seam: the band is a single instrument row that scrolls
+ * horizontally rather than wrapping, because wrapping would grow the row and the
+ * board would move — which is the whole reason the band exists at a definite
+ * height.
+ */
+.game-shell-attention .actions-group {
+  flex-wrap: nowrap;
+  padding-block: 0;
+  border-top: 0;
+}
+
+/* --------------------------------------------------------------------------
+   7. Reduced motion
+   --------------------------------------------------------------------------
+   Nothing in this sheet animates position or size; the only transitions are the
+   120ms colour moves on a control's interaction states. They are removed rather
+   than retimed, because a state change that is instant is still legible.
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .actions-btn {
+    transition: none;
+  }
+}

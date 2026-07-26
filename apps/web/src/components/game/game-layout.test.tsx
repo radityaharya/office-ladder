@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { deadlineDashModes } from "@office-ladder/content";
 import type {
   GameBootstrap,
   PublicGameProjection,
@@ -19,8 +20,23 @@ import {
 import { ActionTray } from "./action-tray";
 import type { DiceRollFeedItem } from "./dice";
 import { EVENT_PACING, revealedEventCount, createEventPacingState } from "./event-feedback-policy";
+import {
+  buildRailPanels,
+  commandIntentKey,
+  refusalMessage,
+  reserveCommandId,
+} from "./game-client";
 import { AttentionNotice, GameLayout } from "./game-layout";
-import { createAttentionNotice, createGameView } from "./game-view";
+import {
+  asGameplayBootstrap,
+  createActionContext,
+  createAttentionNotice,
+  createGameView,
+  createOwnershipViews,
+  createPlacementViews,
+  hasTerritory,
+} from "./game-view";
+import { derivePanelData } from "./panels";
 import { RAIL_DESTINATIONS, RAIL_GROUPS, TurnRail } from "./turn-rail";
 
 const selfRoll = {
@@ -469,6 +485,16 @@ const hudSheet = readFileSync(
   "utf8",
 );
 
+const actionsSheet = readFileSync(
+  fileURLToPath(new URL("../../styles/actions.css", import.meta.url)),
+  "utf8",
+);
+
+const globalsSheet = readFileSync(
+  fileURLToPath(new URL("../../styles/globals.css", import.meta.url)),
+  "utf8",
+);
+
 /** The declaration block of a top-level rule, by exact selector. */
 function cssRule(sheet: string, selector: string): string {
   const start = sheet.indexOf(`${selector} {`);
@@ -859,11 +885,25 @@ describe("action bar status lane", () => {
 });
 
 describe("attention notice derivation", () => {
-  it("puts an open decision on the band, with the turn deadline it is on", () => {
+  /**
+   * `deadline` used to be a pre-formatted `"12:00:30"` — the output of a
+   * `/T(\d{2}:\d{2}:\d{2})/` regex over `deadlineAt`, which is a TIMESTAMP and not
+   * a countdown: it told a player the wall-clock instant their window closes and
+   * left them to subtract, which is exactly what §12.3 says a bar exists to avoid.
+   *
+   * So this now pins the RAW pair leaving the derivation, which is strictly more
+   * than the string was: the band cannot render §12.3's depleting bar without both
+   * an instant and a budget, and a formatted string can carry neither honestly.
+   */
+  it("hands the band the raw deadline pair, never a formatted wall clock", () => {
     // Given
     const notice = createAttentionNotice({
       ...bootstrap,
-      publicProjection: { ...game, deadlineAt: "2026-07-24T12:00:30.000Z" },
+      publicProjection: {
+        ...game,
+        deadlineAt: "2026-07-24T12:00:30.000Z",
+        turnTimerDurationMs: 30_000,
+      },
       legalActions: [
         {
           type: "prompt.respond",
@@ -880,11 +920,845 @@ describe("attention notice derivation", () => {
     expect(notice?.label).toBe("Decision");
     expect(notice?.tone).toBe("caution");
     expect(notice?.detail).toContain("Audit release");
-    expect(notice?.deadline).toBe("12:00:30");
+    expect(notice?.deadline).toEqual({
+      deadlineAt: "2026-07-24T12:00:30.000Z",
+      durationMs: 30_000,
+    });
+    // And it is the pair, not a rendered clock face: a string here could carry
+    // neither the budget the bar needs for its scale nor the instant it needs for
+    // its end, which is why the regex went.
+    expect(typeof notice?.deadline).toBe("object");
+  });
+
+  /**
+   * A reaction window is the shortest clock in the game — seconds, not the turn's
+   * minutes — and losing it is SILENT: the server closes it and the effect lands.
+   * An unanswered prompt merely stalls the turn and keeps asking. So the window
+   * outranks the prompt for the one always-visible slot.
+   */
+  it("puts an open reaction window ahead of a prompt, at its own budget", () => {
+    // Given both are open at once, on a real gameplay bootstrap: the window's
+    // budget lives in the frozen ruleset, so a payload without one has no scale.
+    const full = gameplayBootstrap() as unknown as {
+      readonly gameplay: { readonly rules: Record<string, unknown> };
+    };
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      gameplay: {
+        ...full.gameplay,
+        rules: {
+          ...full.gameplay.rules,
+          interaction: {
+            ...(full.gameplay.rules["interaction"] as Record<string, unknown>),
+            reactionWindowSeconds: 8,
+          },
+        },
+      },
+      publicProjection: { ...game, deadlineAt: "2026-07-24T12:02:00.000Z" },
+      reactions: [
+        {
+          id: "window-1",
+          kind: "prevention",
+          deadlineAt: "2026-07-24T12:00:09.000Z",
+          hasPriority: true,
+          hasPassed: false,
+          hasPlayed: false,
+        },
+      ],
+      legalActions: [
+        {
+          type: "prompt.respond",
+          expectedRevision: 8,
+          decisionPointId: "decision-1",
+          kind: "audit-release",
+          options: [{ id: "pay-fine" }],
+        },
+      ],
+    } as unknown as GameBootstrap);
+
+    // Then
+    expect(notice?.label).toBe("Reaction");
+    expect(notice?.tone).toBe("critical");
+    expect(notice?.detail).toContain("closes on its own");
+    // The budget is the FROZEN ruleset's window, not the turn timer's minutes:
+    // ReactionProjection carries an instant and no duration, so without this the
+    // bar would have an end and no scale.
+    expect(notice?.deadline).toEqual({
+      deadlineAt: "2026-07-24T12:00:09.000Z",
+      durationMs: 8_000,
+    });
+  });
+
+  it("stops shouting about a window this viewer has already answered", () => {
+    // Given a window the viewer passed on. It stays open for the other seats.
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      reactions: [
+        {
+          id: "window-1",
+          kind: "prevention",
+          deadlineAt: "2026-07-24T12:00:09.000Z",
+          hasPriority: false,
+          hasPassed: true,
+          hasPlayed: false,
+        },
+      ],
+    } as unknown as GameBootstrap);
+
+    // Then
+    expect(notice).toBeNull();
   });
 
   it("says nothing when nothing is on a clock", () => {
     expect(createAttentionNotice(bootstrap)).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------------- */
+/* The hub wiring.                                                           */
+/*                                                                           */
+/* Four waves built a game and none of it was reachable: the rail received    */
+/* ONE panel entry, the client posted to the deprecated per-command aliases,  */
+/* and the UI branched on two of the engine's thirty commands. These pin the  */
+/* seams that closed that gap, because every one of them is invisible in the  */
+/* markup of any single component and only shows up in the composition.       */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * A full-shaped `GameplayBootstrap`, built from the SHIPPED `mode.quick` ruleset
+ * rather than a hand-written rules literal — a fixture ruleset would drift from
+ * the one the match actually freezes, and every panel below reads `rules`.
+ */
+function gameplayBootstrap(overrides: Record<string, unknown> = {}): GameBootstrap {
+  const rules = deadlineDashModes["mode.quick"].rules;
+
+  return {
+    ...bootstrap,
+    gameplay: {
+      rules,
+      tileOwnership: [
+        {
+          tileId: "deadlineDash.board.tile.work1",
+          ownerId: "player-1",
+          level: 1,
+          claimedAtRound: 1,
+          tollPaidCount: 2,
+        },
+        {
+          tileId: "deadlineDash.board.tile.hr",
+          ownerId: "player-2",
+          level: 0,
+          claimedAtRound: 2,
+          tollPaidCount: 0,
+        },
+      ],
+      placements: [
+        {
+          id: "placement-public",
+          kind: "placement.rumour",
+          tileId: "deadlineDash.board.tile.hr",
+          ownerId: "player-2",
+          charges: 1,
+          visibility: "public",
+          placedAtRound: 2,
+        },
+      ],
+      projects: [],
+      agreements: [],
+      objectives: [],
+      ballots: [],
+      quarters: [
+        {
+          index: 0,
+          startedAtRound: 1,
+          endsAtRound: 4,
+          scheduledEventId: null,
+          resolvedEventIds: [],
+        },
+      ],
+      currentQuarterIndex: 0,
+      eliminatedPlayerIds: [],
+      players: [
+        {
+          playerId: "player-1",
+          handCount: 0,
+          heat: { value: 1, threshold: 5, investigationsOpened: 0, lastIncrementedAtRound: 2 },
+          upkeep: { perRound: 100, lastChargedRound: 2, missedPayments: 0 },
+          loans: [],
+          incomeStreams: [],
+        },
+        {
+          playerId: "player-2",
+          handCount: 2,
+          heat: { value: 0, threshold: 5, investigationsOpened: 0, lastIncrementedAtRound: null },
+          upkeep: { perRound: 100, lastChargedRound: 2, missedPayments: 0 },
+          loans: [],
+          incomeStreams: [],
+        },
+      ],
+      self: {
+        ownPlacements: [
+          {
+            id: "placement-mine",
+            kind: "placement.surveillance",
+            tileId: "deadlineDash.board.tile.work1",
+            ownerId: "player-1",
+            charges: 1,
+            visibility: "owner-only",
+            placedAtRound: 2,
+            data: {},
+          },
+        ],
+        agreements: [],
+        objectives: [],
+        sabotage: [],
+        ballotCasts: {},
+        freeActionsRemaining: 1,
+      },
+      scores: [],
+      winPath: null,
+      endReason: null,
+    },
+    ...overrides,
+  } as unknown as GameBootstrap;
+}
+
+describe("rail composition", () => {
+  /**
+   * The measured failure this wave exists to fix: the rail hosts twelve
+   * destinations and `game-client.tsx` passed exactly one (`feed`). Eleven
+   * surfaces the panel kit had already built rendered their empty state forever
+   * while a fully populated `gameplay` block sat unread on the bootstrap.
+   */
+  it("fills all twelve destinations, not one", () => {
+    // Given
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    expect(ready).not.toBeNull();
+    if (ready === null) return;
+
+    // When
+    const panels = buildRailPanels({
+      actions: ready.legalActions,
+      cardFeed: <div data-slot="card-feed">Card</div>,
+      chat: <div data-slot="chat-body">Chat</div>,
+      context: createActionContext(ready),
+      data: derivePanelData({ bootstrap: ready }),
+      failure: null,
+      onSubmit: vi.fn(),
+      pending: null,
+    });
+
+    // Then — one entry per rail destination, and every id is a real one.
+    expect(panels).toHaveLength(Object.keys(RAIL_DESTINATIONS).length);
+    expect(panels).toHaveLength(12);
+    expect(new Set(panels.map((panel) => panel.id)).size).toBe(12);
+    for (const id of Object.keys(RAIL_DESTINATIONS)) {
+      expect(panels.some((panel) => panel.id === id)).toBe(true);
+    }
+  });
+
+  /**
+   * A destination with no data must still teach rather than lie. The rail's own
+   * resting copy is the fallback, and it is reached by CONTRIBUTING nothing for
+   * that destination rather than by contributing an empty body.
+   */
+  it("keeps every destination resting when the server ships no gameplay block", () => {
+    // Given a v1 bootstrap — no `gameplay` key at all.
+    expect(asGameplayBootstrap(bootstrap)).toBeNull();
+
+    // When
+    const panels = buildRailPanels({
+      actions: [],
+      cardFeed: <div data-slot="card-feed">Card</div>,
+      chat: <div data-slot="chat-body">Chat</div>,
+      context: createActionContext(bootstrap),
+      data: null,
+      failure: null,
+      onSubmit: vi.fn(),
+      pending: null,
+    });
+
+    // Then — only the two destinations that do not need it.
+    expect(panels.map((panel) => panel.id)).toEqual(["feed", "chat"]);
+
+    // And the rail still renders all twelve frames with their teaching copy.
+    const markup = renderToStaticMarkup(
+      <TurnRail game={game} panels={panels} room={room} selfPlayerId="player-1" />,
+    );
+    expect(markup.match(/data-slot="rail-panel"/g) ?? []).toHaveLength(12);
+    expect(markup).toContain("No projects on the floor yet.");
+    expect(markup).toContain('data-slot="chat-body"');
+  });
+
+  /**
+   * `RailPanel` already draws a 28px header, so each kit panel is mounted
+   * `chrome="none"`. Two headers in one region is a visible defect, and two
+   * `<h2>`s in one labelled section breaks the one-heading rule (§2.2).
+   */
+  it("mounts panels chromeless so the rail's own header is the only one", () => {
+    // Given
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // When
+    const markup = renderToStaticMarkup(
+      <TurnRail
+        game={game}
+        panels={buildRailPanels({
+          actions: ready.legalActions,
+          cardFeed: null,
+          chat: null,
+          context: createActionContext(ready),
+          data: derivePanelData({ bootstrap: ready }),
+          failure: null,
+          onSubmit: vi.fn(),
+          pending: null,
+        })}
+        room={room}
+        selfPlayerId="player-1"
+      />,
+    );
+
+    // Then — the kit's own panel chrome never appears inside the rail.
+    expect(markup).not.toContain('data-slot="panel-head"');
+    expect(markup).not.toContain('data-slot="panel"');
+    // One heading per rail panel, and they are the RAIL's.
+    expect(markup.match(/<h2 /g) ?? []).toHaveLength(12);
+    // And real derived rows arrived: the roster carries both seats' economy.
+    expect(markup).toContain("Morgan");
+  });
+
+  /**
+   * A defect a browser found and no unit test could: mounting kit panels
+   * `chrome="none"` drops the kit's own `.panel-body`, which is the element that
+   * made a panel's content scroll inside itself. Exactly one block per group is
+   * `flex: 1 1 auto` with `min-height: 0`, so at a 240px stacked rail the Hand
+   * block measured **0px tall while 162px of its content painted over the Projects
+   * panel underneath** — both panels' prose overlapping, neither readable.
+   *
+   * Two rules fixed it and both are pinned here, because the regression is
+   * silent: content that escapes its panel still renders, it just renders on top
+   * of the next one.
+   */
+  it("gives every contributed destination its own scroll box and a floor", () => {
+    // Given
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+    const markup = renderToStaticMarkup(
+      <TurnRail
+        game={game}
+        panels={buildRailPanels({
+          actions: ready.legalActions,
+          cardFeed: null,
+          chat: null,
+          context: createActionContext(ready),
+          data: derivePanelData({ bootstrap: ready }),
+          failure: null,
+          onSubmit: vi.fn(),
+          pending: null,
+        })}
+        room={room}
+        selfPlayerId="player-1"
+      />,
+    );
+
+    // Then — one scroll box per filled destination.
+    expect((markup.match(/data-slot="rail-panel-body"/g) ?? []).length).toBeGreaterThan(0);
+
+    // And it really clips: `overflow-y` plus a zero `min-height` so it yields the
+    // header's space rather than pushing the panel taller.
+    const body = cssRule(shellSheet, '.game-shell-rail [data-slot="rail-panel-body"]');
+    expect(body).toContain("overflow-y: auto");
+    expect(body).toContain("min-height: 0");
+    expect(body).toContain("flex: 1 1 auto");
+
+    // And the growing block keeps a floor, so it cannot reach zero at all. The
+    // group is the thing that scrolls (hud.css calls it the safety valve).
+    const grow = cssRule(shellSheet, '.game-shell-rail [data-slot="rail-panel"][data-grow="true"]');
+    expect(grow).toContain("min-height: 84px");
+    expect(grow).toContain("overflow: hidden");
+    expect(cssRule(hudSheet, ".hud-rail-group")).toContain("overflow-y: auto");
+  });
+
+  /**
+   * §12.3: "tab badges for everything else, with a count." A zero is never
+   * synthesised — an attention affordance that is always present stops meaning
+   * anything — so a destination with nothing waiting contributes no badge.
+   */
+  it("badges only destinations that are genuinely waiting on the viewer", () => {
+    // Given a table with nothing open.
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // When
+    const panels = buildRailPanels({
+      actions: ready.legalActions,
+      cardFeed: null,
+      chat: null,
+      context: createActionContext(ready),
+      data: derivePanelData({ bootstrap: ready }),
+      failure: null,
+      onSubmit: vi.fn(),
+      pending: null,
+    });
+
+    // Then
+    for (const panel of panels) {
+      expect(panel.attention?.count ?? 1).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * A legal rail command is itself a reason to open a tab, so the registry's own
+   * per-panel count is the fallback badge where the derivation has nothing to say.
+   */
+  it("badges a panel holding a legal command the derivation did not flag", () => {
+    // Given a legal `project.start`, which the registry places in `projects`.
+    const ready = asGameplayBootstrap(
+      gameplayBootstrap({
+        legalActions: [
+          { type: "turn.roll", expectedRevision: 8 },
+          {
+            type: "project.start",
+            expectedRevision: 8,
+            definitions: [],
+            maxConcurrent: 2,
+            openSlots: 2,
+          },
+        ],
+      }),
+    );
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // When
+    const panels = buildRailPanels({
+      actions: ready.legalActions,
+      cardFeed: null,
+      chat: null,
+      context: createActionContext(ready),
+      data: derivePanelData({ bootstrap: ready }),
+      failure: null,
+      onSubmit: vi.fn(),
+      pending: null,
+    });
+
+    // Then
+    const projects = panels.find((panel) => panel.id === "projects");
+    expect(projects?.attention).toEqual({ count: 1, tone: "info" });
+  });
+});
+
+describe("command transport", () => {
+  /**
+   * §11.1 keys idempotency on `commandId`, and that is only reachable if a RETRY
+   * re-sends the same id. The two routes this replaced minted a fresh
+   * `crypto.randomUUID()` at each call site, which is the same as having no key at
+   * all — every retry was a second apply.
+   */
+  it("reuses one command id for one intent, so a retry is deduplicated", () => {
+    // Given
+    const ledger = new Map<string, string>();
+    const draft = { type: "turn.roll", expectedRevision: 8 } as const;
+
+    // When the same intent is submitted twice.
+    const first = reserveCommandId(ledger, draft);
+    const second = reserveCommandId(ledger, { ...draft });
+
+    // Then
+    expect(second).toBe(first);
+    expect(ledger.size).toBe(1);
+  });
+
+  it("mints a new id for a different amount, a different target or a new revision", () => {
+    // Given
+    const ledger = new Map<string, string>();
+    const base = {
+      type: "project.contribute",
+      expectedRevision: 8,
+      projectId: "project-1",
+      money: 100,
+      work: 0,
+    } as const;
+
+    // When
+    const original = reserveCommandId(ledger, base);
+    const biggerAmount = reserveCommandId(ledger, { ...base, money: 200 });
+    const otherProject = reserveCommandId(ledger, { ...base, projectId: "project-2" });
+    const nextRevision = reserveCommandId(ledger, { ...base, expectedRevision: 9 });
+
+    // Then — four distinct intents, four ids.
+    expect(new Set([original, biggerAmount, otherProject, nextRevision]).size).toBe(4);
+  });
+
+  /**
+   * `JSON.stringify` preserves insertion order, so two controls building the same
+   * payload with their fields in a different order would look like two intents and
+   * defeat the whole mechanism.
+   */
+  it("keys the intent on field VALUES, not on field order", () => {
+    expect(
+      commandIntentKey({
+        type: "ballot.cast",
+        expectedRevision: 8,
+        ballotId: "ballot-1",
+        value: 5,
+      } as never),
+    ).toBe(
+      commandIntentKey({
+        value: 5,
+        ballotId: "ballot-1",
+        expectedRevision: 8,
+        type: "ballot.cast",
+      } as never),
+    );
+  });
+
+  /**
+   * §11.1: "the client must be able to render a refusal without knowing which
+   * command it was." The status carries the meaning; WHERE the message appears
+   * carries which command it was.
+   */
+  it("states a refusal per status, and names no command", () => {
+    // Given / When / Then
+    expect(refusalMessage(409)).toContain("Somebody committed first");
+    expect(refusalMessage(403)).toContain("not yours to do");
+    expect(refusalMessage(401)).toContain("session expired");
+    expect(refusalMessage(503)).toContain("accept a retry");
+    for (const status of [400, 401, 403, 404, 409, 429, 500, 503]) {
+      expect(refusalMessage(status).length).toBeGreaterThan(0);
+      expect(refusalMessage(status)).not.toMatch(/turn\.|ballot\.|project\./);
+    }
+  });
+});
+
+describe("board territory and identity", () => {
+  /**
+   * "Player photos on tokens were explicitly requested. `avatarUrl` shipped in
+   * contracts. There are zero references to it anywhere under board/." This is the
+   * one field that closes that: the token already looks the member up for its
+   * display name.
+   */
+  it("carries each seat's photo onto its token", () => {
+    // Given a member with a photo the server vouched for.
+    const withPhoto = {
+      ...bootstrap,
+      room: {
+        ...room,
+        members: [
+          { ...room.members[0], avatarUrl: "https://example.test/avery.png" },
+          room.members[1],
+        ],
+      },
+    } as unknown as GameBootstrap;
+
+    // When
+    const view = createGameView(withPhoto);
+
+    // Then
+    expect(view.players.find((player) => player.id === "player-1")?.avatarUrl).toBe(
+      "https://example.test/avery.png",
+    );
+    // A member with none resolves to null, not undefined: the token draws its
+    // initial fallback rather than an empty face cell.
+    expect(view.players.find((player) => player.id === "player-2")?.avatarUrl).toBeNull();
+  });
+
+  /**
+   * §12.4: ownership and placements must be legible ON THE BOARD — "a territory
+   * game you can only read in a sidebar is not a board game."
+   */
+  it("resolves ownership to the 1..6 turn slot, never the zero-based seat", () => {
+    // Given
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // When
+    const owned = createOwnershipViews(ready);
+
+    // Then — `PublicPlayerProjection.seat` is the engine's zero-based `order`;
+    // reading it directly is what dropped the seat-0 player off the board once.
+    expect(owned).toHaveLength(2);
+    expect(owned[0]).toEqual({
+      tileId: "deadlineDash.board.tile.work1",
+      ownerSeat: 1,
+      ownerName: "Avery",
+      level: 1,
+      isSelf: true,
+    });
+    expect(owned[1]?.ownerSeat).toBe(2);
+    expect(owned[1]?.isSelf).toBe(false);
+  });
+
+  /**
+   * The two placement lists are concatenated and NOTHING is filtered: another
+   * player's `owner-only` placement is absent from this viewer's payload already,
+   * so reconstructing the full set here in order to hide half of it would put the
+   * hidden half back into the DOM.
+   */
+  it("merges public and own placements without re-deriving anybody else's", () => {
+    // Given
+    const ready = asGameplayBootstrap(gameplayBootstrap());
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // When
+    const placements = createPlacementViews(ready);
+
+    // Then
+    expect(placements.map((placement) => placement.id)).toEqual([
+      "placement-public",
+      "placement-mine",
+    ]);
+    expect(placements[1]?.visibility).toBe("owner-only");
+    expect(placements[1]?.isSelf).toBe(true);
+    // And no `data` field rode along: a surveillance placement's findings are the
+    // one thing on a placement that must never reach a shared surface.
+    expect(JSON.stringify(placements)).not.toContain("data");
+  });
+
+  /**
+   * The gutter is reserved for the whole match from the RULESET, not from whether
+   * anything is claimed yet — derived from the state of play, the first claim of a
+   * game would reflow the room name on all 44 tiles.
+   */
+  it("reads the territory gutter off the frozen ruleset, not the state of play", () => {
+    // Given a match with an empty board but ownership switched on.
+    const ready = asGameplayBootstrap(
+      gameplayBootstrap({
+        gameplay: {
+          ...(gameplayBootstrap() as unknown as { gameplay: Record<string, unknown> })
+            .gameplay,
+          tileOwnership: [],
+          placements: [],
+        },
+      }),
+    );
+    if (ready === null) throw new Error("fixture is not a gameplay bootstrap");
+
+    // Then
+    expect(createOwnershipViews(ready)).toHaveLength(0);
+    expect(hasTerritory(ready)).toBe(
+      deadlineDashModes["mode.quick"].rules.board.ownershipEnabled ||
+        deadlineDashModes["mode.quick"].rules.board.placementsEnabled,
+    );
+  });
+
+  /**
+   * `ActionContext.spendable.work` is the `work-counter` key, not `work`. Reading
+   * `work` would silently give every sabotage and contribution ceiling a zero, so
+   * the UI would disable controls the engine would have accepted with nothing
+   * anywhere reporting why.
+   */
+  it("prices controls from the viewer's own balances, under the real keys", () => {
+    // Given
+    const withWork = {
+      ...bootstrap,
+      publicProjection: {
+        ...game,
+        players: [
+          {
+            ...game.players[0],
+            resources: { money: 1_200, reputation: 2, energy: 4, "work-counter": 6 },
+          },
+          game.players[1],
+        ],
+      },
+    } as unknown as GameBootstrap;
+
+    // When
+    const context = createActionContext(withWork);
+
+    // Then
+    expect(context.spendable).toEqual({ money: 1_200, energy: 4, work: 6 });
+    // Public identity only: a name and a slot, and no seat's balances but the
+    // viewer's own — `ActionContext` has nowhere to put another player's money.
+    expect(context.seats).toEqual([
+      { playerId: "player-1", name: "Avery", seat: 1 },
+      { playerId: "player-2", name: "Morgan", seat: 2 },
+    ]);
+    expect(JSON.stringify(context.seats)).not.toContain("900");
+  });
+});
+
+describe("action surfaces", () => {
+  /**
+   * The turn lane replaces the legacy roll button rather than sitting beside it:
+   * two Roll controls in one bar would submit two different command ids for one
+   * intent, which is precisely what idempotency by `commandId` exists to prevent.
+   */
+  it("hands the turn lane the roll, and never renders two of them", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <ActionTray
+        activePlayerName="Avery"
+        canRoll
+        commands={<div data-slot="action-controls">Lane</div>}
+        isRolling={false}
+        onRoll={vi.fn()}
+        rollError={null}
+      />,
+    );
+
+    // Then
+    expect(markup).toContain('data-slot="action-controls"');
+    expect(markup).not.toContain('data-slot="action-tray-roll"');
+    // The status lane is untouched: it still says whose move it is, in words.
+    expect(markup).toContain('data-slot="action-tray-ready"');
+  });
+
+  /**
+   * The board must not move when a command becomes legal. The lane is a
+   * fixed-height track with a resting readout, so the tray's structure is the same
+   * whether or not anything is legal — the regression this guards against is a
+   * conditional row coming back to the action region.
+   */
+  it("keeps the tray's structure identical whether the lane is empty or full", () => {
+    // Given
+    const empty = renderToStaticMarkup(
+      <ActionTray
+        activePlayerName="Morgan"
+        canRoll={false}
+        commands={<div data-slot="action-controls" data-empty="true" />}
+        isRolling={false}
+        onRoll={vi.fn()}
+        rollError={null}
+      />,
+    );
+    const full = renderToStaticMarkup(
+      <ActionTray
+        activePlayerName="Avery"
+        canRoll
+        commands={<div data-slot="action-controls" data-empty="false" />}
+        isRolling={false}
+        onRoll={vi.fn()}
+        rollError={null}
+      />,
+    );
+
+    // Then — same regions, same order, in both.
+    for (const markup of [empty, full]) {
+      expect(markup).toContain('data-slot="action-tray-lane"');
+      expect(markup).toContain('data-slot="action-controls"');
+      expect(markup).toContain('data-slot="dice-readout"');
+    }
+    // And the lane declares a definite height rather than growing with content.
+    const bar = cssRule(actionsSheet, ".actions-bar");
+    expect(bar).toContain("height: var(--actions-bar-height)");
+    expect(bar).not.toContain("min-height");
+    expect(cssRule(actionsSheet, ".actions-lane")).toContain("overflow-x: auto");
+  });
+
+  /**
+   * The band is a single 40px instrument row. A decision cluster arriving in it
+   * must not wrap, because wrapping grows the row and the board moves — the exact
+   * defect the band's definite height exists to prevent.
+   */
+  it("keeps the decision cluster on one non-wrapping row inside the band", () => {
+    // Given
+    const cluster = cssRule(actionsSheet, ".game-shell-attention .actions-group");
+
+    // Then
+    expect(cluster).toContain("flex-wrap: nowrap");
+    expect(cluster).toContain("padding-block: 0");
+    // And the band's own row is still fixed at 40px, occupied or not.
+    expect(shellSheet).toContain("--game-shell-attention: 40px");
+  });
+
+  /**
+   * §12.3's one sanctioned continuous animation, hosted where the shortest clock
+   * in the game actually is. It must degrade to discrete steps under reduced
+   * motion rather than vanishing — a window with no visible clock is worse than
+   * one that steps.
+   */
+  it("hosts a depleting bar in the band, not a number, and steps it under reduced motion", () => {
+    // Given the band with an instrument in its deadline slot.
+    const markup = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        attention={
+          <AttentionNotice
+            actions={<div data-slot="action-controls">Play</div>}
+            deadline={<div data-slot="game-turn-clock">Bar</div>}
+            detail="An effect is about to land."
+            label="Reaction"
+            tone="critical"
+          />
+        }
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+
+    // Then — the band hosts both, and interrupts nothing.
+    expect(markup).toContain('data-slot="game-attention-deadline"');
+    expect(markup).toContain('data-slot="game-turn-clock"');
+    expect(markup).toContain('data-slot="action-controls"');
+    expect(markup).not.toContain('role="dialog"');
+    expect(markup).not.toContain("aria-modal");
+
+    // And the meter's motion is a real animation with a reduced-motion fallback
+    // that STEPS rather than removing it (hud.css owns the instrument).
+    expect(hudSheet).toContain("animation-name: hud-clock-deplete");
+    expect(hudSheet).toMatch(/prefers-reduced-motion[\s\S]*?steps\(\d+, end\)/);
+  });
+
+  /**
+   * The rail no longer prints a wall-clock instant in its own head. That string
+   * was a `/T(\d{2}:\d{2}:\d{2})/` slice of `deadlineAt` — a timestamp, not a
+   * countdown — and the HUD header above already carries the real bar. The LANE
+   * stays reserved so an instrument arriving in it cannot shove the state text.
+   */
+  it("keeps the rail's clock lane reserved without printing a wall clock in it", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <TurnRail
+        game={{ ...game, deadlineAt: "2026-07-24T12:00:30.000Z", turnTimerDurationMs: 30_000 }}
+        room={room}
+        selfPlayerId="player-1"
+      />,
+    );
+
+    // Then
+    expect(markup).toContain('data-slot="rail-turn-clock"');
+    expect(markup).not.toContain("12:00:30");
+    // It states where the match is instead, in the unit every rail panel's
+    // deadlines are counted in (§12.4 — panels state deadlines in ROUNDS).
+    expect(markup).toContain("R2 · T4");
+    expect(cssRule(hudSheet, ".hud-wait-clock")).toContain("min-width: 60px");
+  });
+
+  /**
+   * Two stylesheets the wired-up rail depends on were never imported, so the
+   * whole panel kit and the whole action layer would have rendered unstyled — the
+   * failure mode is not "slightly plain", it is a rail with no definite panel
+   * floors and a command lane with no definite height, which is a board that
+   * moves.
+   */
+  it("imports the panel and action stylesheets, or none of this has geometry", () => {
+    expect(globalsSheet).toContain('@import "./panels.css"');
+    expect(globalsSheet).toContain('@import "./actions.css"');
+    // They must stay in the leading @import block: CSS `@import` is only legal
+    // before other rules.
+    const firstRule = globalsSheet.indexOf("@custom-variant");
+    expect(globalsSheet.indexOf('@import "./actions.css"')).toBeLessThan(firstRule);
+    expect(globalsSheet.indexOf('@import "./panels.css"')).toBeLessThan(firstRule);
+  });
+
+  it("lets a host put a real instrument in that lane", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <TurnRail
+        clock={<span data-slot="rail-meter">Meter</span>}
+        game={game}
+        room={room}
+        selfPlayerId="player-1"
+      />,
+    );
+
+    // Then
+    expect(markup).toContain('data-slot="rail-turn-clock"');
+    expect(markup).toContain('data-slot="rail-meter"');
+    expect(markup).not.toContain("R2 · T4");
   });
 });
 

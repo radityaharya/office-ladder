@@ -2,6 +2,7 @@ import { Panel, type PanelChrome } from "./panel";
 import { formatPanelMoney, pluralise } from "./panel-format";
 import { PanelEmpty, PanelList, PanelNote, PanelRow, PanelStamp } from "./panel-parts";
 import { PANEL_DEFINITIONS } from "./panel-registry";
+import { PanelDeadline } from "./panel-semantics";
 
 export type MarketLotKind = "tile" | "card" | "favour" | "contract";
 
@@ -105,9 +106,12 @@ export function MarketPanel({ lots, round, onBid, scope, chrome }: MarketPanelPr
               }
               title={lot.title}
               trailing={
-                <span className="panel-row-deadline" data-slot="panel-market-closes">
-                  {closesLabel(lot.closesAtRound, round)}
-                </span>
+                <PanelDeadline
+                  phrasing="closes"
+                  round={round}
+                  slot="panel-market-closes"
+                  targetRound={lot.closesAtRound}
+                />
               }
             />
           ))}
@@ -133,12 +137,6 @@ function factsFor(lot: MarketLot): readonly string[] {
       ? "No bids yet"
       : `${formatPanelMoney(lot.standingBid.amount)} — ${lot.standingBid.name}`;
   return [standing, yours];
-}
-
-function closesLabel(closesAtRound: number, round: number): string {
-  const remaining = closesAtRound - round;
-  if (remaining <= 0) return "Closing";
-  return `Closes in ${pluralise(remaining, "round")}`;
 }
 
 function kindLabel(kind: MarketLotKind): string {

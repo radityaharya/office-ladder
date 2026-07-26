@@ -1,4 +1,5 @@
 import { RiErrorWarningLine } from "@remixicon/react";
+import type { ReactNode } from "react";
 
 import { DiceReadout, type DiceRollFeedItem } from "./dice";
 
@@ -12,10 +13,35 @@ type ActionTrayProps = {
   readonly dice?: DiceRollFeedItem | null;
   /** Cells to show while the local roll is in flight — movement is one die. */
   readonly pendingDiceCount?: number;
+  /**
+   * The turn surface's command lane — `<ActionControls surface="turn" …>`.
+   *
+   * ## Why this is a slot and not a list of props
+   *
+   * Which control belongs on which surface is `actions/action-registry.ts`'s
+   * answer, and the tray must not become a second place that decides. It is handed
+   * a rendered lane and hosts it; a twenty-eighth command appears here because the
+   * registry says `surface: "turn"`, with no change to this file.
+   *
+   * ## Why it REPLACES the roll button rather than sitting beside it
+   *
+   * `turn.roll` is a registry entry like the other eleven turn commands, and the
+   * lane renders it in registry order with `primary` emphasis. Keeping the legacy
+   * button as well would put two Roll controls in one bar, submitting two
+   * different command ids for one intent — the precise thing idempotency by
+   * `commandId` exists to prevent. So when a lane is supplied it owns the roll,
+   * and the legacy button stays for callers (and tests) that pass no lane.
+   *
+   * Either way the tray's HEIGHT is constant: the lane is `ActionControls`'
+   * fixed-height `bar` layout, which renders a resting readout when nothing is
+   * legal rather than collapsing. Nothing in this region may come and go — that
+   * regression cost the board a measured 32px once already.
+   */
+  readonly commands?: ReactNode;
 };
 
 /**
- * The shell's bottom action bar: a status lane, one primary action and the dice
+ * The shell's bottom action bar: a status lane, the turn's commands and the dice
  * instrument. Edge-to-edge with a hairline top seam and a one-step tonal move
  * off the board plane (DESIGN.md §4.1, §4.3) — deliberately not a floating pill.
  *
@@ -36,6 +62,7 @@ export function ActionTray({
   onRoll,
   dice = null,
   pendingDiceCount = 1,
+  commands = null,
 }: ActionTrayProps) {
   return (
     <section aria-label="Current action" className="dice-tray" data-slot="action-tray">
@@ -62,18 +89,19 @@ export function ActionTray({
         )}
       </div>
       <div className="dice-tray-row">
-        {canRoll ? (
-          <button
-            aria-busy={isRolling}
-            className="dice-tray-primary"
-            data-slot="action-tray-roll"
-            disabled={isRolling}
-            onClick={onRoll}
-            type="button"
-          >
-            {isRolling ? "Rolling" : "Roll die"}
-          </button>
-        ) : null}
+        {commands ??
+          (canRoll ? (
+            <button
+              aria-busy={isRolling}
+              className="dice-tray-primary"
+              data-slot="action-tray-roll"
+              disabled={isRolling}
+              onClick={onRoll}
+              type="button"
+            >
+              {isRolling ? "Rolling" : "Roll die"}
+            </button>
+          ) : null)}
         <DiceReadout
           isRolling={isRolling}
           pendingDiceCount={pendingDiceCount}

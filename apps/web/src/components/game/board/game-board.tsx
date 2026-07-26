@@ -2,13 +2,15 @@ import { useId, useMemo } from "react";
 
 import { cn } from "../../../lib/utils";
 
-import { BoardTile } from "./board-tile";
+import { BoardTile, placementMark } from "./board-tile";
 import { PlayerToken } from "./player-token";
 import type {
   BoardCell,
   BoardDockSlot,
   BoardIncidentView,
+  BoardPlacementView,
   BoardSpaceView,
+  BoardTileOwnershipView,
   BoardZone,
   CornerCoordinate,
   PlayerTokenView,
@@ -36,6 +38,11 @@ const cornerCells = {
  * `1 2 3 4 5 6`.
  */
 const dockPlateWidth = 14;
+/** `[face 14][seat 12]` plus the plate's 2px of border. */
+const dockFacePlateWidth = 28;
+/** `[seat 12][BOT 24 + 1px seam]` plus the plate's 2px of border. A bot has no
+ *  face cell, so this width is unchanged from before photos existed — which is
+ *  what keeps two bots on one space fitting a ~97px cell. */
 const dockBotPlateWidth = 39;
 const dockSeam = 1;
 const dockFullMax = 2;
@@ -72,6 +79,31 @@ type GameBoardProps = {
   /** Space the previous mover landed on, marked with a neutral frame. */
   readonly landedTile?: number | null;
   readonly incident: BoardIncidentView;
+  /**
+   * Claimed tiles, from `GameplayProjection.tileOwnership` (spec §5.1). Passing
+   * the array — even empty — is what tells the board this is a territory match.
+   */
+  readonly ownership?: readonly BoardTileOwnershipView[];
+  /**
+   * Placements this viewer may see: `gameplay.placements` (public) merged with
+   * `gameplay.self.ownPlacements` (the viewer's own, including `owner-only`).
+   *
+   * The board renders what it is handed and redacts nothing, because the
+   * projection already did — another player's `owner-only` placement is absent
+   * from this viewer's payload entirely, and re-deriving it here to hide it again
+   * would put it back in the DOM (spec §7.2, §12.4). Do not.
+   */
+  readonly placements?: readonly BoardPlacementView[];
+  /**
+   * Force the per-tile territory gutter on or off.
+   *
+   * Defaults to "on when either collection was supplied", which is the mode's own
+   * shape rather than the state of play — the gutter must be reserved from the
+   * first render of the match, or the first claim reflows the room name on all 44
+   * tiles. Pass it explicitly from `gameplay.rules` when a ruleset allows
+   * claiming but nothing has been claimed yet.
+   */
+  readonly territory?: boolean;
   readonly label?: string;
   readonly className?: string;
 };
@@ -82,6 +114,9 @@ export function GameBoard({
   activeTile = null,
   landedTile = null,
   incident,
+  ownership,
+  placements,
+  territory,
   label = "Deadline Dash board",
   className,
 }: GameBoardProps) {
@@ -106,6 +141,15 @@ export function GameBoard({
   const occupancy = groupByPosition(seated, (player) => player.position);
   const docks = dockSlots(occupancy);
 
+  // Shared board state, indexed by the content tile id the caller already keys
+  // it by, so no space has to be looked up by position in a list per render.
+  const ownershipByTile = useMemo(
+    () => new Map((ownership ?? []).map((entry) => [entry.tileId, entry])),
+    [ownership],
+  );
+  const placementsByTile = useMemo(() => groupByTile(placements ?? []), [placements]);
+  const showTerritory = territory ?? (ownership !== undefined || placements !== undefined);
+
   return (
     <section
       aria-describedby={panInstructionsId}
@@ -119,7 +163,15 @@ export function GameBoard({
         screen. Travel runs clockwise from the reception desk.
       </p>
       <div className="board-frame" data-slot="board-frame">
-        <div className="board-grid">
+        {/*
+         * `data-board-territory` reserves the per-tile gutter for the WHOLE match
+         * (see board.css). It is set from the mode's shape, never from whether
+         * anything has been claimed yet — a reservation that arrives with the
+         * first claim would reflow every room name on the ring at once, which is
+         * the "nothing that appears may move the board" rule applied one level
+         * down.
+         */}
+        <div className="board-grid" data-board-territory={showTerritory ? "true" : undefined}>
           <ol
             aria-label={`${label}, ${spaces.length} spaces`}
             className="board-track"
@@ -131,13 +183,23 @@ export function GameBoard({
                 cell={boardCell(space)}
                 key={space.id}
                 landed={landedTile === space.index}
+                ownership={ownershipByTile.get(space.id) ?? null}
+                placements={placementsByTile.get(space.id) ?? []}
                 players={occupancy.get(space.index) ?? []}
                 space={space}
+                territory={showTerritory}
                 totalSpaces={spaces.length}
               />
             ))}
           </ol>
-          <BoardPlate activeTile={activeTile} incident={incident} spaces={spaces} />
+          <BoardPlate
+            activeTile={activeTile}
+            incident={incident}
+            ownership={ownership ?? []}
+            placements={placements ?? []}
+            spaces={spaces}
+            territory={showTerritory}
+          />
           {/*
            * The tokens are `m.*` components (motion/react-m) and therefore need a
            * `LazyMotion` ancestor to animate at all. That provider is mounted ONCE
@@ -192,11 +254,17 @@ export function GameBoard({
 function BoardPlate({
   activeTile,
   incident,
+  ownership,
+  placements,
   spaces,
+  territory,
 }: {
   readonly activeTile: number | null;
   readonly incident: BoardIncidentView;
+  readonly ownership: readonly BoardTileOwnershipView[];
+  readonly placements: readonly BoardPlacementView[];
   readonly spaces: readonly BoardSpaceView[];
+  readonly territory: boolean;
 }) {
   return (
     <section
@@ -225,7 +293,14 @@ function BoardPlate({
             <div className="board-plate-detail">{incident.detail}</div>
           ) : null}
         </div>
-        <BoardLegend spaces={spaces} />
+        {/* One column of keys, always rendered so the plate's wide two-column
+            layout does not depend on how many keys there happen to be. */}
+        <div className="board-plate-keys" data-slot="board-plate-keys">
+          <BoardLegend spaces={spaces} />
+          {territory ? (
+            <BoardTerritoryKey ownership={ownership} placements={placements} />
+          ) : null}
+        </div>
       </div>
       {incident.readouts && incident.readouts.length > 0 ? (
         <dl className="board-plate-readouts">
@@ -320,6 +395,74 @@ function BoardLegend({ spaces }: { readonly spaces: readonly BoardSpaceView[] })
   );
 }
 
+/**
+ * What the marks in each tile's territory gutter mean, and how much of the ring
+ * is currently claimed.
+ *
+ * This is what makes a one-letter mark on a 97px tile legible rather than a
+ * private code: the gutter compresses, and the key expands. It doubles as the
+ * spec's §12.5 empty state — before anyone has claimed anything it still says
+ * what claiming is and what will appear — so a territory match teaches its own
+ * shared-state vocabulary instead of assuming it.
+ */
+function BoardTerritoryKey({
+  ownership,
+  placements,
+}: {
+  readonly ownership: readonly BoardTileOwnershipView[];
+  readonly placements: readonly BoardPlacementView[];
+}) {
+  const kinds = new Map<string, { readonly mark: string; readonly label: string; count: number }>();
+  for (const placement of placements) {
+    const entry = kinds.get(placement.kind);
+    if (entry) {
+      entry.count += 1;
+      continue;
+    }
+    kinds.set(placement.kind, { ...placementMark(placement), count: 1 });
+  }
+
+  const ownedByYou = ownership.filter((entry) => entry.isSelf).length;
+
+  return (
+    <div className="board-legend" data-slot="board-territory-key">
+      <p className="board-legend-head">Territory key</p>
+      {ownership.length === 0 && placements.length === 0 ? (
+        <p className="board-territory-empty">
+          Claimed spaces carry their owner&apos;s seat number and a coloured edge.
+          Anything placed on a space is marked beside it. Nothing is claimed yet.
+        </p>
+      ) : (
+        <dl className="board-legend-list">
+          <div className="board-legend-item">
+            <dt className="board-legend-term">
+              <span className="board-legend-name">Claimed</span>
+            </dt>
+            <dd className="board-legend-count">{ownership.length}</dd>
+          </div>
+          <div className="board-legend-item">
+            <dt className="board-legend-term">
+              <span className="board-legend-name">Yours</span>
+            </dt>
+            <dd className="board-legend-count">{ownedByYou}</dd>
+          </div>
+          {[...kinds].map(([kind, entry]) => (
+            <div className="board-legend-item" key={kind}>
+              <dt className="board-legend-term">
+                <span aria-hidden="true" className="board-tile-mark" data-board-mark={entry.mark}>
+                  {entry.mark}
+                </span>
+                <span className="board-legend-name">{entry.label}</span>
+              </dt>
+              <dd className="board-legend-count">{entry.count}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
 /** 1-based, zero-padded space number: index 6 renders as "07". */
 function formatSpace(index: number): string {
   return String(index + 1).padStart(2, "0");
@@ -343,6 +486,22 @@ function groupByPosition(
   return grouped;
 }
 
+function groupByTile(
+  placements: readonly BoardPlacementView[],
+): ReadonlyMap<string, readonly BoardPlacementView[]> {
+  const grouped = new Map<string, BoardPlacementView[]>();
+  for (const placement of placements) {
+    const bucket = grouped.get(placement.tileId);
+    if (bucket) {
+      bucket.push(placement);
+      continue;
+    }
+    grouped.set(placement.tileId, [placement]);
+  }
+
+  return grouped;
+}
+
 /**
  * Lays the tokens standing on one space out along that space's reserved bottom
  * band, left to right in seat order. One row only: the band is 14px of a ~50px
@@ -358,11 +517,24 @@ function dockSlots(
     let offset = 0;
     for (const player of group) {
       slots.set(player.id, { density, x: offset });
-      offset +=
-        (density === "full" && player.isBot ? dockBotPlateWidth : dockPlateWidth) +
-        dockSeam;
+      offset += plateWidth(player, density) + dockSeam;
     }
   }
 
   return slots;
+}
+
+/**
+ * How much dock a plate occupies, which is exactly what it renders (see
+ * `PlayerToken`): a compact plate is the seat glyph alone, a bot's full plate is
+ * the seat glyph plus its `BOT` tag, and a human's full plate is their 14px face
+ * plus the seat glyph.
+ *
+ * Worst cases at `dockFullMax = 2`, against ~93px of usable dock in a ~97px cell:
+ * two faced humans 57px, a human beside a bot 68px, two bots 79px.
+ */
+function plateWidth(player: PlayerTokenView, density: BoardDockSlot["density"]): number {
+  if (density !== "full") return dockPlateWidth;
+
+  return player.isBot ? dockBotPlateWidth : dockFacePlateWidth;
 }

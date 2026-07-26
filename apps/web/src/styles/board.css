@@ -267,7 +267,11 @@
    foot belongs to the occupancy dock. It is the label, not the colour, that
    carries the state; the accent rule and outline only reinforce it. */
 .board-tile-tag {
-  flex: 0 1 auto;
+  /* NOT shrinkable. A shrinkable tag clips mid-word — measured as "WRK LAS" once
+     the territory gutter took 14px off the head row — and mid-word truncation is
+     the exact failure this file goes to lengths to prevent everywhere else. It
+     either fits whole or a container-query tier below removes it. */
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
   font-family: var(--font-geist-sans);
@@ -343,6 +347,222 @@
   .board-tile-index {
     display: none;
   }
+}
+
+/* ----------------------------------------------------- shared board state */
+
+/*
+ * SHARED SEAT IDENTITY, as custom properties.
+ *
+ * The token plates below still hard-code their own fills (they predate this and
+ * changing them buys nothing), but everything the territory layer draws — the
+ * owner edge, the owner mark, a placement's mark — reads the seat from here, so
+ * one seat's colour and one seat's pattern are stated once and cannot drift
+ * between the piece on a tile and the mark on the tile it owns. Pattern is not
+ * decoration: identity is colour PLUS pattern PLUS numeral (DESIGN.md §8).
+ */
+[data-board-seat="1"],
+[data-board-owner-seat="1"] {
+  --board-seat: var(--player-1);
+  --board-seat-pattern: repeating-linear-gradient(
+    45deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+[data-board-seat="2"],
+[data-board-owner-seat="2"] {
+  --board-seat: var(--player-2);
+  --board-seat-pattern: radial-gradient(oklch(0 0 0 / 26%) 1px, transparent 1px);
+}
+
+[data-board-seat="3"],
+[data-board-owner-seat="3"] {
+  --board-seat: var(--player-3);
+  --board-seat-pattern: repeating-linear-gradient(
+    -45deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+[data-board-seat="4"],
+[data-board-owner-seat="4"] {
+  --board-seat: var(--player-4);
+  --board-seat-pattern: repeating-linear-gradient(
+    0deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+[data-board-seat="5"],
+[data-board-owner-seat="5"] {
+  --board-seat: var(--player-5);
+  --board-seat-pattern: repeating-linear-gradient(
+    90deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+[data-board-seat="6"],
+[data-board-owner-seat="6"] {
+  --board-seat: var(--player-6);
+  --board-seat-pattern:
+    repeating-linear-gradient(45deg, oklch(0 0 0 / 20%) 0 2px, transparent 2px 4px),
+    repeating-linear-gradient(-45deg, oklch(0 0 0 / 20%) 0 2px, transparent 2px 4px);
+}
+
+/*
+ * OWNERSHIP — a persistent mark on the tile itself (spec §12.4: "readable on the
+ * board", never rail-only. A territory game you can only read in a sidebar is not
+ * a board game).
+ *
+ * Two devices, both out of flow, so a claim landing or being traded away cannot
+ * change one pixel of the tile's own geometry:
+ *
+ *  - this edge, on the tile's leading side, which is what makes ownership
+ *    readable across the whole ring in peripheral vision; and
+ *  - the seat mark in the territory gutter, which says WHICH seat.
+ *
+ * Own versus opponent is structural (§12.1 — "not satisfied by a name label"): the
+ * viewer's own edge is 3px and solid, everyone else's is 2px and hatched. Both
+ * also carry the owner's seat colour, and the tile's accessible name says "owned
+ * by you" or "owned by <name>" in words.
+ */
+.board-tile-owner-edge {
+  position: absolute;
+  /* Between the zone rule and the occupancy dock, so it cannot sit under either:
+     a 3px edge running to the tile's foot was measured overlapping the leftmost
+     token plate by 1px, and a piece standing on a space should never be partly
+     drawn by the space's ownership. */
+  top: 3px;
+  bottom: 19px;
+  left: 0;
+  width: 2px;
+  background-color: var(--board-seat, var(--sand));
+  background-image: var(--board-seat-pattern, none);
+}
+
+.board-tile[data-board-owner-self="true"] .board-tile-owner-edge {
+  width: 3px;
+  background-image: none;
+}
+
+/*
+ * The gutter. `padding-right` on the tile reserves the track; the gutter itself is
+ * absolutely positioned inside it, so marks may appear, change and disappear
+ * freely without moving the room name — and because a `container-type:
+ * inline-size` container is measured on its CONTENT box, the tile's own label
+ * tiers step down for the narrower measure automatically instead of needing a
+ * second, drift-prone set of thresholds.
+ *
+ * `bottom: 19px` keeps it clear of the occupancy dock's 17px band, leaving 25px:
+ * two 12px marks, which is the ceiling `board-tile.tsx` enforces.
+ */
+.board-grid[data-board-territory="true"] .board-tile {
+  padding-right: 20px;
+}
+
+/*
+ * The head row now has three claimants and 14px less room: the facility code, the
+ * state word, and the space number. On the at most two tiles that are marked at
+ * any moment, the NUMBER gives way — the word is the thing a player is reading,
+ * and DESIGN.md §8 forbids carrying state by the accent outline alone, so the tag
+ * is not optional the way the number is. The number stays in `data-board-index`,
+ * in the tile's accessible name and in the plate's own Space readout.
+ */
+.board-grid[data-board-territory="true"] .board-tile[data-board-active="true"] .board-tile-index,
+.board-grid[data-board-territory="true"] .board-tile[data-board-landed="true"] .board-tile-index {
+  display: none;
+}
+
+.board-tile-territory {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 19px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-end;
+  width: 16px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The owner's seat numeral on their own tile — the same 12px seat glyph grammar
+   the pieces use, so the mark and the piece are visibly the same seat. */
+.board-tile-owner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+  background-color: var(--board-seat, var(--sand));
+  background-image: var(--board-seat-pattern, none);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--background);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-tile-owner[data-board-owner-self="true"] {
+  border-color: var(--foreground);
+}
+
+/* An upgrade is not the same thing as a claim, so it does not look like one: the
+   mark gains an underscore rule. Shape, not hue, and the level is stated as a
+   number in the tile's accessible name. */
+.board-tile-owner[data-board-owner-level] {
+  border-bottom: 2px solid var(--foreground);
+}
+
+/*
+ * A placement, on its tile (§12.4 — "present on the board"). One letter, which the
+ * plate's own territory key spells out, on a raised chip with the placer's seat
+ * colour as its leading rule — so a mark says both WHAT and WHOSE without text.
+ */
+.board-tile-mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-left: 2px solid var(--board-seat, var(--sand));
+  background-color: var(--surface-raised);
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--foreground);
+}
+
+/* Visibly sealed: an `owner-only` placement only ever reaches its own owner, and
+   that owner has to be able to tell which of their marks the table cannot see
+   (§12.4 — "nobody knows yet", never leaked by layout). */
+.board-tile-mark[data-board-mark-sealed="true"] {
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+/* More marks than the gutter can draw: a count, not a silent drop. Every entry is
+   still enumerated in the tile's accessible name. */
+.board-tile-mark[data-board-mark-more="true"] {
+  border-left: 1px solid var(--border-strong);
+  background-color: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------------------- interior plate */
@@ -612,14 +832,40 @@
 
 /* --------------------------------------------------------------- legend */
 
+/*
+ * The keys column. Always rendered, so the plate's wide two-column layout is a
+ * property of the plate and not of how many keys a given match happens to have —
+ * the seam and the background step live here, and each key inside it is just a
+ * block with its own hairline.
+ */
+.board-plate-keys {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
 .board-legend {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
   padding: 12px;
+}
+
+.board-legend + .board-legend {
   border-top: 1px solid var(--border);
-  background-color: var(--surface);
+}
+
+/* §12.5 — an empty panel says what it is for and what will appear there. */
+.board-territory-empty {
+  max-width: 44ch;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--muted-foreground);
 }
 
 .board-legend-head {
@@ -754,7 +1000,7 @@
     grid-template-columns: minmax(0, 1fr) minmax(180px, 24%);
   }
 
-  .board-legend {
+  .board-plate-keys {
     border-top: 0;
     border-left: 1px solid var(--border);
     background-color: var(--background);
@@ -880,6 +1126,90 @@
       oklch(0 0 0 / 20%) 0 2px,
       transparent 2px 4px
     );
+}
+
+/*
+ * The player's own photo on their piece ("pion ada foto player"), and the
+ * fallback that is always underneath it.
+ *
+ * 14px square: the plate is 14px tall inside a 17px dock band on a ~48px cell, and
+ * nothing here is allowed to make the plate taller — the band's whole job is that
+ * a rack of tokens can never reach a tile's own room name. So the photo is small,
+ * and it is designed to be: it reads as a person's colour signature, which is
+ * enough to spot your own piece across the ring, while the seat colour, seat
+ * pattern and seat numeral beside it remain the actual identity system (§8).
+ *
+ * The initial is IN FLOW and the `img` is absolutely positioned over it. That is
+ * the no-broken-image guarantee: an avatar that is missing, blocked, still
+ * loading or 404 leaves the initial showing at exactly the same geometry, and
+ * `PlayerToken` drops the `img` from the tree on `error` rather than letting a
+ * user agent draw its own placeholder glyph.
+ */
+.board-token-face {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  overflow: hidden;
+  /* The seam is what separates the face from the seat glyph. Deliberately NOT a
+     darkening wash: the initial is near-black on the seat colour, exactly as the
+     seat numeral beside it is, and a wash over both would cost contrast on the
+     one element that has to stay readable at 11px. */
+  border-right: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+}
+
+.board-token-initial {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--background);
+}
+
+.board-token-photo {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Board tiles and their pieces are the one place fully square is correct
+     (DESIGN.md §4.2) — a rounded avatar would read as a social app, not a
+     terminal. */
+  border-radius: 0;
+}
+
+/*
+ * Bot-ness at a glance, at BOTH densities and for zero width.
+ *
+ * The `BOT` tag only survives full density, so at three-plus plates on one space
+ * bot-ness used to live nowhere but the accessible name. This hatched rule along
+ * the plate's bottom edge is drawn from the plate's own foreground, so it costs no
+ * layout, is not a hue, and is not colour-only either: the token's accessible
+ * name and the seat rail both still say "bot" in words, and the tag is still
+ * there whenever it fits.
+ *
+ * A pseudo-element rather than a second `background-image`, deliberately: the
+ * per-seat pattern IS a background-image, and a bot rule that overwrote it would
+ * trade one accessibility guarantee for another (§8 — identity is never colour
+ * alone, so the seat's pattern is not optional).
+ */
+.board-token[data-board-token-bot="true"] .board-token-plate::after,
+.board-token-plate[data-board-bot="true"]::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    oklch(0 0 0 / 40%) 0 2px,
+    transparent 2px 4px
+  );
+  pointer-events: none;
 }
 
 .board-token-seat {

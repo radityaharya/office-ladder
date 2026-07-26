@@ -2,7 +2,7 @@
 // supplied by the match's single `LazyMotion` provider in
 // `routes/rooms.$roomId.game.tsx`. See the note in game-board.tsx.
 import * as m from "motion/react-m";
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 
 import {
   EASING_STANDARD_BEZIER,
@@ -62,12 +62,37 @@ export function PlayerToken({
   step = 0,
 }: PlayerTokenProps) {
   const state = player.state ?? "idle";
+  /*
+   * The url whose `img` has already failed, rather than a boolean. Keying the
+   * failure to the value means a player who changes their avatar gets one fresh
+   * attempt automatically — a boolean would blacklist the seat, not the image.
+   */
+  const [failedPhotoUrl, setFailedPhotoUrl] = useState<string | null>(null);
   const seat = <span className="board-token-seat">{player.seat}</span>;
   const botTag = player.isBot ? <span className="board-token-bot">BOT</span> : null;
+  /*
+   * A bot gets no face cell at all. That is the honest reading of `avatarUrl`
+   * being permanently `null` for bots, it is what keeps a bot from rendering as a
+   * human with a missing photo, and it is what keeps two bot plates on one space
+   * inside a ~97px cell: a bot spends its 14px on the `BOT` tag it already had
+   * rather than on an empty square.
+   */
+  const face = player.isBot ? null : (
+    <TokenFace
+      failedPhotoUrl={failedPhotoUrl}
+      onPhotoFailed={setFailedPhotoUrl}
+      player={player}
+    />
+  );
 
   if (!cell) {
     return (
-      <span className="board-token-plate" data-board-seat={player.seat}>
+      <span
+        className="board-token-plate"
+        data-board-bot={player.isBot ? "true" : undefined}
+        data-board-seat={player.seat}
+      >
+        {face}
         {seat}
         {botTag}
       </span>
@@ -130,6 +155,7 @@ export function PlayerToken({
           initial={{ x: dockOffset }}
           transition={GAMEPLAY_SPRING.token}
         >
+          {density === "full" ? face : null}
           {seat}
           {density === "full" ? botTag : null}
           {arrival > 0 ? (
@@ -150,6 +176,108 @@ export function PlayerToken({
       </m.span>
     </li>
   );
+}
+
+/**
+ * The player's photo on their piece, at the only size a 44-space ring leaves for
+ * one: 14px square inside a 14px-tall plate, on a ~97x48 tile.
+ *
+ * Two things make that small size honest rather than decorative:
+ *
+ *  - **The fallback is always in the markup, underneath the photo.** The seat
+ *    initial is a real element in flow and the `img` is absolutely positioned
+ *    over it, so a missing, blocked, slow or broken avatar reveals the initial
+ *    with no reflow, no layout shift and no broken-image glyph. `renderToStaticMarkup`
+ *    and the first client paint therefore both produce a correct plate.
+ *  - **Nothing identifies a seat by its photo.** At 14px a face reads as a
+ *    person's colour signature, which is enough to find your own piece at a
+ *    glance, and not enough to be the identity system — that stays the seat
+ *    colour, the seat pattern and the seat numeral beside it (§8).
+ *
+ * `alt=""`: the photo is decorative here, because the token's own accessible name
+ * already states the player's name, seat, bot-ness and space. A second copy of
+ * the name inside it would be read twice.
+ */
+function TokenFace({
+  failedPhotoUrl,
+  onPhotoFailed,
+  player,
+}: {
+  readonly failedPhotoUrl: string | null;
+  readonly onPhotoFailed: (url: string) => void;
+  readonly player: PlayerTokenView;
+}) {
+  const photoUrl = renderableAvatarUrl(player.avatarUrl);
+  const showPhoto = photoUrl !== null && photoUrl !== failedPhotoUrl;
+
+  return (
+    <span
+      className="board-token-face"
+      data-board-face={showPhoto ? "photo" : "initial"}
+    >
+      <span aria-hidden="true" className="board-token-initial">
+        {tokenInitial(player)}
+      </span>
+      {showPhoto ? (
+        <img
+          alt=""
+          className="board-token-photo"
+          /* Decode off the critical path — the fallback underneath is already a
+             correct plate, so nothing waits on this. NOT `loading="lazy"`: a
+             board's pieces are at most six 14px images that are on screen from the
+             first paint, and deferring them would leave the identity affordance
+             absent for no saving. Measured in Chrome: lazy left every avatar
+             unloaded while the board sat below the fold. */
+          decoding="async"
+          onError={() => onPhotoFailed(photoUrl)}
+          referrerPolicy="no-referrer"
+          src={photoUrl}
+        />
+      ) : null}
+    </span>
+  );
+}
+
+/** One character. `initials` is up to two and only one fits a 14px face. */
+function tokenInitial(player: PlayerTokenView): string {
+  const source = player.initials ?? player.name;
+  return (source.trim().at(0) ?? "?").toUpperCase();
+}
+
+/**
+ * Longest avatar URL this will place in an `img src`. Matches the contract's own
+ * `AVATAR_URL_MAX_LENGTH` in spirit rather than importing it — this is a second,
+ * independent gate, and a gate that trusts the value it is gating is not one.
+ */
+const AVATAR_URL_MAX_LENGTH = 512;
+
+/** Characters that could terminate an attribute or smuggle a second one. */
+const UNSAFE_URL_CHARACTERS = /["'<>`\\\s]/;
+
+/* eslint-disable-next-line no-control-regex -- the point is to reject these. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * The subset of `RoomMemberProjection.avatarUrl` this component will draw.
+ *
+ * The server already guarantees far more than this (see the field's own doc
+ * comment) and the value never reaches an executing context here — it is an
+ * `img src` and nothing else. This is deliberately a *second* check at the render
+ * boundary anyway, because the cost is one regex and the failure mode of trusting
+ * a URL that arrived over the wire is not proportionate to it. Anything rejected
+ * degrades to the seat initial, which is the same fallback as "no avatar".
+ */
+export function renderableAvatarUrl(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+
+  const url = value.trim();
+  if (url.length === 0 || url.length > AVATAR_URL_MAX_LENGTH) return null;
+  if (UNSAFE_URL_CHARACTERS.test(url) || CONTROL_CHARACTERS.test(url)) return null;
+  // Protocol-relative `//host/…` inherits the page scheme and is not same-origin.
+  if (url.startsWith("//")) return null;
+  if (url.startsWith("/")) return url;
+
+  return url.slice(0, 8).toLowerCase() === "https://" ? url : null;
 }
 
 function tokenLabel(player: PlayerTokenView): string {

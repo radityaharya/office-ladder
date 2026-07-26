@@ -286,6 +286,56 @@
   overflow: hidden;
 }
 
+/* --------------------------------------------------------------------------
+   The rail seam: hosting a foreign panel inside the rail's own frame.
+
+   Two rules, both scoped to `.game-shell-rail` and both matching on the
+   `data-slot`/`data-grow` contract `turn-rail.tsx` renders rather than on
+   hud.css's `.hud-rail-*` classes — so this sheet stays out of that sheet's
+   namespace and neither rule can reach anything outside this region.
+
+   Both exist because of ONE measured defect. Every rail destination now mounts a
+   panel-kit component with `chrome="none"`, which drops the kit's own
+   `.panel-body` — the element that made a panel's content scroll inside itself.
+   Meanwhile exactly one block per group is `flex: 1 1 auto` with `min-height: 0`
+   (hud.css explains why: a log has to be able to scroll rather than push the rail
+   taller). Together, at a 240px stacked rail, that measured as the Hand block
+   0px tall with 162px of its content painted over the Projects panel underneath
+   — both panels' prose overlapping, neither readable.
+   -------------------------------------------------------------------------- */
+
+/* The replacement scroll box. `min-height: 0` so it yields the space the header
+   needs, `flex: 1 1 auto` so it takes the rest, and `overflow-y: auto` so a
+   destination's content is CLIPPED by its own panel instead of escaping it. */
+.game-shell-rail [data-slot="rail-panel-body"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.game-shell-rail [data-slot="rail-panel-body"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/*
+ * ...and the growing block keeps a floor, so it cannot reach zero in the first
+ * place. 84px is its 28px header plus a 56px body — the same arithmetic the panel
+ * kit's own collapse floor uses, stated here for the one block hud.css
+ * deliberately leaves uncapped. The group already scrolls (`overflow-y: auto`
+ * there, documented as the safety valve), so holding a floor spends group scroll
+ * rather than clipping a panel; `overflow: hidden` is the backstop that keeps a
+ * sticky header inside its own box even so.
+ */
+.game-shell-rail [data-slot="rail-panel"][data-grow="true"] {
+  min-height: 84px;
+  overflow: hidden;
+}
+
 @media (min-width: 640px) {
   .game-shell-board {
     padding: 12px;

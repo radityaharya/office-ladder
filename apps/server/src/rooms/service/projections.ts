@@ -2,12 +2,12 @@ import {
   toLegalActionSummary,
   type BallotProjection,
   type CallerSelfProjection,
-  type GameplayBootstrap,
   type GameplayProjection,
   type LegalActionAgreementTerms,
   type LegalActionBallotTerms,
   type LegalActionContext,
   type LegalActionSummary,
+  type ModeRules,
   type OwnPlacementProjection,
   type OwnProjectSabotageProjection,
   type PartyAgreementProjection,
@@ -18,8 +18,6 @@ import {
   type PublicPlayerGameplayProjection,
   type PublicProjectProjection,
   type RevealedProjectSabotageProjection,
-  type RoomProjection,
-  type RoomBootstrap,
   type SelfObjectiveProjection,
   type TradeItem,
 } from "@office-ladder/contracts";
@@ -43,7 +41,13 @@ import {
   claimedCharacters,
 } from "@/rooms/characters";
 import { isTurnTimerCurrent } from "@/rooms/turn-timer/turn-timer";
-import type { StoredRoom } from "./types";
+import { resolveModeRules } from "./game-setup";
+import type {
+  LobbyBootstrap,
+  LobbyGameplayBootstrap,
+  LobbyRoomProjection,
+  StoredRoom,
+} from "./types";
 
 /**
  * Which character each member should be shown as playing.
@@ -65,7 +69,48 @@ function memberCharacterIds(room: StoredRoom): ReadonlyMap<PlayerId, string> {
   return assigned;
 }
 
-export function roomProjection(room: StoredRoom): RoomProjection {
+/**
+ * The ruleset in force for this room, as every member is entitled to see it.
+ *
+ * `RoomProjection` already carried `mode`, and a joiner reading it would
+ * reasonably conclude the room plays that preset's terms — but a host can author
+ * a ruleset (spec §8.4) that replaces the preset's `rules` block wholesale, so
+ * the preset name and the terms in force are two different facts. Publishing only
+ * the name means a player can take a seat at a game whose actual rules they were
+ * never shown: elimination on, negotiation off, quarters twice as long, upkeep
+ * doubled. None of that is inferable from `mode: "mode.standard"`.
+ *
+ * Resolution order deliberately mirrors the one the match itself uses:
+ *
+ * - **A running match reports `GameState.rules`** — the ruleset frozen at
+ *   `game.start` (§5.9), which is what every transition is reading. Recomputing
+ *   from the room would be the one way this field could disagree with the game,
+ *   and it would disagree exactly when it matters: after a mid-match content
+ *   deploy.
+ * - **A lobby reports {@link resolveModeRules}** — the authored ruleset if the
+ *   host set one, else the preset's. Which is precisely what `start` will freeze,
+ *   so what the lobby shows and what the match plays cannot part company.
+ *
+ * `null` only for a room whose `modeId` names a mode this content release does
+ * not provide. That room cannot be started either (`start` answers
+ * UNSUPPORTED_MODE), so the honest answer is "nobody can tell you the terms",
+ * not a preset picked to fill the field — the same reasoning `resolveModeRules`
+ * gives for not defaulting.
+ *
+ * **This is a redaction boundary.** The ruleset is the only thing added here.
+ * `StoredRoom` also holds the host's id, every member's stored character claim,
+ * the event log, the turn timer's internals and the whole canonical `GameState`;
+ * none of it belongs in the lobby projection, and the exact key set is asserted
+ * in tests/rooms/lobby-rules-projection.test.ts so a later widening has to be
+ * deliberate.
+ */
+function effectiveRules(room: StoredRoom): ModeRules | null {
+  const game = room.game;
+  if (game !== null) return game.rules;
+  return resolveModeRules(room);
+}
+
+export function roomProjection(room: StoredRoom): LobbyRoomProjection {
   const characters = memberCharacterIds(room);
 
   return {
@@ -73,6 +118,7 @@ export function roomProjection(room: StoredRoom): RoomProjection {
     code: room.code,
     status: room.status,
     mode: room.modeId,
+    rules: effectiveRules(room),
     capacity: room.capacity,
     revision: room.revision,
     // Bots are ordinary members: they occupy a real seat in memberIds. The
@@ -103,7 +149,7 @@ export function roomProjection(room: StoredRoom): RoomProjection {
 export function createRoomBootstrap(
   room: StoredRoom,
   viewerId: PlayerId,
-): RoomBootstrap {
+): LobbyBootstrap {
   return {
     room: roomProjection(room),
     selfMemberId: viewerId,
@@ -576,6 +622,32 @@ function agreementTerms(
     }));
 }
 
+/**
+ * The viewer's raw balance for one resource *key*.
+ *
+ * **Not the quantity the engine spends against, and it has to become it.** The
+ * numbers this feeds are `maxBid`, `maxMoney`, `maxWork` and `maxAmount` — the
+ * ceilings the client will let a player choose *up to* — and the engine bounds
+ * every one of them with `spendableAmount` in
+ * `engine/src/execution/tile-ownership.ts`: `max(0, value - (minimum ?? 0))`,
+ * selected **by resource kind**. This reads `.value` under a hardcoded key. Two
+ * differences, both latent only because every floor `setup/create-game.ts` writes
+ * is `0` and every key happens to be spelled the way it is here:
+ *
+ * - **The floor is not subtracted.** A mode with a non-zero floor would have the
+ *   client offer a slider whose top end the engine refuses — an affordability
+ *   hole in the exact shape this round is closing elsewhere.
+ * - **The resource is found by key, not by kind.** Rename a resource key in
+ *   content and every ceiling silently becomes `0`, so the UI disables controls
+ *   the engine would have accepted, with nothing anywhere reporting why.
+ *
+ * Deliberately not fixed by writing the engine's expression here: that would be
+ * another copy of arithmetic the engine already spells four different ways, which
+ * is how it drifted in the first place. It needs `@office-ladder/engine` to export
+ * `spendableAmount` and `findResourceOfKind`; the same export unblocks
+ * `rooms/bots/bot-view.ts`'s `valueOfKind`, which has the identical problem from
+ * the other direction. Reported to the engine owner.
+ */
 function resourceValue(
   view: PlayerGameProjection,
   viewerId: PlayerId,
@@ -693,7 +765,7 @@ export function createBootstrap(
   room: StoredRoom,
   viewerId: PlayerId,
   serverTime: string,
-): GameplayBootstrap {
+): LobbyGameplayBootstrap {
   const game = room.game;
   if (game === null) {
     throw new TypeError("Active room is missing its canonical game");

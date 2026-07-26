@@ -199,6 +199,42 @@ function resourceOfKind(player: PlayerState, kind: ResourceKind): ResourceState 
   return found === null ? null : found[1];
 }
 
+/**
+ * **This is not the quantity the engine checks, and it must become it.**
+ *
+ * Every transition that spends a resource asks `spendableAmount` in
+ * `engine/src/execution/tile-ownership.ts` — `max(0, value - (minimum ?? 0))`,
+ * the distance down to the floor. This asks `max(minimum ?? 0, value)`, the value
+ * lifted *to* the floor. The two agree only while every floor is zero, which is
+ * true of every resource `setup/create-game.ts` builds today, and that is the
+ * whole reason the divergence has never been observed:
+ *
+ * | floor | value | this | the engine |
+ * | --- | --- | --- | --- |
+ * | 0 | 300 | 300 | 300 |
+ * | 100 | 300 | **300** | **200** |
+ * | 100 | 50 | **100** | **0** |
+ * | -500 | 0 | **0** | **500** |
+ *
+ * A positive floor makes the bot believe it holds money it cannot spend, so it
+ * bids or offers past the guard, the engine answers INSUFFICIENT_RESOURCE, the
+ * driver classifies that as unexpected and the whole drain stops — which stalls
+ * the match for every seat, exactly like the two stalls
+ * {@link BotSelfView.workCounter} and {@link BotTableView.ownPlacementTileIds}
+ * document. A negative floor is the overdraft `execution/economy.ts`'s
+ * `spendableMoney` says "a mode that allows an overdraft gets for free", and it
+ * makes the bot refuse to spend money it does have.
+ *
+ * It is **deliberately not fixed by writing the engine's expression here.** That
+ * would be the fourth copy of this arithmetic (`tile-ownership.ts`,
+ * `economy.ts`, `ballots.ts`, and `attack.ts`'s own inline `value - floorOf(…)`
+ * — the engine already disagrees with *itself* about `minimum === null`), and
+ * copying it is precisely how the two ended up different in the first place. The
+ * fix belongs in one place: `@office-ladder/engine` exporting `spendableAmount`
+ * and `findResourceOfKind` from its index, after which this function becomes a
+ * call and `resourceOfKind` above can go. Reported to the engine owner rather
+ * than worked around here.
+ */
 function valueOfKind(player: PlayerState, kind: ResourceKind): number {
   const resource = resourceOfKind(player, kind);
   if (resource === null) return 0;

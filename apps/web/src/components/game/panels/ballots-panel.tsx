@@ -2,6 +2,7 @@ import { Panel, type PanelAttention, type PanelChrome } from "./panel";
 import { pluralise } from "./panel-format";
 import { PanelEmpty, PanelList, PanelNote, PanelRow, PanelStamp } from "./panel-parts";
 import { PANEL_DEFINITIONS } from "./panel-registry";
+import { PanelDeadline } from "./panel-semantics";
 
 export type BallotKind = "vote" | "auction";
 
@@ -112,9 +113,12 @@ export function BallotsPanel({ ballots, round, onCast, scope, chrome }: BallotsP
               state={ballot.youMayCast && ballot.yourCast === null ? "active" : "default"}
               title={ballot.subject}
               trailing={
-                <span className="panel-row-deadline" data-slot="panel-ballot-closes">
-                  {closesLabel(ballot.closesAtRound, round)}
-                </span>
+                <PanelDeadline
+                  phrasing="closes"
+                  round={round}
+                  slot="panel-ballot-closes"
+                  targetRound={ballot.closesAtRound}
+                />
               }
             />
           ))}
@@ -139,12 +143,6 @@ function castsLine(ballot: BallotPanelItem): string {
 function factsFor(ballot: BallotPanelItem): readonly string[] {
   const yours = ballot.yourCast === null ? "You have not cast" : `You cast ${ballot.yourCast}`;
   return [yours, pluralise(ballot.audienceCount, "voter")];
-}
-
-function closesLabel(closesAtRound: number, round: number): string {
-  const remaining = closesAtRound - round;
-  if (remaining <= 0) return "Closing";
-  return `Closes in ${pluralise(remaining, "round")}`;
 }
 
 /** Ballots the viewer may still answer. Exported so a tab can carry the badge. */

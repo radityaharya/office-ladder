@@ -13,6 +13,7 @@ import {
   PanelStamp,
 } from "./panel-parts";
 import { PANEL_DEFINITIONS } from "./panel-registry";
+import { PanelDeadline } from "./panel-semantics";
 
 export type ProjectPanelStatus = "open" | "funded" | "completed" | "failed";
 
@@ -154,9 +155,12 @@ export function ProjectsPanel({
               }
               title={project.title}
               trailing={
-                <span className="panel-row-deadline" data-slot="panel-project-deadline">
-                  {deadlineLabel(project.deadlineRound, round)}
-                </span>
+                <PanelDeadline
+                  phrasing="due"
+                  round={round}
+                  slot="panel-project-deadline"
+                  targetRound={project.deadlineRound}
+                />
               }
             >
               <PanelMeter
@@ -188,17 +192,6 @@ function factsFor(project: ProjectPanelItem): readonly string[] {
     pluralise(project.contributorCount, "backer"),
     `Your stake $${project.yourMoney.toLocaleString("en-US")}`,
   ];
-}
-
-/**
- * The deadline in rounds, as a number — never a ticking counter. §7.1 forbids
- * ambient motion, and a clock that animates in the rail is exactly the thing
- * that made the board feel unfollowable.
- */
-function deadlineLabel(deadlineRound: number, round: number): string {
-  const remaining = deadlineRound - round;
-  if (remaining <= 0) return "Due now";
-  return `${pluralise(remaining, "round")} left`;
 }
 
 function statusLabel(status: ProjectPanelStatus): string {

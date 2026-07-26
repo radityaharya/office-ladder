@@ -34,6 +34,17 @@ type GameHudProps = {
   readonly game: PublicGameProjection;
   readonly selfPlayerId: string;
   /**
+   * `GameBootstrap.serverTime`, the instant the projection beside it was stamped.
+   *
+   * The turn clock's scale comes from it: `deadlineAt` is an absolute instant and
+   * the browser's own clock can be minutes off, so the only honest way to render a
+   * proportion is `deadlineAt - serverTime`, both of which are the server's
+   * numbers. Omit it and the clock still renders — it just cannot say how much of
+   * the budget is gone and reports itself as unsynced in the markup rather than
+   * guessing from `Date.now()`.
+   */
+  readonly serverTime?: string | null;
+  /**
    * `GameBootstrap.self.characterId`. Optional: when supplied, the promotion
    * readout applies the character's `modifyPromotionRequirement` passive (the
    * Office Politician needs one less reputation), matching
@@ -58,10 +69,21 @@ const modeLabels: Record<RoomProjection["mode"], string> = {
   "mode.campaign": "Campaign",
 };
 
-export function GameHud({ room, game, selfPlayerId, selfCharacterId = null }: GameHudProps) {
+export function GameHud({
+  room,
+  game,
+  selfPlayerId,
+  selfCharacterId = null,
+  serverTime = null,
+}: GameHudProps) {
   return (
     <>
-      <GameHudHeader game={game} room={room} selfPlayerId={selfPlayerId} />
+      <GameHudHeader
+        game={game}
+        room={room}
+        selfPlayerId={selfPlayerId}
+        serverTime={serverTime}
+      />
       <GameHudStrip
         game={game}
         room={room}
@@ -81,6 +103,7 @@ export function GameHudHeader({
   room,
   game,
   selfPlayerId,
+  serverTime = null,
 }: Omit<GameHudProps, "selfCharacterId">) {
   return (
     <header className="hud-header" data-slot="game-header-region">
@@ -101,8 +124,210 @@ export function GameHudHeader({
       <p className="hud-label hud-header-optional">{modeLabel(room.mode)} shift</p>
       <span aria-hidden="true" className="hud-header-spacer" />
       <TurnStateIndicator state={resolveTurnState(room, game, selfPlayerId)} />
+      {/*
+        Whose turn it is and how long they have are one thought, so they sit next
+        to each other and neither goes behind a tab (spec §12.2). The clock's lane
+        is a definite width whether or not a clock is running, so a turn ending
+        cannot shift the header — and the header is the board's own top edge.
+      */}
+      <TurnClock game={game} selfPlayerId={selfPlayerId} serverTime={serverTime} />
     </header>
   );
+}
+
+/**
+ * The turn clock, as a DEPLETING BAR (spec §12.3).
+ *
+ * Not a ticking number, and that is the requirement rather than a preference: a
+ * number demands the reader subtract, which is the wrong ask when a window is
+ * eight seconds long. What this replaces is a `/T(\d{2}:\d{2}:\d{2})/` over
+ * `deadlineAt` rendering a static wall-clock time — a timestamp, not a countdown.
+ *
+ * Reads the clock straight off the projection each render. See
+ * {@link DeadlineMeter} for why that is the whole implementation.
+ */
+export function TurnClock({
+  game,
+  selfPlayerId,
+  serverTime = null,
+}: {
+  readonly game: PublicGameProjection;
+  readonly selfPlayerId: string;
+  readonly serverTime?: string | null;
+}) {
+  const isSelf = game.activePlayerId === selfPlayerId;
+  const seat = game.activePlayerId === null ? null : seatSlot(game, game.activePlayerId);
+
+  return (
+    <DeadlineMeter
+      deadlineAt={game.deadlineAt}
+      durationMs={game.turnTimerDurationMs}
+      expiryNote={
+        isSelf
+          ? "When it runs out the server rolls for you, so the table is never blocked."
+          : "When it runs out the server rolls on their behalf, so the table is never blocked."
+      }
+      owner={isSelf ? "self" : "opponent"}
+      serverTime={serverTime}
+      subject={isSelf ? "you" : seat === null ? "the active seat" : `seat ${seat}`}
+    />
+  );
+}
+
+/**
+ * A depleting bar for one server-set deadline. Reusable for any wall-clock
+ * boundary the shell has to show — a turn, a reaction window, a closing ballot —
+ * so they read as the same instrument (spec §7.1, §12.3).
+ *
+ * **The deadline in state is the truth and this runs no clock of its own.** There
+ * is no interval, no `requestAnimationFrame`, no `Date.now()` and no local
+ * countdown state anywhere in here, which is the point:
+ *
+ *  - The resting geometry is `deadlineAt - serverTime`, both of the server's own
+ *    numbers, so the same markup renders on the server, in `renderToStaticMarkup`
+ *    and on the first client paint, and none of it depends on the browser's clock
+ *    being right (which the contract warns it may not be, by minutes).
+ *  - The continuous part is one CSS animation whose duration is the full budget
+ *    and whose `animation-delay` is NEGATIVE by the time already elapsed — the
+ *    browser seeks into it and the compositor carries it the rest of the way. This
+ *    is §12.3's one sanctioned continuous animation, and `prefers-reduced-motion`
+ *    turns it into discrete steps rather than removing it (see hud.css).
+ *  - Every projection update re-states duration and delay, so the bar re-syncs to
+ *    the server on every poll and push instead of drifting away from it.
+ *  - **It decides nothing.** There is no expiry callback and no auto-submit here
+ *    by design: the server commits the turn on the player's behalf whether or not
+ *    any client noticed, so a client that acted on its own idea of "now" could
+ *    only ever race a decision that was already made. The bar reaches zero, stops,
+ *    and waits for the next update.
+ */
+export function DeadlineMeter({
+  deadlineAt,
+  durationMs,
+  expiryNote,
+  label = "Clock",
+  owner,
+  serverTime = null,
+  subject,
+}: {
+  readonly deadlineAt: string | null;
+  readonly durationMs: number | null;
+  /** What the server does at zero, stated in words for the reader. */
+  readonly expiryNote: string;
+  readonly label?: string;
+  /** Own versus opponent, carried structurally as well as in the sentence. */
+  readonly owner: "self" | "opponent";
+  readonly serverTime?: string | null;
+  /** Who the clock is on, e.g. `"you"` or `"seat 3"`. */
+  readonly subject: string;
+}) {
+  const clock = resolveDeadline({ deadlineAt, durationMs, serverTime });
+
+  return (
+    <div
+      className="hud-clock"
+      data-armed={clock === null ? "false" : "true"}
+      data-owner={owner}
+      data-slot="game-turn-clock"
+      data-synced={clock === null ? undefined : clock.synced ? "true" : "false"}
+    >
+      <span className="hud-label hud-clock-label">{label}</span>
+      <span
+        aria-hidden="true"
+        className="hud-clock-track"
+        data-remaining={clock === null ? undefined : clock.remainingPercent}
+      >
+        {clock === null ? null : (
+          <span
+            className="hud-clock-fill"
+            /* A new deadline is a new animation, not a re-timed one. */
+            key={deadlineAt ?? "none"}
+            style={{
+              animationDelay: `-${clock.elapsedMs}ms`,
+              animationDuration: `${clock.durationMs}ms`,
+              /* The resting value the animation seeks away from. It is also what
+                 shows if animations never run at all, so the bar is honest
+                 without a frame loop. */
+              transform: `scaleX(${clock.remainingPercent / 100})`,
+            }}
+          />
+        )}
+      </span>
+      {/* A number confirms the SCALE — an eight-second window and a ninety-second
+          turn are the same bar otherwise — and it never ticks (§6.4 wants the
+          value echoed; §12.3 forbids a running one). */}
+      <span className="hud-sub hud-clock-budget">
+        {clock === null ? "—" : formatBudget(clock.durationMs)}
+      </span>
+      <span className="sr-only" data-slot="game-turn-clock-description">
+        {clock === null
+          ? "No turn clock is running."
+          : `Turn clock: a ${formatBudgetWords(clock.durationMs)} budget for ${subject}. ${expiryNote}${
+              clock.synced ? "" : " Remaining time is unsynced."
+            }`}
+      </span>
+    </div>
+  );
+}
+
+type ResolvedDeadline = {
+  readonly durationMs: number;
+  readonly elapsedMs: number;
+  readonly remainingPercent: number;
+  /**
+   * False when no `serverTime` was supplied, so the elapsed portion could not be
+   * derived from the server's own pair of instants. The bar then starts full and
+   * runs the real budget — never further from the truth than the budget itself,
+   * and reported in the markup rather than presented as a measurement.
+   */
+  readonly synced: boolean;
+};
+
+function resolveDeadline({
+  deadlineAt,
+  durationMs,
+  serverTime,
+}: {
+  readonly deadlineAt: string | null;
+  readonly durationMs: number | null;
+  readonly serverTime: string | null | undefined;
+}): ResolvedDeadline | null {
+  if (deadlineAt === null || durationMs === null || durationMs <= 0) return null;
+
+  const deadlineMs = Date.parse(deadlineAt);
+  if (Number.isNaN(deadlineMs)) return null;
+
+  const stampMs = typeof serverTime === "string" ? Date.parse(serverTime) : Number.NaN;
+  const synced = !Number.isNaN(stampMs);
+  const remainingMs = synced
+    ? Math.min(durationMs, Math.max(0, deadlineMs - stampMs))
+    : durationMs;
+
+  return {
+    durationMs,
+    elapsedMs: durationMs - remainingMs,
+    remainingPercent: Math.round((remainingMs / durationMs) * 100),
+    synced,
+  };
+}
+
+/** Compact scale marker: `45s` under a minute and a half, `2:00` above it. */
+function formatBudget(durationMs: number): string {
+  const seconds = Math.max(0, Math.round(durationMs / 1_000));
+  if (seconds < 90) return `${seconds}s`;
+
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function formatBudgetWords(durationMs: number): string {
+  const seconds = Math.max(0, Math.round(durationMs / 1_000));
+  if (seconds < 90) return `${seconds} second`;
+
+  // Adjectival, like the seconds branch: this always reads "a <x> budget", where
+  // "a 2 minutes budget" would not.
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+
+  return rest === 0 ? `${minutes} minute` : `${minutes} minute ${rest} second`;
 }
 
 /**

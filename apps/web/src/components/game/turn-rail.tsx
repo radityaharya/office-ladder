@@ -208,6 +208,23 @@ type TurnRailProps = {
    * redistributes rail height and costs the board nothing.
    */
   readonly catchUp?: ReactNode;
+  /**
+   * The fixed lane at the end of the turn-state row.
+   *
+   * It used to hold `clockLabel(game.deadlineAt)` — a wall-clock INSTANT rendered
+   * by a `/T(\d{2}:\d{2}:\d{2})/` regex, which is a timestamp and not a
+   * countdown. §12.3 wants time pressure as a depleting bar, and the shell's HUD
+   * header already carries one (`TurnClock` in game-hud.tsx) in a region that is
+   * always in flow, so the rail no longer states the turn deadline at all: a
+   * second bar 320px away would spend rail width to say the same thing twice and
+   * read the same sr-only sentence twice.
+   *
+   * The lane stays — reserved, so nothing arriving in it can shove the state text
+   * sideways — and defaults to the match's own position in time, which is what the
+   * rail actually wants there. A host with a *different* clock to show (a docked
+   * rail with no HUD above it) can pass an instrument instead.
+   */
+  readonly clock?: ReactNode;
 };
 
 const DEFAULT_MAX_ENTRIES = 40;
@@ -264,6 +281,7 @@ export function TurnRail({
   panels = [],
   defaultGroup = "table",
   catchUp = null,
+  clock,
 }: TurnRailProps) {
   const entries = buildActivityLog(game, room, deltas, selfPlayerId)
     .slice(-maxEntries)
@@ -349,7 +367,7 @@ export function TurnRail({
         outside box is a definite track either way, so the board never moves.
       */}
       <div className="hud-rail-head" data-slot="rail-head">
-        <TurnStateNotice clock={turnClockLabel(game)} state={turnState} />
+        <TurnStateNotice clock={clock ?? <RailMatchPosition game={game} />} state={turnState} />
         <RailSeatStrip activePlayerId={game.activePlayerId} game={game} room={room} />
         <RailSelfReadout game={game} selfPlayerId={selfPlayerId} />
         {catchUp === null ? null : (
@@ -424,10 +442,38 @@ function RailPanel({
           </span>
         )}
       </header>
-      {content ?? (
+      {content === null ? (
         <p className="hud-rail-empty" data-slot="rail-panel-empty">
           {meta.empty}
         </p>
+      ) : (
+        /*
+         * Contributed content gets its own scroll box, and that is load-bearing
+         * rather than tidy.
+         *
+         * A panel mounted `chrome="none"` (which is how every kit destination is
+         * mounted here — `RailPanel` already draws the header) has NO scroll body:
+         * `Panel`'s own `.panel-body` is part of the chrome it just dropped.
+         * Meanwhile exactly one block per group is `flex: 1 1 auto` with
+         * `min-height: 0`, so in a short rail it shrinks to zero and its content
+         * had nothing to clip it — measured in Chrome at a 240px rail: the Hand
+         * block was 0px tall while 162px of its content painted straight over the
+         * Projects panel below, so both panels' empty-state prose rendered on top
+         * of each other and neither was readable.
+         *
+         * The rail's own built-in content (the activity log) never showed this
+         * because it carries its own `overflow: auto`. This box is that guarantee,
+         * applied once for every destination instead of per panel.
+         */
+        <div
+          className="game-shell-rail-panel-body"
+          data-slot="rail-panel-body"
+          /* A scroll container with no tab stop hides its own overflow from
+             keyboard users (§8). */
+          tabIndex={0}
+        >
+          {content}
+        </div>
       )}
     </section>
   );
@@ -659,17 +705,24 @@ function RailSelfReadout({
 }
 
 /**
- * The turn clock, read from the projection's own deadline.
+ * Where the match is in its own time: round and turn number.
  *
- * Read defensively (the same shape-check `authoredCardName` uses) because the
- * turn-timer fields are being reshaped in packages/contracts: a missing or
- * non-string deadline degrades to "—" rather than breaking the rail. Rendered
- * as the deadline instant, not as a live countdown — this component renders on
- * the server too, and a ticking clock in the markup would disagree with it.
+ * The lane's default content, and a real answer to a question the rail is the
+ * right place for — "how far in are we" — rather than the wall-clock instant that
+ * used to sit here. Every panel in the rail states its deadlines in ROUNDS
+ * (§12.4), so the round number is the unit that makes those readable; a
+ * `hh:mm:ss` string had no relationship to any of them.
+ *
+ * Static by construction: two integers off the projection, no clock, no timer,
+ * identical in `renderToStaticMarkup` and in the browser.
  */
-function turnClockLabel(game: PublicGameProjection): string {
-  const candidate: { readonly deadlineAt?: unknown } = game;
-  return typeof candidate.deadlineAt === "string" ? clockLabel(candidate.deadlineAt) : "—";
+function RailMatchPosition({ game }: { readonly game: PublicGameProjection }) {
+  return (
+    <>
+      <span className="sr-only">Round </span>
+      {`R${formatNumber(game.round)} · T${formatNumber(game.turnNumber)}`}
+    </>
+  );
 }
 
 /**
@@ -978,7 +1031,7 @@ function TurnStateNotice({
   clock,
   state,
 }: {
-  readonly clock: string;
+  readonly clock: ReactNode;
   readonly state: TurnState;
 }) {
   return (
@@ -988,10 +1041,10 @@ function TurnStateNotice({
       <span className="hud-wait-text hud-fade-in" key={state.key}>
         {state.text}
       </span>
-      {/* The turn clock keeps a fixed lane whether or not a deadline is set, so
-          a timer arriving cannot shift the text beside it. */}
+      {/* A reserved lane, whatever is in it: an instrument arriving here cannot
+          shift the state text beside it (the same reason `.hud-delta-slot`
+          exists). See `TurnRailProps.clock`. */}
       <span className="hud-wait-clock" data-slot="rail-turn-clock">
-        <span className="sr-only">Turn deadline </span>
         {clock}
       </span>
     </p>
