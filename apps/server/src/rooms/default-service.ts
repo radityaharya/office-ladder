@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createStableId } from "@office-ladder/engine";
 import { PostgresRoomRepository } from "./postgres-repository";
 import { createRoomService } from "./service/create-room-service";
+import { TURN_TIMEOUT_MS } from "./turn-timer/configured-timeout";
 
 const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -28,4 +29,6 @@ export const roomService = createRoomService({
     commandId: () => createStableId("CommandId", randomUUID()),
   },
   gameSeed: () => randomBytes(32).toString("hex"),
+  // Shared with the turn-timeout driver, which enforces exactly what this arms.
+  turnTimeoutMs: TURN_TIMEOUT_MS,
 });
