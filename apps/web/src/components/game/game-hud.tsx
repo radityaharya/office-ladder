@@ -46,10 +46,17 @@ type GameHudProps = {
 const BOARD_TILE_COUNT = deadlineDashBoard.spaces.length;
 const RANK_COUNT = deadlineDashRanks.length;
 
-const modeLabels = {
+/**
+ * Every member of `RoomProjection["mode"]` needs an entry: the union grew to the
+ * four presets when modes became rulesets, and an incomplete record here is an
+ * implicit-`any` index, not a graceful fallback.
+ */
+const modeLabels: Record<RoomProjection["mode"], string> = {
   "mode.quick": "Quick",
+  "mode.standard": "Standard",
   "mode.marathon": "Marathon",
-} as const;
+  "mode.campaign": "Campaign",
+};
 
 export function GameHud({ room, game, selfPlayerId, selfCharacterId = null }: GameHudProps) {
   return (

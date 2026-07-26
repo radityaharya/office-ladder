@@ -22,6 +22,7 @@
 @import "./game-shell.css";
 @import "./hud.css";
 @import "./overlays.css";
+@import "./room-modes.css";
 @import "./shell.css";
 
 @custom-variant dark (&:is(.dark *));

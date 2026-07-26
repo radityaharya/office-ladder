@@ -128,8 +128,10 @@ describe("game hud strip", () => {
 
     // Then
     expect(markup).toContain('data-slot="game-hud-meter"');
-    expect(markup).toContain('data-percent="80"');
-    expect(markup).toContain("4/5");
+    // 4 of 8, not 4 of 5: the mode's energy ceiling is now an explicit
+    // `energyMaximum` of 8 instead of being pinned to the starting value.
+    expect(markup).toContain('data-percent="50"');
+    expect(markup).toContain("4/8");
   });
 
   it("flags low energy with a text label, not colour alone", () => {
@@ -296,7 +298,7 @@ describe("hud resource ticks", () => {
     // Then
     expect(markup).toContain('data-slot="game-hud-cash" data-value="1200">$1,200</span>');
     expect(markup).toContain('data-slot="game-hud-reputation" data-value="2">2</span>');
-    expect(markup).toContain('data-slot="game-hud-energy" data-value="4">4/5</span>');
+    expect(markup).toContain('data-slot="game-hud-energy" data-value="4">4/8</span>');
     expect(markup).toContain('data-slot="game-hud-work" data-value="3">3</span>');
   });
 
@@ -354,8 +356,8 @@ describe("hud resource ticks", () => {
     const markup = strip();
 
     // Then
-    expect(markup).toContain('data-percent="80"');
-    expect(markup).toContain('style="width:80%"');
+    expect(markup).toContain('data-percent="50"');
+    expect(markup).toContain('style="width:50%"');
   });
 });
 

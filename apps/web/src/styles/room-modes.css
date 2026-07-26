@@ -1,0 +1,397 @@
+/*
+ * room-modes.css — the create-room mode picker and the custom-ruleset builder.
+ *
+ * Plain CSS, design tokens only, every class prefixed `mode-` so it cannot
+ * collide with a sibling sheet (see the import block in globals.css).
+ *
+ * Two rules from the spec bind this sheet specifically:
+ *
+ * - **Container queries, never viewport queries** (§8.5, §12.7). Everything here
+ *   lives inside a column of a two-column panel, so the viewport is the wrong
+ *   signal: at 1440px the create column is ~600px and at 900px it is the whole
+ *   frame. `.mode-picker` and `.mode-builder` each declare an inline-size
+ *   container and every layout switch below reads it.
+ * - **Chrome motion only** (DESIGN.md §7.1). 80ms press, 120ms hover/controls.
+ *   No transform, no spring, no overshoot — these are form controls, and a
+ *   settings toggle that springs is wrong in this system.
+ */
+
+/* ------------------------------------------------------------------ picker */
+
+.mode-picker {
+  container-type: inline-size;
+  display: block;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mode-picker-legend {
+  padding: 0;
+}
+
+.mode-picker-hint {
+  margin: 2px 0 8px;
+}
+
+/*
+ * A tighter gutter than the frame's: these rows sit inside a column that is
+ * already indented by the shell gutter, and paying it twice costs the option
+ * text a third of its measure.
+ */
+.mode-options {
+  --shell-gutter: 12px;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+
+/*
+ * Rows share one hairline rather than each drawing its own, so two adjacent
+ * options never stack into a 2px rule (DESIGN.md §4.1).
+ */
+.mode-options > * + * {
+  border-top: 1px solid var(--border);
+}
+
+.mode-option {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px var(--shell-gutter, 16px);
+  background-color: transparent;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mode-option:hover {
+  background-color: var(--surface-sunken);
+}
+
+.mode-option:active {
+  transition-duration: 80ms;
+}
+
+/*
+ * The selected row is marked three ways — fill, a left rule in the single
+ * accent, and the native radio itself — because a selection carried by tone
+ * alone fails §8.
+ */
+.mode-option[data-selected="true"] {
+  background-color: var(--surface-sunken);
+  box-shadow: inset 2px 0 0 0 var(--primary);
+}
+
+.mode-option:has(.mode-option-input:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.mode-option-input {
+  width: 14px;
+  height: 14px;
+  margin: 4px 0 0;
+  accent-color: var(--primary);
+}
+
+.mode-option-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.mode-option-main,
+.mode-option-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/*
+ * The one layout switch in the picker, and the reason this sheet declares a
+ * container at all: the create form is a column of a two-column panel, so its
+ * width has almost nothing to do with the viewport's. At ~40rem the shape of a
+ * match and the systems it switches on sit side by side; below it they stack.
+ */
+@container (min-width: 40rem) {
+  .mode-option-body {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    column-gap: 20px;
+  }
+}
+
+.mode-option-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mode-option-aside {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mode-option-line {
+  display: block;
+  max-width: 68ch;
+}
+
+/* Shared with the lobby briefing — see mode-summary-view.tsx. */
+.mode-systems {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 68ch;
+}
+
+.mode-systems .shell-led {
+  align-self: center;
+}
+
+.mode-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/*
+ * §12.4: a rule that can remove a player from the table reads in the warning
+ * register. The word is still the carrier — the tone is the second signal, never
+ * the only one.
+ */
+.mode-tags .shell-tag[data-tone="caution"] {
+  color: var(--status-caution);
+  border-color: color-mix(in oklch, var(--status-caution), transparent 60%);
+}
+
+/* ----------------------------------------------------------------- builder */
+
+.mode-builder {
+  --shell-gutter: 12px;
+
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+}
+
+.mode-builder-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px var(--shell-gutter, 16px);
+  background-color: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+@container (min-width: 30rem) {
+  .mode-builder-head {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .mode-builder-head > .shell-field {
+    width: 200px;
+    flex: none;
+  }
+}
+
+.mode-builder-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mode-builder-groups > * + * {
+  border-top: 1px solid var(--border);
+}
+
+.mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px var(--shell-gutter, 16px);
+}
+
+.mode-group-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mode-group-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+@container (min-width: 26rem) {
+  .mode-group-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+  }
+}
+
+@container (min-width: 52rem) {
+  .mode-group-body {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* A switch spans its own cell; a numeric or select field does too. */
+.mode-switch {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 0;
+}
+
+.mode-switch-input {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--primary);
+}
+
+.mode-switch-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-switch-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mode-switch-input:disabled + .mode-switch-label {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-switch-state {
+  padding-top: 2px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.mode-switch[data-on="true"] .mode-switch-state {
+  color: var(--foreground);
+}
+
+.mode-switch[data-tone="caution"][data-on="true"] .mode-switch-state {
+  color: var(--status-caution);
+}
+
+.mode-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.mode-check label {
+  cursor: pointer;
+}
+
+.mode-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.mode-checks > legend {
+  padding: 0;
+  margin-right: 8px;
+}
+
+.mode-checks:disabled .mode-check {
+  opacity: 0.5;
+}
+
+.mode-field {
+  min-width: 0;
+}
+
+.mode-field-wide {
+  grid-column: 1 / -1;
+}
+
+@container (min-width: 26rem) {
+  .mode-field-wide {
+    grid-column: auto;
+  }
+}
+
+/* A number reads as a number, not as a text field that happens to hold one. */
+.mode-number {
+  max-width: 10rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.mode-issue {
+  color: var(--status-critical);
+}
+
+.mode-issue-line {
+  flex-basis: 100%;
+}
+
+.mode-builder-foot {
+  padding: 12px var(--shell-gutter, 16px);
+  background-color: var(--surface-sunken);
+  border-top: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------ lobby readout */
+
+/*
+ * The same derivation, read-only, so a player who did not create the room can
+ * still see what they are sitting down to before the host starts.
+ */
+.mode-brief {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mode-brief-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-option {
+    transition: none;
+  }
+}

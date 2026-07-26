@@ -290,6 +290,267 @@ describe("card effects readout", () => {
   });
 });
 
+describe("gameplay v2 effect readout", () => {
+  it("gives every v2 effect type a sentence, a scope and a stated target", () => {
+    // Given — one descriptor per effect type added by gameplay v2 §10.3/§10.5.
+    // The list is spelled out rather than derived so that a type losing its
+    // sentence fails here, not silently at render time.
+    const v2Effects: readonly EffectDescriptor[] = [
+      { type: "transferResource", resource: "money", amount: 200, target: "all-opponents" },
+      { type: "modifyHeat", amount: 2 },
+      { type: "placeObject", placementKind: "placement.meeting-invite" },
+      { type: "claimTile", baseCost: 200 },
+      { type: "releaseTile" },
+      {
+        type: "startProject",
+        definitionId: "project.rollout",
+        requiredMoney: 400,
+        requiredWork: 3,
+        payout: { money: 900, reputation: 2, objectiveProgress: 1 },
+      },
+      { type: "contributeToProject", money: 200, work: 1 },
+      { type: "sabotageProject", amount: 2 },
+      { type: "openBallot", ballotKind: "vote", subjectId: "ballot.budget", visibility: "sealed" },
+      { type: "grantImmunity", count: 1, scope: { resource: "money", direction: "loss" } },
+      { type: "forceDiscard", count: 1, target: "chosen-opponent" },
+      { type: "swapBoardPositions", target: "chosen-opponent" },
+      { type: "teleport", destination: { kind: "tileIndex", index: 12 } },
+      { type: "modifyUpkeep", amount: 50 },
+      { type: "openReactionWindow", windowKind: "prevention" },
+      {
+        type: "grantIncomeStream",
+        streamKind: "asset",
+        perRound: 100,
+        remainingRounds: null,
+      },
+      { type: "removeStatuses", filter: { polarity: "negative" }, limit: 1 },
+      {
+        type: "chooseOne",
+        options: [
+          { id: "a", label: "Take the money", effects: [] },
+          { id: "b", label: "Take the credit", effects: [] },
+        ],
+      },
+      { type: "noEffect" },
+      { type: "opposedRoll", onWin: [], onLose: [] },
+    ];
+
+    // When
+    const readouts = v2Effects.map((effect) => describeEffect(effect));
+
+    // Then
+    expect(readouts).toHaveLength(20);
+    for (const readout of readouts) {
+      expect(readout.sentence).toMatch(/^[A-Z].*\.$/);
+      expect(readout.scope.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("names who an effect lands on rather than leaving targeting implied", () => {
+    // Then
+    expect(effectLabel({ type: "modifyResource", resource: "energy", amount: -2 })).toBe(
+      "Lose 2 energy.",
+    );
+    expect(
+      effectLabel({
+        type: "modifyResource",
+        resource: "energy",
+        amount: -2,
+        target: "all-opponents",
+      }),
+    ).toBe("Each opponent loses 2 energy.");
+    expect(
+      effectLabel({
+        type: "modifyResource",
+        resource: "energy",
+        amount: -2,
+        target: "highest-rank",
+      }),
+    ).toBe("The highest-ranked player loses 2 energy.");
+    expect(
+      effectLabel({ type: "modifyResource", resource: "money", amount: 100, target: "all-players" }),
+    ).toBe("Every player gains $100.");
+  });
+
+  it("describes a transfer from the actor's side, in the direction it moves", () => {
+    // Then
+    expect(
+      effectLabel({
+        type: "transferResource",
+        resource: "money",
+        amount: 200,
+        direction: "target-to-actor",
+        target: "chosen-opponent",
+        insufficientFunds: "transfer-up-to-available",
+      }),
+    ).toBe("Take $200 from your chosen opponent, or as much of it as they have.");
+    expect(
+      effectLabel({
+        type: "transferResource",
+        resource: "money",
+        amount: 200,
+        direction: "actor-to-target",
+        target: "all-opponents",
+        insufficientFunds: "transfer-up-to-available",
+      }),
+    ).toBe("Give $200 to each opponent, or as much of it as you have.");
+  });
+
+  it("says what a scaled amount scales by, and where it stops", () => {
+    // When
+    const scaled = describeEffect({
+      type: "modifyResource",
+      resource: "money",
+      amount: 100,
+      target: "all-players",
+      scale: { by: "work-counter", perUnit: 25, cap: 400 },
+    });
+
+    // Then
+    expect(scaled.sentence).toBe(
+      "Every player gains $100. The amount rises by $25 for every work mark, capped at $400.",
+    );
+  });
+
+  it("says an effect is preventable, because that is what makes a reaction worth holding", () => {
+    // When
+    const aimed = describeEffect({
+      type: "modifyResource",
+      resource: "reputation",
+      amount: -1,
+      target: "chosen-opponent",
+      preventable: true,
+    });
+
+    // Then
+    expect(aimed.sentence).toBe(
+      "Your chosen opponent loses 1 reputation. A reaction can prevent this.",
+    );
+  });
+
+  it("states the guard on a conditional effect in the voice of whoever it is tested against", () => {
+    // Then
+    expect(
+      effectLabel({
+        type: "modifyResource",
+        resource: "reputation",
+        amount: 2,
+        condition: { kind: "resourceAtLeast", who: "target", resource: "work-counter", amount: 5 },
+      }),
+    ).toBe("If you have 5 work marks or more, gain 2 reputation.");
+    expect(
+      effectLabel({
+        type: "restoreResourceToMaximum",
+        resource: "energy",
+        target: "all-players",
+        condition: { kind: "not", of: { kind: "heatAtLeast", who: "target", value: 1 } },
+      }),
+    ).toBe("Unless they have 1 or more heat, every player restores energy to maximum.");
+  });
+
+  it("spells out the branches of a choice and of an opposed roll", () => {
+    // When
+    const choice = describeEffect({
+      type: "chooseOne",
+      options: [
+        {
+          id: "fast",
+          label: "Deliver today",
+          effects: [{ type: "modifyResource", resource: "money", amount: 250 }],
+        },
+        {
+          id: "careful",
+          label: "Hold for review",
+          effects: [{ type: "modifyResource", resource: "energy", amount: 2 }],
+        },
+      ],
+    });
+    const wager = describeEffect({
+      type: "opposedRoll",
+      opponent: "chosen-opponent",
+      dice: { count: 1, sides: 6 },
+      onWin: [
+        {
+          type: "transferResource",
+          resource: "money",
+          amount: 200,
+          direction: "target-to-actor",
+          insufficientFunds: "transfer-up-to-available",
+        },
+      ],
+      onLose: [
+        {
+          type: "transferResource",
+          resource: "money",
+          amount: 200,
+          direction: "actor-to-target",
+          insufficientFunds: "transfer-up-to-available",
+        },
+      ],
+    });
+
+    // Then
+    expect(choice.sentence).toBe(
+      "Choose one: Deliver today (gain $250); or Hold for review (gain 2 energy).",
+    );
+    expect(choice.delta).toBe("2 OPTIONS");
+    // The branches inherit the roll's opponent, not the actor — otherwise a
+    // wager reads as taking money from yourself.
+    expect(wager.sentence).toBe(
+      "Both you and your chosen opponent roll 1d6: if you roll higher, take $200 from your chosen opponent, or as much of it as they have; if you roll lower, give $200 to your chosen opponent, or as much of it as you have; on a tie, nothing happens.",
+    );
+  });
+
+  it("states the multiplier a work-card status carries, including the zero that makes it an attack", () => {
+    // Then
+    expect(
+      effectLabel({
+        type: "applyStatus",
+        statusId: "status.next-work-card-money-multiplier",
+        duration: { kind: "uses", count: 1 },
+        parameters: { multiplier: 0 },
+        target: "chosen-opponent",
+      }),
+    ).toBe("Your chosen opponent's next work card pays no money award at all.");
+    expect(
+      effectLabel({
+        type: "applyStatus",
+        statusId: "status.next-work-card-money-multiplier",
+        duration: { kind: "uses", count: 1 },
+        parameters: { multiplier: 2 },
+      }),
+    ).toBe("Your next work card has its money award multiplied by 2.");
+  });
+
+  it("renders a v2 card's rows with a polarity and a delta, never a blank line", () => {
+    // Given — an aimed steal plus the heat §10.4 makes it carry.
+    const effects: readonly EffectDescriptor[] = [
+      {
+        type: "transferResource",
+        resource: "money",
+        amount: 200,
+        direction: "target-to-actor",
+        target: "chosen-opponent",
+        preventable: true,
+        insufficientFunds: "transfer-up-to-available",
+      },
+      { type: "modifyHeat", amount: 1, target: "self" },
+    ];
+
+    // When
+    const markup = renderToStaticMarkup(<CardEffectTable effects={effects} />);
+    const polarities = markup.match(/data-polarity="[a-z]+"/g) ?? [];
+
+    // Then
+    expect(polarities).toEqual(['data-polarity="gain"', 'data-polarity="cost"']);
+    expect(markup).toContain("Take $200 from your chosen opponent");
+    expect(markup).toContain("A reaction can prevent this.");
+    expect(markup).toContain("Attract 1 point of heat");
+    expect(markup).toContain("HEAT");
+    expect(markup).toContain("2 entries");
+  });
+});
+
 describe("card draw resolution", () => {
   it("attaches resolved display copy to a matched authored draw", () => {
     // When

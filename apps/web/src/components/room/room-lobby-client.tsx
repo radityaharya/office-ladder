@@ -5,12 +5,25 @@ import { LobbyPanel, RoomHeader } from "@/components/room";
 import type { CharacterOption, LobbyPlayer, LobbyState } from "@/components/room";
 import {
   BOT_DIFFICULTIES,
+  ContractValidationError,
   parseAvatarUrl,
+  parseModeRules,
   type BotDifficulty,
+  type ModeRules,
   type RoomMemberProjection,
   type RoomStatus,
 } from "@office-ladder/contracts";
 import { subscribeRoomUpdates } from "@/realtime/room-channel";
+
+import type { ModeBriefingData } from "./mode-briefing";
+import {
+  isModePresetId,
+  matchingPresetId,
+  presetName,
+  presetRules,
+  summarizeModeRules,
+  type ModePresetId,
+} from "./mode-presets";
 
 /**
  * Mirrors MINIMUM_PLAYERS in apps/server/src/rooms/service/create-room-service.ts.
@@ -26,6 +39,15 @@ type LobbyBootstrap = {
     readonly capacity: number;
     readonly revision: number;
     readonly members: readonly LobbyMember[];
+    /** `null` when the room names a mode this build has no preset for. */
+    readonly mode: ModePresetId | null;
+    /**
+     * The room's own ruleset when the projection carries one, `null` when it
+     * does not. Absent today — `RoomProjection` has no `rules` field yet — so
+     * the briefing falls back to the named preset's shipped rules, which is
+     * correct for every room that did not author a custom ruleset.
+     */
+    readonly rules: ModeRules | null;
   };
   readonly selfMemberId: string;
   readonly gameRevision: number;
@@ -331,11 +353,31 @@ export function RoomLobbyClient({ roomId }: { readonly roomId: string }) {
           </header>
         )}
         <div className="shell-frame-body">
-          <LobbyPanel state={panelState} />
+          <LobbyPanel state={panelState} modeBriefing={modeBriefing(bootstrap)} />
         </div>
       </div>
     </main>
   );
+}
+
+/**
+ * The lobby's read-only restatement of the room's ruleset, derived from the same
+ * `mode-presets.ts` code the create-room picker uses.
+ *
+ * `null` — no briefing at all — whenever the mode is one this build cannot
+ * describe. The briefing exists so a player can trust what they are about to
+ * play; a guessed one would be worse than an absent one.
+ */
+function modeBriefing(bootstrap: LobbyBootstrap | null): ModeBriefingData | null {
+  const mode = bootstrap?.room.mode;
+  if (bootstrap === null || mode === null || mode === undefined) return null;
+
+  const rules = bootstrap.room.rules ?? presetRules(mode);
+  return {
+    presetName: presetName(mode),
+    custom: matchingPresetId(rules) !== mode,
+    summary: summarizeModeRules(rules),
+  };
 }
 
 function parseLobbyBootstrap(value: unknown): LobbyBootstrap {
@@ -358,6 +400,8 @@ function parseLobbyBootstrap(value: unknown): LobbyBootstrap {
       capacity: requireNumber(room["capacity"], "room.capacity"),
       revision: requireNumber(room["revision"], "room.revision"),
       members: members.map(parseMember),
+      mode: optionalModePresetId(room["mode"]),
+      rules: optionalModeRules(room["rules"]),
     },
     selfMemberId: requireString(
       payload["selfMemberId"] ?? self?.["playerId"],
@@ -396,6 +440,35 @@ function parseCharacterOptions(value: unknown): readonly CharacterOption[] {
     const item = requireRecord(option, "character option");
     return { id: requireString(item["id"], "character.id"), label: requireString(item["label"], "character.label") };
   });
+}
+
+/**
+ * The room's mode, or `null` when it names something this build has no preset
+ * for — an older row, or a preset a newer server ships and this bundle does not.
+ *
+ * Non-throwing on purpose, unlike `requireRoomStatus`: a mode this client cannot
+ * describe costs a briefing, not the whole lobby.
+ */
+function optionalModePresetId(value: unknown): ModePresetId | null {
+  return typeof value === "string" && isModePresetId(value) ? value : null;
+}
+
+/**
+ * A ruleset the room carries, re-validated with the contract's own parser rather
+ * than trusted as a shape.
+ *
+ * Same reasoning as `parseAvatarUrl` on the member above: this arrives over the
+ * wire and is rendered as fact to every player in the lobby, so it is either
+ * something `parseModeRules` vouches for or it is nothing.
+ */
+function optionalModeRules(value: unknown): ModeRules | null {
+  if (!isRecord(value)) return null;
+  try {
+    return parseModeRules(value);
+  } catch (error: unknown) {
+    if (error instanceof ContractValidationError) return null;
+    throw error;
+  }
 }
 
 function requireRoomStatus(value: unknown): RoomStatus {

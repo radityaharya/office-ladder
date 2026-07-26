@@ -2,8 +2,10 @@ import { useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { deadlineDashCharacters } from "@office-ladder/content";
+import type { ModeRules, RoomCapacity, RoomMode } from "@office-ladder/contracts";
 
 import { CreateJoinPanel } from "./create-join-panel";
+import { DEFAULT_MODE_SELECTION, type ModeSelection } from "./mode-picker";
 import type { ActionState } from "./types";
 
 const ROOM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -26,10 +28,22 @@ type RoomCommand =
   | {
       readonly kind: "create";
       readonly endpoint: "/api/rooms";
+      /**
+       * `mode` is typed as the *contract's* `RoomMode`, not as the content
+       * pack's preset id, so a preset the pack ships and contracts has never
+       * heard of fails to compile here rather than 400-ing at runtime. That
+       * drift is exactly what made `mode.standard` and `mode.campaign`
+       * unselectable while both were shipping.
+       *
+       * `rules` is omitted entirely unless a ruleset was actually authored:
+       * `parseCreateRoomRequest` treats an absent key and `null` as the same
+       * fact, and the smaller body is the one that says what happened.
+       */
       readonly body: {
-        readonly mode: "mode.quick";
-        readonly capacity: 6;
+        readonly mode: RoomMode;
+        readonly capacity: RoomCapacity;
         readonly playerName: string;
+        readonly rules?: ModeRules;
       };
     }
   | {
@@ -47,6 +61,9 @@ export function RoomEntryClient() {
   const pendingCommand = useRef<RoomCommand["kind"] | null>(null);
   const [createState, setCreateState] = useState<ActionState>({ kind: "idle" });
   const [joinState, setJoinState] = useState<ActionState>({ kind: "idle" });
+  const [modeSelection, setModeSelection] = useState<ModeSelection>(
+    DEFAULT_MODE_SELECTION,
+  );
 
   async function submit(command: RoomCommand): Promise<void> {
     if (pendingCommand.current !== null) return;
@@ -113,11 +130,16 @@ export function RoomEntryClient() {
       characterOptions={characterOptions}
       createState={createState}
       joinState={joinState}
-      onCreate={({ playerName }) => {
+      modeSelection={modeSelection}
+      onModeSelectionChange={setModeSelection}
+      onCreate={({ playerName, modeId, customRules }) => {
         void submit({
           kind: "create",
           endpoint: "/api/rooms",
-          body: { mode: "mode.quick", capacity: 6, playerName },
+          body:
+            customRules === null
+              ? { mode: modeId, capacity: 6, playerName }
+              : { mode: modeId, capacity: 6, playerName, rules: customRules },
         });
       }}
       onJoin={({ roomCode, playerName }) => {

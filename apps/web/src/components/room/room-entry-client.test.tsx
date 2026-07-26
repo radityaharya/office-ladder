@@ -39,8 +39,10 @@ afterEach(() => {
 });
 
 describe("RoomEntryClient", () => {
-  it("sends playerName in the create request body", async () => {
-    // Given
+  it("sends playerName and the default mode in the create request body", async () => {
+    // Given — the default is `mode.standard` now, not the `mode.quick` literal
+    // that used to be hardcoded into this call and made every room ever created
+    // a Quick room.
     const fetchMock = vi.fn(() =>
       Promise.resolve(Response.json({ room: { id: "room-created" } })),
     );
@@ -52,17 +54,58 @@ describe("RoomEntryClient", () => {
     // When
     await submitForm(container, "#create-player-name");
 
-    // Then
+    // Then — no `rules` key at all: a preset room is the preset, not a frozen
+    // copy of one.
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/rooms",
       expect.objectContaining({
         body: JSON.stringify({
-          mode: "mode.quick",
+          mode: "mode.standard",
           capacity: 6,
           playerName: "Avery",
         }),
       }),
     );
+  });
+
+  it("posts whichever preset the host actually picked", async () => {
+    // Given
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(Response.json({ room: { id: "room-created" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = renderClient();
+    setFormValue(container, "#create-player-name", "Avery");
+    setFormValue(container, "#create-character", "character.workaholic");
+
+    // When the host chooses the longest preset instead of the default.
+    await clickControl(container, 'input[value="mode.campaign"]');
+    await submitForm(container, "#create-player-name");
+
+    // Then
+    expect(readCreateBody(fetchMock)).toMatchObject({ mode: "mode.campaign" });
+  });
+
+  it("rides an authored ruleset on the create body, under its base preset", async () => {
+    // Given
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(Response.json({ room: { id: "room-created" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = renderClient();
+    setFormValue(container, "#create-player-name", "Avery");
+    setFormValue(container, "#create-character", "character.workaholic");
+
+    // When the host opens the builder and flips one switch.
+    await clickControl(container, 'input[value="mode.custom"]');
+    await clickControl(container, "#create-rules-elimination");
+    await submitForm(container, "#create-player-name");
+
+    // Then the room is still created as Standard — `mode.custom` is not a
+    // content preset — and the complete ruleset rides alongside it.
+    const body = readCreateBody(fetchMock);
+    expect(body["mode"]).toBe("mode.standard");
+    expect(body["rules"]).toMatchObject({ conflict: { elimination: true } });
   });
 
   it("sends playerName in the join request body", async () => {
@@ -315,6 +358,32 @@ async function clickAction(container: ParentNode, selector: string): Promise<voi
   await act(async () => {
     control.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+}
+
+/** The parsed body of the one POST to /api/rooms. */
+function readCreateBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  const call = fetchMock.mock.calls.find(([input]) => input === "/api/rooms");
+  const init = call?.[1] as RequestInit | undefined;
+  if (typeof init?.body !== "string") {
+    throw new TypeError("Expected a JSON body on the create request.");
+  }
+  return JSON.parse(init.body) as Record<string, unknown>;
+}
+
+/**
+ * Clicks a control and lets React flush. A radio or checkbox needs a real click
+ * rather than an assigned `.checked`: these are controlled inputs, so only the
+ * activation behaviour produces the change event React is listening for.
+ */
+async function clickControl(container: ParentNode, selector: string): Promise<void> {
+  const control = container.querySelector(selector);
+  if (!(control instanceof HTMLElement)) {
+    throw new TypeError(`Expected a control for ${selector}.`);
+  }
+  await act(async () => {
+    control.click();
+    await Promise.resolve();
   });
 }
 

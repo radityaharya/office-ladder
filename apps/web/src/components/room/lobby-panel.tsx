@@ -1,4 +1,5 @@
 import { EmptySeat } from "./empty-seat";
+import { ModeBriefing, type ModeBriefingData } from "./mode-briefing";
 import { PlayerDossier } from "./player-dossier";
 import { evaluateStartCheck, ReadinessSummary } from "./readiness-summary";
 import {
@@ -10,9 +11,15 @@ import {
 
 type LobbyPanelProps = {
   readonly state: LobbyState;
+  /**
+   * The room's ruleset, derived. `null` while the bootstrap has not arrived, or
+   * when it named a mode this build does not know — a briefing that guesses is
+   * worse than none, because the whole point of it is that a player can trust it.
+   */
+  readonly modeBriefing?: ModeBriefingData | null;
 };
 
-export function LobbyPanel({ state }: LobbyPanelProps) {
+export function LobbyPanel({ state, modeBriefing = null }: LobbyPanelProps) {
   switch (state.kind) {
     case "loading":
       return <LobbyLoading seatCount={state.seatCount ?? 6} />;
@@ -104,6 +111,8 @@ export function LobbyPanel({ state }: LobbyPanelProps) {
               </p>
             </div>
           ) : null}
+
+          {modeBriefing === null ? null : <ModeBriefing {...modeBriefing} />}
 
           <StartSection
             control={state.startControl}

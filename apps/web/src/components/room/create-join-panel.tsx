@@ -1,5 +1,18 @@
 "use client";
 
+import type { ReactNode } from "react";
+
+import type { ModeRules } from "@office-ladder/contracts";
+
+import { CustomRulesBuilder } from "./custom-rules-builder";
+import {
+  customRulesToSend,
+  DEFAULT_MODE_SELECTION,
+  ModePicker,
+  selectionModeId,
+  type ModeSelection,
+} from "./mode-picker";
+import type { ModePresetId } from "./mode-presets";
 import type {
   ActionState,
   CharacterOption,
@@ -8,17 +21,54 @@ import type {
 } from "./types";
 
 /**
+ * What creating a room now needs, on top of the two identity fields.
+ *
+ * `modeId` is always a shipped preset — a custom ruleset is created under the
+ * preset it was derived from and then applied on top, because `mode.custom` is
+ * not a content preset (spec §4.2). `customRules` is `null` whenever the room's
+ * preset already *is* the ruleset, so an untouched "Custom" selection posts
+ * nothing extra.
+ */
+export type CreateRoomSubmission = {
+  readonly playerName: string;
+  readonly characterId: string;
+  readonly modeId: ModePresetId;
+  readonly customRules: ModeRules | null;
+};
+
+export type CreateJoinPanelModeProps = {
+  readonly modeSelection?: ModeSelection;
+  readonly onModeSelectionChange?: (selection: ModeSelection) => void;
+};
+
+type PanelProps = Omit<CreateJoinPanelProps, "onCreate"> &
+  CreateJoinPanelModeProps & {
+    readonly onCreate: (request: CreateRoomSubmission) => void;
+  };
+
+/**
  * Room entry as a two-slot requisition form: one vertical hairline between the
  * two columns, both flush to the shared shell grid — no floating cards
  * (DESIGN.md §4.1, §4.3, §4.5).
+ *
+ * The create column now carries the match's ruleset as well as its identity
+ * fields. That is the whole point of this panel's existence: for four waves the
+ * configurable-ruleset system had no selector anywhere, so every room ever
+ * created was `mode.quick` — the literal that used to be hardcoded into the
+ * create call.
  */
 export function CreateJoinPanel({
   characterOptions,
   createState = { kind: "idle" },
   joinState = { kind: "idle" },
+  modeSelection = DEFAULT_MODE_SELECTION,
+  onModeSelectionChange,
   onCreate,
   onJoin,
-}: CreateJoinPanelProps) {
+}: PanelProps) {
+  const createDisabled =
+    createState.kind === "loading" || createState.kind === "disabled";
+
   return (
     <section className="shell-panel" aria-labelledby="room-entry-title">
       <div className="shell-panel-head">
@@ -33,11 +83,33 @@ export function CreateJoinPanel({
           kind="create"
           state={createState}
           characterOptions={characterOptions}
+          extraFields={
+            <>
+              <ModePicker
+                selection={modeSelection}
+                disabled={createDisabled}
+                onSelectionChange={(next) => {
+                  onModeSelectionChange?.(next);
+                }}
+              />
+              {modeSelection.kind === "custom" ? (
+                <CustomRulesBuilder
+                  draft={modeSelection.draft}
+                  disabled={createDisabled}
+                  onDraftChange={(draft) => {
+                    onModeSelectionChange?.({ kind: "custom", draft });
+                  }}
+                />
+              ) : null}
+            </>
+          }
           onSubmit={(event) => {
             const formData = new FormData(event.currentTarget);
             onCreate({
               playerName: String(formData.get("playerName") ?? ""),
               characterId: String(formData.get("characterId") ?? ""),
+              modeId: selectionModeId(modeSelection),
+              customRules: customRulesToSend(modeSelection),
             });
           }}
         />
@@ -63,11 +135,13 @@ function RoomEntryForm({
   kind,
   state,
   characterOptions,
+  extraFields,
   onSubmit,
 }: {
   readonly kind: "create" | "join";
   readonly state: ActionState;
   readonly characterOptions: readonly CharacterOption[];
+  readonly extraFields?: ReactNode;
   readonly onSubmit: (event: RoomFormSubmitEvent) => void;
 }) {
   const isCreate = kind === "create";
@@ -167,6 +241,8 @@ function RoomEntryForm({
           </select>
         </span>
       </div>
+
+      {extraFields}
 
       {state.kind === "error" ? (
         <p className="shell-msg shell-msg-error" id={errorId} role="alert">
