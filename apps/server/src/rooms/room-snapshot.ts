@@ -11,6 +11,11 @@ import {
   type SafeEventSummary,
 } from "@office-ladder/contracts";
 import {
+  deadlineDashModes,
+  type ModeConfig,
+  type ModeRules,
+} from "@office-ladder/content";
+import {
   assertJsonCompatible,
   createStableId,
   deserializeGameState,
@@ -27,17 +32,25 @@ import type { RoomBotSeat, RoomTurnTimer, StoredRoom } from "./service/types";
  *
  * `room_projections.projection` holds an entire StoredRoom — including the
  * canonical GameState — as one jsonb blob, so every field read back out is
- * whatever some older build of this server happened to write. Two hazards
- * follow, and both are handled here rather than scattered across readers:
+ * whatever some older build of this server happened to write. Three hazards
+ * follow, and all three are handled here rather than scattered across readers:
  *
  * 1. **Fields added later are simply absent.** `StoredRoom.bots` is the known
  *    case; the DiceRolled event summary gaining required `dice`/`total`/
- *    `purpose` this round is the newer one. A consumer that narrows on the
- *    variant and reads `.dice` faults on a snapshot written before it existed.
+ *    `purpose` is the newer one. A consumer that narrows on the variant and
+ *    reads `.dice` faults on a snapshot written before it existed.
  * 2. **Nothing validated what went in.** The previous implementation persisted
  *    the GameState through `JSON.parse(JSON.stringify(...))`, which silently
  *    drops `undefined`, flattens a Map/Set to `{}`, stringifies a Date and
  *    turns a non-finite number into `null` — corruption with no error.
+ * 3. **The canonical GameState has its own schema version, and the engine
+ *    refuses any other.** That is the same hazard as (1) but with a harder
+ *    edge: `deserializeGameState` does not degrade, it throws, so a state
+ *    shape the current engine no longer accepts is a room that cannot be
+ *    opened at all. Gameplay v2 (plans/24-gameplay-v2-spec.md §5) adds ten
+ *    required collections to `GameState` and four to every `PlayerState`, none
+ *    of which exist in any row written before it. See
+ *    {@link migrateStateSchema}.
  *
  * So: every write goes through {@link toRoomSnapshot}, every read through
  * {@link fromRoomSnapshot}, and the GameState half of both uses the engine's
@@ -147,7 +160,11 @@ export function fromRoomSnapshot(
   const hostId = asString(record["hostId"]);
   if (hostId === null) return unreadable(id, "it carries no host id");
 
-  const game = normalizeGame(record["game"]);
+  // Resolved before the game, because a legacy state's missing `rules` block is
+  // backfilled from a mode preset and the room's own column is the fallback for
+  // a state that somehow carries no `modeId` of its own.
+  const modeId = normalizeMode(record["modeId"]);
+  const game = normalizeGame(record["game"], modeId);
   if (!game.ok) {
     return unreadable(id, `this engine cannot read its canonical game (${game.reason})`);
   }
@@ -161,7 +178,7 @@ export function fromRoomSnapshot(
     memberNames: normalizeMemberNames(record["memberNames"]),
     memberAvatars: normalizeMemberAvatars(record["memberAvatars"], memberIds),
     memberCharacters: normalizeMemberCharacters(record["memberCharacters"], memberIds),
-    modeId: normalizeMode(record["modeId"]),
+    modeId,
     capacity: normalizeCapacity(record["capacity"], memberIds.length),
     status: normalizeStatus(record["status"], game.value),
     revision: storedRevision ?? asIndex(record["revision"]) ?? 0,
@@ -185,8 +202,24 @@ type GameNormalization =
   | { readonly ok: true; readonly value: GameState | null }
   | { readonly ok: false; readonly reason: string };
 
-function normalizeGame(value: unknown): GameNormalization {
+/**
+ * Upgrades a persisted state to this build's schema, then validates it.
+ *
+ * Order matters and is not interchangeable: the engine accepts exactly one
+ * `stateSchemaVersion`, so an older state must be brought forward *before* it is
+ * offered for validation. There is deliberately no "try the stored shape too"
+ * fallback — that would let a migration which produced a malformed new shape be
+ * masked by an older shape that happened to parse.
+ *
+ * @param roomModeId the room's own mode column, used only to resolve a legacy
+ * state's missing `rules` when the state itself carries no usable `modeId`.
+ */
+function normalizeGame(value: unknown, roomModeId: RoomMode): GameNormalization {
   if (value === null || value === undefined) return { ok: true, value: null };
+  return parseGameState(migrateStateSchema(value, roomModeId));
+}
+
+function parseGameState(value: unknown): GameNormalization {
   try {
     // deserializeGameState is the read half of the engine's contract: it
     // re-checks every invariant assertGameState knows about, so a snapshot the
@@ -197,6 +230,230 @@ function normalizeGame(value: unknown): GameNormalization {
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Canonical state schema migration
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The oldest `stateSchemaVersion` this reader knows how to upgrade, and the
+ * version an unreadable `versions` block is assumed to be.
+ *
+ * Assuming the oldest is safe *only* because every upgrade step preserves any
+ * value already present (see {@link upgradeStateV1ToV2}): running a step against
+ * a state that had already been upgraded is a no-op, not a reset.
+ */
+const OLDEST_MIGRATABLE_STATE_SCHEMA_VERSION = 1;
+
+type StateSchemaMigration = {
+  /** The version this step consumes. */
+  readonly fromVersion: number;
+  /** The version this step produces, stamped by the ladder rather than by the step. */
+  readonly toVersion: number;
+  readonly upgrade: (
+    game: Record<string, unknown>,
+    rules: ModeRules,
+  ) => Record<string, unknown>;
+};
+
+/**
+ * The upgrade ladder, keyed on the version each step consumes.
+ *
+ * Version-keyed rather than field-sniffing on purpose: "is `placements`
+ * missing?" answers a different question from "was this row written by an older
+ * build", and the two diverge the moment a field is added and then removed, or
+ * added with a legal empty value. The stored version is the only thing that
+ * states the writer's intent.
+ *
+ * Steps compose, so a state two versions behind is walked through each in turn
+ * and adding a v2 → v3 entry is all a later schema change needs. Two rules keep
+ * that true: the numbers here are **historical facts** about a shape that once
+ * shipped — `toVersion: 2` must stay 2 forever, never track the engine's current
+ * version — and the final step's `toVersion` must equal the engine's
+ * `GAME_STATE_SCHEMA_VERSION`, or nothing this reader produces will validate.
+ * tests/rooms/state-schema-migration.test.ts asserts that last part.
+ */
+const STATE_SCHEMA_MIGRATIONS: readonly StateSchemaMigration[] = [
+  { fromVersion: 1, toVersion: 2, upgrade: upgradeStateV1ToV2 },
+];
+
+function migrateStateSchema(value: unknown, roomModeId: RoomMode): unknown {
+  const game = asRecord(value);
+  if (game === null) return value;
+
+  let current = game;
+  // One pass per declared step is enough to walk the whole ladder, and bounds
+  // the loop: a step whose `toVersion` pointed backwards could not spin here.
+  for (let step = 0; step < STATE_SCHEMA_MIGRATIONS.length; step += 1) {
+    const version = storedStateSchemaVersion(current);
+    const migration = STATE_SCHEMA_MIGRATIONS.find(
+      (candidate) => candidate.fromVersion === version,
+    );
+    if (migration === undefined) break;
+    const rules = resolveModeRules(current["modeId"], roomModeId);
+    // Stamping the version here rather than inside the step keeps the two from
+    // drifting: a step describes a shape change and nothing else.
+    current = withStateSchemaVersion(migration.upgrade(current, rules), migration.toVersion);
+  }
+  return current;
+}
+
+function withStateSchemaVersion(
+  game: Record<string, unknown>,
+  version: number,
+): Record<string, unknown> {
+  return {
+    ...game,
+    versions: { ...(asRecord(game["versions"]) ?? {}), stateSchemaVersion: version },
+  };
+}
+
+function storedStateSchemaVersion(game: Record<string, unknown>): number {
+  const versions = asRecord(game["versions"]);
+  const version = versions === null ? null : asIndex(versions["stateSchemaVersion"]);
+  return version ?? OLDEST_MIGRATABLE_STATE_SCHEMA_VERSION;
+}
+
+/**
+ * The `ModeRules` a state that predates them should be read with.
+ *
+ * The state's own `modeId` wins over the room's column, because a running match
+ * carries the mode it was actually started with. An id no content pack knows
+ * falls back to the room's, then to `mode.quick` — the same choice
+ * {@link normalizeMode} makes, and for the same reason: a room whose rules could
+ * not be resolved would be a room nothing can ever read.
+ *
+ * Note this is a *backfill*, not a re-resolution. `GameState.rules` is
+ * snapshotted at `game.start` and frozen for the match precisely so a content
+ * edit cannot change a game in flight; a pre-v2 state has no snapshot to honour,
+ * so the preset its `modeId` names is the closest thing to the ruleset it was
+ * played under. Once a state carries `rules`, that value is preserved verbatim.
+ */
+function resolveModeRules(modeId: unknown, fallbackModeId: RoomMode): ModeRules {
+  const presets: Readonly<Partial<Record<string, ModeConfig>>> = deadlineDashModes;
+  const preset =
+    (typeof modeId === "string" ? presets[modeId] : undefined) ?? presets[fallbackModeId];
+  return (preset ?? deadlineDashModes["mode.quick"]).rules;
+}
+
+/**
+ * Gameplay v2: every collection in spec §5.9, plus §5.3/§5.4 per player.
+ *
+ * Additive and idempotent — every field keeps a value that is already there and
+ * only defaults an absent one. That is what makes it safe to run this against a
+ * state whose version could not be read, and it means a partially-migrated row
+ * (one written by a build that had some of these fields but not others) is
+ * completed rather than flattened.
+ */
+function upgradeStateV1ToV2(
+  game: Record<string, unknown>,
+  rules: ModeRules,
+): Record<string, unknown> {
+  const round = asIndex(asRecord(game["turn"])?.["round"]) ?? 0;
+  return {
+    ...game,
+    rules: asRecord(game["rules"]) ?? rules,
+    tileOwnership: asRecord(game["tileOwnership"]) ?? {},
+    placements: asArray(game["placements"]) ?? [],
+    projects: asArray(game["projects"]) ?? [],
+    agreements: asArray(game["agreements"]) ?? [],
+    objectives: asArray(game["objectives"]) ?? [],
+    ballots: asArray(game["ballots"]) ?? [],
+    quarters: asArray(game["quarters"]) ?? [],
+    // No quarter was ever opened, so the match is still inside the first one.
+    // Nothing schedules a global event retroactively for the quarters a legacy
+    // match already played through — `quarters` stays empty rather than being
+    // back-dated with events that never resolved.
+    currentQuarterIndex: asIndex(game["currentQuarterIndex"]) ?? 0,
+    eliminatedPlayerIds: asArray(game["eliminatedPlayerIds"]) ?? [],
+    outcome: upgradeOutcomeV1ToV2(game["outcome"]),
+    players: upgradePlayersV1ToV2(game["players"], rules, round),
+  };
+}
+
+/**
+ * `MatchOutcome` gains `scores` and `winPath` (spec §5.6).
+ *
+ * A match that ended before scoring existed has no per-player breakdown to
+ * reconstruct, so `scores` is empty rather than invented — a fabricated
+ * breakdown would be shown to players on the winner screen as if it had been
+ * computed. `winPath` is only filled in for `director-reached`, where it is a
+ * rename rather than an inference: reaching Director *is* the promotion path.
+ * Every other v1 end reason is left null, because which path a
+ * `marathon-scored` win came down is exactly what the missing breakdown would
+ * have said.
+ */
+function upgradeOutcomeV1ToV2(value: unknown): unknown {
+  const outcome = asRecord(value);
+  if (outcome === null) return value;
+  return {
+    ...outcome,
+    scores: asArray(outcome["scores"]) ?? [],
+    winPath:
+      asString(outcome["winPath"]) ??
+      (outcome["reason"] === "director-reached" ? "promotion" : null),
+  };
+}
+
+function upgradePlayersV1ToV2(
+  value: unknown,
+  rules: ModeRules,
+  round: number,
+): unknown {
+  const players = asRecord(value);
+  // Handing the original back keeps the engine's own "players must be an object"
+  // message, instead of replacing it with a downstream complaint about
+  // playerOrder not matching an empty map.
+  if (players === null) return value;
+  const upgraded: Record<string, unknown> = {};
+  for (const [playerId, playerValue] of Object.entries(players)) {
+    const player = asRecord(playerValue);
+    upgraded[playerId] =
+      player === null ? playerValue : upgradePlayerV1ToV2(player, rules, round);
+  }
+  return upgraded;
+}
+
+function upgradePlayerV1ToV2(
+  player: Record<string, unknown>,
+  rules: ModeRules,
+  round: number,
+): Record<string, unknown> {
+  return {
+    ...player,
+    upkeep: asRecord(player["upkeep"]) ?? {
+      perRound: legacyUpkeepPerRound(player, rules),
+      // Charged from where the match actually is, not from round 0. A legacy
+      // game read back on round 30 must not wake up owing thirty rounds of
+      // arrears it was never given the chance to pay.
+      lastChargedRound: round,
+      missedPayments: 0,
+    },
+    loans: asArray(player["loans"]) ?? [],
+    incomeStreams: asArray(player["incomeStreams"]) ?? [],
+    heat: asRecord(player["heat"]) ?? {
+      value: 0,
+      // From config, not a constant: the threshold is a mode tunable, and a mode
+      // with heat switched off legitimately publishes 0.
+      threshold: rules.conflict.heatThreshold,
+      investigationsOpened: 0,
+      lastIncrementedAtRound: null,
+    },
+  };
+}
+
+/**
+ * Upkeep is charged by rank, so a mid-match player already at supervisor owes a
+ * supervisor's rate from the moment the match is read — not an intern's.
+ */
+function legacyUpkeepPerRound(
+  player: Record<string, unknown>,
+  rules: ModeRules,
+): number {
+  if (!rules.economy.upkeepEnabled) return 0;
+  const rankIndex = asIndex(asRecord(player["rank"])?.["index"]) ?? 0;
+  return rules.economy.upkeepByRankIndex[rankIndex] ?? 0;
 }
 
 function normalizeMemberIds(value: unknown): readonly PlayerId[] {
@@ -437,6 +694,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/**
+ * Entries are left as `unknown` on purpose: the migration only ever carries a
+ * collection through untouched, and `deserializeGameState` is what decides
+ * whether its contents are legal.
+ */
+function asArray(value: unknown): readonly unknown[] | null {
+  return Array.isArray(value) ? (value as readonly unknown[]) : null;
 }
 
 function asString(value: unknown): string | null {
