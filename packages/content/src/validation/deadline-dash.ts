@@ -232,6 +232,7 @@ export type DeadlineDashValidationIssueCode =
   | "board.effect-status-id"
   | "board.effect-dice"
   | "board.effect-outcome"
+  | "board.decision-shape"
   | "deck.count"
   | "deck.duplicate-id"
   | "deck.id"
@@ -392,6 +393,338 @@ function validateEffectList(
   });
 }
 
+/**
+ * Shared by `rollCheck` and by a tile decision's accept branch: both match a
+ * dice total (or doubles) against a set of non-overlapping outcomes, and both
+ * must reject ranges the declared dice cannot produce.
+ */
+function validateRollOutcomes(
+  outcomes: readonly unknown[],
+  range: { readonly minimum: number; readonly maximum: number } | null,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
+): void {
+  const totalRanges: { readonly start: number; readonly end: number; readonly path: string }[] = [];
+
+  outcomes.forEach((outcome, outcomeIndex) => {
+    const outcomePath = `${path}.outcomes[${outcomeIndex}]`;
+    if (!isRecord(outcome) || !isRecord(outcome.when) || !Array.isArray(outcome.effects)) {
+      addIssue(
+        issues,
+        "board.effect-outcome",
+        outcomePath,
+        "outcome with one condition and an effect array",
+        outcome,
+      );
+      return;
+    }
+
+    const conditionKeys = Object.keys(outcome.when);
+    if (conditionKeys.length !== 1) {
+      addIssue(
+        issues,
+        "board.effect-outcome",
+        `${outcomePath}.when`,
+        "exactly one roll condition",
+        outcome.when,
+      );
+    }
+
+    if ("total" in outcome.when) {
+      const total = outcome.when.total;
+      if (
+        !Array.isArray(total) ||
+        total.length !== 2 ||
+        !Number.isInteger(total[0]) ||
+        !Number.isInteger(total[1]) ||
+        total[0] > total[1] ||
+        (range !== null && (total[0] < range.minimum || total[1] > range.maximum))
+      ) {
+        addIssue(
+          issues,
+          "board.effect-outcome",
+          `${outcomePath}.when.total`,
+          range ? `integer range within ${range.minimum}-${range.maximum}` : "valid integer range",
+          total,
+        );
+      } else {
+        totalRanges.push({ start: total[0], end: total[1], path: `${outcomePath}.when.total` });
+      }
+    } else if (outcome.when.doubles !== true && outcome.when.doubles !== false) {
+      addIssue(
+        issues,
+        "board.effect-outcome",
+        `${outcomePath}.when`,
+        "total range or doubles boolean",
+        outcome.when,
+      );
+    }
+
+    validateEffectList(outcome.effects, `${outcomePath}.effects`, issues, authoredDeckIds);
+  });
+
+  for (let index = 0; index < totalRanges.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < totalRanges.length; otherIndex += 1) {
+      const current = totalRanges[index];
+      const other = totalRanges[otherIndex];
+      if (current.start <= other.end && other.start <= current.end) {
+        addIssue(
+          issues,
+          "board.effect-outcome",
+          other.path,
+          `non-overlapping with ${current.path}`,
+          [other.start, other.end],
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Effects a decision branch must never contain, because the engine's response
+ * path (`applyEffectDescriptors` in packages/engine/src/execution/
+ * resolve-tile-effects.ts, called from respond-to-prompt.ts) applies them to
+ * canonical state but has nowhere to report them:
+ *
+ * - `drawCards` mutates the player from the drawn card's effects, yet the
+ *   `card-drawn` trace entry is dropped, so no `CardDrawn` event is emitted.
+ *   State and event stream would then disagree — fatal for the event-sourced
+ *   read model, and invisible to the client either way.
+ * - `auditConfinement` sets `inAudit` but the `openAuditPrompt` signal is
+ *   dropped, so the player is flagged as confined with no prompt that could
+ *   ever release them.
+ * - `grantExtraRoll` is dropped outright: an authored "and roll again" would
+ *   silently not happen.
+ *
+ * Tile resolution handles all three; a decision response does not. Rejecting
+ * them at authoring time is the only place this can be caught, since the engine
+ * resolver is deliberately generic over whatever content authors.
+ */
+const DECISION_UNSUPPORTED_EFFECT_TYPES: readonly string[] = [
+  "drawCards",
+  "auditConfinement",
+  "grantExtraRoll",
+];
+
+/** Walks a decision branch's effects, including nested rollCheck outcomes. */
+function validateDecisionBranchEffects(
+  effects: readonly unknown[],
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+  depth = 0,
+): void {
+  if (depth > 4) return;
+
+  effects.forEach((effect, index) => {
+    if (!isRecord(effect)) return;
+    const effectPath = `${path}[${index}]`;
+    if (
+      typeof effect.type === "string" &&
+      DECISION_UNSUPPORTED_EFFECT_TYPES.includes(effect.type)
+    ) {
+      addIssue(
+        issues,
+        "board.decision-shape",
+        effectPath,
+        "effect a decision response can resolve and report",
+        effect,
+      );
+    }
+    if (effect.type === "rollCheck" && Array.isArray(effect.outcomes)) {
+      effect.outcomes.forEach((outcome, outcomeIndex) => {
+        if (!isRecord(outcome) || !Array.isArray(outcome.effects)) return;
+        validateDecisionBranchEffects(
+          outcome.effects,
+          `${effectPath}.outcomes[${outcomeIndex}].effects`,
+          issues,
+          depth + 1,
+        );
+      });
+    }
+  });
+}
+
+/**
+ * Effects that fight a decision on the *same tile* for control of the turn, and
+ * lose silently.
+ *
+ * `rollTurn` builds at most one prompt per landing and resolves the two in a
+ * fixed order (see packages/engine/src/execution/roll-turn.ts): an
+ * `auditConfinement` prompt wins, so the decision is dropped and never offered
+ * even though the turn is still held open in the `prompt` phase waiting for an
+ * answer to it. `grantExtraRoll` loses the other way: a held decision hands the
+ * turn to `respondToPrompt`, which advances turn order unconditionally, so the
+ * free roll is silently forfeited.
+ *
+ * Neither is detectable at runtime — both paths are a legal no-op — so authoring
+ * time is the only place it can be caught. Same reasoning as
+ * DECISION_UNSUPPORTED_EFFECT_TYPES, one level up: there the *branch* holds an
+ * effect the response path cannot report, here the *tile* holds one the landing
+ * path cannot honour alongside a question.
+ */
+const DECISION_CONFLICTING_TILE_EFFECT_TYPES: readonly string[] = [
+  "auditConfinement",
+  "grantExtraRoll",
+];
+
+/** Rejects a tile that both asks a question and carries a turn-holding effect. */
+function validateDecisionTileEffects(
+  effects: readonly unknown[],
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+): void {
+  effects.forEach((effect, index) => {
+    if (!isRecord(effect)) return;
+    if (
+      typeof effect.type === "string" &&
+      DECISION_CONFLICTING_TILE_EFFECT_TYPES.includes(effect.type)
+    ) {
+      addIssue(
+        issues,
+        "board.decision-shape",
+        `${path}[${index}]`,
+        "no turn-holding effect on a tile that also opens a decision",
+        effect,
+      );
+    }
+  });
+}
+
+/**
+ * A tile decision is authored data the engine reads back at response time, so
+ * it has to be as tightly checked as an effect tree: a malformed accept branch
+ * would strand a player in an open prompt with no legal resolution.
+ */
+function validateTileDecision(
+  decision: unknown,
+  path: string,
+  issues: DeadlineDashValidationIssue[],
+  authoredDeckIds: ReadonlySet<string>,
+): void {
+  if (!isRecord(decision)) {
+    addIssue(issues, "board.decision-shape", path, "decision object", decision);
+    return;
+  }
+  if (typeof decision.kind !== "string" || decision.kind.length === 0) {
+    addIssue(issues, "board.decision-shape", `${path}.kind`, "non-empty prompt kind", decision.kind);
+  }
+  if (decision.whenUnaffordable !== "resolve-decline") {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.whenUnaffordable`,
+      "resolve-decline",
+      decision.whenUnaffordable,
+    );
+  }
+
+  const accept = decision.accept;
+  const decline = decision.decline;
+  if (!isRecord(accept) || !isRecord(decline)) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      path,
+      "decision with an accept and a decline branch",
+      decision,
+    );
+    return;
+  }
+
+  if (
+    typeof accept.optionId !== "string" ||
+    accept.optionId.length === 0 ||
+    typeof decline.optionId !== "string" ||
+    decline.optionId.length === 0 ||
+    accept.optionId === decline.optionId
+  ) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.accept.optionId`,
+      "two distinct non-empty option ids",
+      [accept.optionId, decline.optionId],
+    );
+  }
+
+  if (
+    !isRecord(accept.cost) ||
+    accept.cost.resource !== "money" ||
+    !isPositiveInteger(accept.cost.amount)
+  ) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.accept.cost`,
+      "positive money cost",
+      accept.cost,
+    );
+  }
+  if (accept.rerollEligible !== false) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.accept.rerollEligible`,
+      false,
+      accept.rerollEligible,
+    );
+  }
+
+  const range = validateDice(accept.roll, `${path}.accept.roll`, issues);
+  if (!Array.isArray(accept.outcomes) || accept.outcomes.length === 0) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.accept.outcomes`,
+      "non-empty outcome array",
+      accept.outcomes,
+    );
+  } else {
+    validateRollOutcomes(accept.outcomes, range, `${path}.accept`, issues, authoredDeckIds);
+    accept.outcomes.forEach((outcome, outcomeIndex) => {
+      if (!isRecord(outcome) || !Array.isArray(outcome.effects)) return;
+      validateDecisionBranchEffects(
+        outcome.effects,
+        `${path}.accept.outcomes[${outcomeIndex}].effects`,
+        issues,
+      );
+    });
+  }
+
+  if (!Array.isArray(decline.effects)) {
+    addIssue(
+      issues,
+      "board.decision-shape",
+      `${path}.decline.effects`,
+      "effect array",
+      decline.effects,
+    );
+    return;
+  }
+  // Declining must never cost anything — that is what makes it a safe default
+  // response for a timeout or a disconnected player.
+  decline.effects.forEach((effect, index) => {
+    if (!isRecord(effect)) return;
+    const takesResource =
+      effect.type === "payResource" ||
+      (effect.type === "modifyResource" && isFiniteNumber(effect.amount) && effect.amount < 0) ||
+      effect.type === "skipTurns" ||
+      effect.type === "auditConfinement";
+    if (takesResource) {
+      addIssue(
+        issues,
+        "board.decision-shape",
+        `${path}.decline.effects[${index}]`,
+        "effect that costs the player nothing",
+        effect,
+      );
+    }
+  });
+  validateDecisionBranchEffects(decline.effects, `${path}.decline.effects`, issues);
+  validateEffectList(decline.effects, `${path}.decline.effects`, issues, authoredDeckIds);
+}
+
 function validateEffect(
   effect: unknown,
   path: string,
@@ -462,79 +795,7 @@ function validateEffect(
         return;
       }
 
-      const totalRanges: { readonly start: number; readonly end: number; readonly path: string }[] = [];
-      effect.outcomes.forEach((outcome, outcomeIndex) => {
-        const outcomePath = `${path}.outcomes[${outcomeIndex}]`;
-        if (!isRecord(outcome) || !isRecord(outcome.when) || !Array.isArray(outcome.effects)) {
-          addIssue(
-            issues,
-            "board.effect-outcome",
-            outcomePath,
-            "outcome with one condition and an effect array",
-            outcome,
-          );
-          return;
-        }
-
-        const conditionKeys = Object.keys(outcome.when);
-        if (conditionKeys.length !== 1) {
-          addIssue(
-            issues,
-            "board.effect-outcome",
-            `${outcomePath}.when`,
-            "exactly one roll condition",
-            outcome.when,
-          );
-        }
-
-        if ("total" in outcome.when) {
-          const total = outcome.when.total;
-          if (
-            !Array.isArray(total) ||
-            total.length !== 2 ||
-            !Number.isInteger(total[0]) ||
-            !Number.isInteger(total[1]) ||
-            total[0] > total[1] ||
-            (range !== null && (total[0] < range.minimum || total[1] > range.maximum))
-          ) {
-            addIssue(
-              issues,
-              "board.effect-outcome",
-              `${outcomePath}.when.total`,
-              range ? `integer range within ${range.minimum}-${range.maximum}` : "valid integer range",
-              total,
-            );
-          } else {
-            totalRanges.push({ start: total[0], end: total[1], path: `${outcomePath}.when.total` });
-          }
-        } else if (outcome.when.doubles !== true && outcome.when.doubles !== false) {
-          addIssue(
-            issues,
-            "board.effect-outcome",
-            `${outcomePath}.when`,
-            "total range or doubles boolean",
-            outcome.when,
-          );
-        }
-
-        validateEffectList(outcome.effects, `${outcomePath}.effects`, issues, authoredDeckIds);
-      });
-
-      for (let index = 0; index < totalRanges.length; index += 1) {
-        for (let otherIndex = index + 1; otherIndex < totalRanges.length; otherIndex += 1) {
-          const current = totalRanges[index];
-          const other = totalRanges[otherIndex];
-          if (current.start <= other.end && other.start <= current.end) {
-            addIssue(
-              issues,
-              "board.effect-outcome",
-              other.path,
-              `non-overlapping with ${current.path}`,
-              [other.start, other.end],
-            );
-          }
-        }
-      }
+      validateRollOutcomes(effect.outcomes, range, path, issues, authoredDeckIds);
       return;
     }
     case "applyStatus":
@@ -633,6 +894,19 @@ function validateBoard(
       issues,
       authoredDeckIds,
     );
+    if (space.decision !== undefined) {
+      validateTileDecision(
+        space.decision,
+        `board.spaces[${position}].decision`,
+        issues,
+        authoredDeckIds,
+      );
+      validateDecisionTileEffects(
+        space.effects,
+        `board.spaces[${position}].effects`,
+        issues,
+      );
+    }
   });
 
   for (const [index, coordinate, kind] of cornerExpectations) {
@@ -659,7 +933,9 @@ function validateBoard(
 
     for (let index = start; index <= end; index += 1) {
       const space = spaces[index];
-      const coordinate = end - index + 1;
+      // The workbook's ordering column is authoritative: board index =
+      // 11 * (side - 1) + coordinate, so coordinates ascend with the index.
+      const coordinate = index - start + 1;
       const actual = space
         ? {
             placement: space.placement,
