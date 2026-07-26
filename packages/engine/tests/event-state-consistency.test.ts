@@ -349,7 +349,15 @@ describe("a whole match's events and canonical state never diverge", () => {
     // The regression this file exists for. Without the paired ResourceChanged the
     // fold above drifts by exactly the promotion cost, which is why the
     // divergence assertion is not vacuous.
-    const match = playMatch("game.promotion-charge", "consistency-seed", 3, 400);
+    // Promotion is automatic only under a ruleset with `agency.promotionIsChoice`
+    // off. The shipped Quick preset this walk is created under makes it a player
+    // decision, and no bot answers `promotion.attempt` here, so the ruleset is
+    // switched to the automatic one for this walk — the pairing being pinned is
+    // between `PlayerPromoted` and its charge, whichever verb promoted.
+    const match = playMatch("game.promotion-charge", "consistency-seed", 3, 400, (state) => ({
+      ...state,
+      rules: { ...state.rules, agency: { ...state.rules.agency, promotionIsChoice: false } },
+    }));
 
     const promotions = match.events.filter((event) => event.type === "PlayerPromoted");
     expect(promotions.length).toBeGreaterThan(0);

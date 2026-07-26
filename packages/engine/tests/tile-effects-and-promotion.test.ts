@@ -19,6 +19,7 @@ import {
   logicalTimestamp,
   rollCommand,
   rollState,
+  withRules,
 } from "./turn-loop-fixtures";
 import { fixtureIds } from "./fixtures";
 
@@ -667,8 +668,19 @@ describe("audit confinement (prompts/decisions)", () => {
 });
 
 describe("promotion and win condition", () => {
+  /**
+   * The automatic promotion is now gated on `agency.promotionIsChoice` being
+   * off, and the base fixture runs the Quick preset, which turns it *on* —
+   * climbing there is the player's own `promotion.attempt`. These cases are
+   * about what happens when the ladder is climbed automatically, so they state
+   * the ruleset that does that rather than inheriting whichever one the fixture
+   * happens to carry.
+   */
+  const automaticPromotion = (state: GameState): GameState =>
+    withRules(state, { agency: { promotionIsChoice: false } });
+
   it("Given a player who can afford the final promotion, when they roll, then they are promoted and the match ends", () => {
-    const state = rollState(0);
+    const state = automaticPromotion(rollState(0));
     const owner = state.players[fixtureIds.owner];
     if (owner === undefined) throw new Error("fixture missing owner player");
 
@@ -706,7 +718,7 @@ describe("promotion and win condition", () => {
   });
 
   it("Given a landing that both confines the player and promotes them to Director, when they roll, then the match ends and no audit prompt is left open", () => {
-    const state = rollState(16);
+    const state = automaticPromotion(rollState(16));
     const owner = state.players[fixtureIds.owner];
     if (owner === undefined) throw new Error("fixture missing owner player");
 

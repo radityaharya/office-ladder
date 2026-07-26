@@ -7,6 +7,19 @@ import type {
 } from "../model";
 
 /**
+ * Whether this seat is out of the match for good.
+ *
+ * Read from `GameState.eliminatedPlayerIds`, which `settleRound` (upkeep.ts) is
+ * the only current producer of and only under `economy.bankruptcy: "eliminate"`.
+ * A ruleset without elimination never populates it, so this is inert in every
+ * mode that does not ask for it — which is the point: the walk must not need a
+ * `modeId` comparison to know whether elimination is on.
+ */
+function isEliminated(state: GameState, playerId: PlayerId): boolean {
+  return state.eliminatedPlayerIds.includes(playerId);
+}
+
+/**
  * How many laps of outstanding skipped turns one hand-off will walk through
  * before giving up (see resolveNextTurn). Content can only ever charge 2 at a
  * time and every hand-off pays one back, so this is far above anything reachable;
@@ -216,7 +229,8 @@ export function resolveNextTurn(
   // rather than spinning.
   const largestSkipDebt = state.playerOrder.reduce((largest, seatId) => {
     const seat = seats[seatId];
-    return seat === undefined ? largest : Math.max(largest, seat.skipTurns);
+    if (seat === undefined || isEliminated(state, seatId)) return largest;
+    return Math.max(largest, seat.skipTurns);
   }, 0);
   // Capped so a persisted counter far outside anything the content pack can
   // produce (authored skips are 2 at a time, and every hand-off pays one back)
@@ -229,6 +243,14 @@ export function resolveNextTurn(
     if (candidateId === undefined) break;
     const candidate = players[candidateId];
     if (candidate === undefined) break;
+
+    // Elimination is checked first and, unlike every other reason to pass a
+    // seat over, costs that seat nothing: an eliminated player is not serving a
+    // penalty, they are gone. Decrementing their `skipTurns` here would quietly
+    // pay off a debt they will never owe again, and — worse — burning the walk's
+    // budget on a seat that can never become active is how a table with more
+    // eliminated players than live ones would fall through to the fall-back.
+    if (isEliminated(state, candidateId)) continue;
 
     if (candidate.skipTurns > 0) {
       players = {
@@ -268,4 +290,54 @@ export function resolveNextTurn(
     players,
     burnoutRecoveries,
   };
+}
+
+/**
+ * Moves a resolved hand-off past a seat that was eliminated *by the very
+ * command performing the hand-off*.
+ *
+ * `resolveNextTurn` already skips anyone `state.eliminatedPlayerIds` listed when
+ * the walk ran, but the economy settles *after* the walk (it needs the round the
+ * walk produced), so a player whose upkeep bankrupted them this instant is still
+ * holding the turn the walk just handed them. This is the correction, and it is
+ * deliberately not a second walk: re-running `resolveNextTurn` over the settled
+ * table would decrement every passed-over seat's `skipTurns` a second time and
+ * serve two turns of a one-turn penalty.
+ *
+ * Nothing here touches `players`, `burnoutRecoveries` or `turnNumber` — the turn
+ * being handed over is the same turn, it is simply given to a seat that still
+ * exists. `round` advances on each wrap past seat zero exactly as the walk's own
+ * bookkeeping does, so a correction that laps the table still counts the laps.
+ *
+ * Returns the input unchanged when there is nothing to correct, which is every
+ * hand-off in every ruleset with `economy.bankruptcy` other than `"eliminate"`.
+ */
+export function skipEliminatedNextTurn(
+  state: GameState,
+  resolution: NextTurnResolution,
+  eliminatedPlayerIds: readonly PlayerId[],
+): NextTurnResolution {
+  if (eliminatedPlayerIds.length === 0) return resolution;
+  if (!eliminatedPlayerIds.includes(resolution.nextPlayerId)) return resolution;
+
+  let index = state.playerOrder.indexOf(resolution.nextPlayerId);
+  if (index < 0) return resolution;
+
+  let round = resolution.round;
+  for (let step = 0; step < state.playerOrder.length; step += 1) {
+    index = (index + 1) % state.playerOrder.length;
+    if (index === 0) round += 1;
+
+    const candidateId = state.playerOrder[index];
+    if (candidateId === undefined) break;
+    if (eliminatedPlayerIds.includes(candidateId)) continue;
+
+    return { ...resolution, nextPlayerId: candidateId, round };
+  }
+
+  // Everybody is out. The match is over by `last-standing` (or by nobody
+  // standing at all) and the win check the caller runs immediately after this
+  // is what ends it; handing the turn back unchanged is the honest answer in the
+  // one instant between the two.
+  return resolution;
 }

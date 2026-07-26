@@ -1,3 +1,4 @@
+import { GAME_STATE_SCHEMA_VERSION } from "../model";
 import type { GameState, GameStatus, JsonObject, JsonValue } from "../model";
 
 const GAME_STATUSES: readonly GameStatus[] = [
@@ -8,7 +9,7 @@ const GAME_STATUSES: readonly GameStatus[] = [
   "ended",
 ];
 
-export const SUPPORTED_GAME_STATE_SCHEMA_VERSION = 1;
+export const SUPPORTED_GAME_STATE_SCHEMA_VERSION = GAME_STATE_SCHEMA_VERSION;
 
 const TURN_PHASES = [
   "not-started",

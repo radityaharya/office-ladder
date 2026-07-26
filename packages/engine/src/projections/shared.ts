@@ -95,6 +95,13 @@ export function projectPublicPlayer(player: PlayerState): PublicPlayerProjection
     position: player.position,
     lapsCompleted: player.lapsCompleted,
     rank: projectRank(player.rank),
+    // An unrevealed role projects as a bare `{ revealed: false }` — no id, no
+    // kind, and no field that varies with either. Two states differing only in
+    // an unrevealed player's role therefore produce byte-identical public
+    // payloads, which is the property spec §7.2 demands and which the old
+    // `(order + 1) % 3 === 0` assignment broke from the other end: the seat
+    // order published here is public by necessity, so it must carry no role
+    // signal, and that is the assignment's job to guarantee (execution/roles.ts).
     role: player.role.revealed
       ? { revealed: true, kind: player.role.kind }
       : { revealed: false },
@@ -105,6 +112,34 @@ export function projectPublicPlayer(player: PlayerState): PublicPlayerProjection
       .map(projectStatus),
     skipTurns: player.skipTurns,
     inAudit: player.inAudit,
+    // A count, never the contents (spec §7.2). `PublicPlayerProjection` has no
+    // field a card could travel in, so this cannot leak by accident later.
+    handCount: player.hand.length,
+    upkeep: {
+      perRound: player.upkeep.perRound,
+      lastChargedRound: player.upkeep.lastChargedRound,
+      missedPayments: player.upkeep.missedPayments,
+    },
+    loans: player.loans.map((loan) => ({
+      id: loan.id,
+      principal: loan.principal,
+      outstanding: loan.outstanding,
+      interestBasisPoints: loan.interestBasisPoints,
+      takenAtRound: loan.takenAtRound,
+    })),
+    incomeStreams: player.incomeStreams.map((stream) => ({
+      id: stream.id,
+      kind: stream.kind,
+      perRound: stream.perRound,
+      remainingRounds: stream.remainingRounds,
+      sourceId: stream.sourceId,
+    })),
+    heat: {
+      value: player.heat.value,
+      threshold: player.heat.threshold,
+      investigationsOpened: player.heat.investigationsOpened,
+      lastIncrementedAtRound: player.heat.lastIncrementedAtRound,
+    },
   };
 }
 
@@ -147,5 +182,7 @@ export function projectOutcome(outcome: MatchOutcome | null): MatchOutcome | nul
     winningRole: outcome.winningRole,
     endedAt: outcome.endedAt,
     data: cloneJsonObject(outcome.data),
+    scores: outcome.scores.map((score) => ({ ...score })),
+    winPath: outcome.winPath,
   };
 }

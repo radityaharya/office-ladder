@@ -1,7 +1,7 @@
 export type * from "./commands";
 export type * from "./events";
 export type * from "./model";
-export { createStableId } from "./model";
+export { createStableId, GAME_STATE_SCHEMA_VERSION } from "./model";
 export * from "./actions";
 export * from "./execution";
 export * from "./random";
@@ -26,10 +26,18 @@ export type {
   PrivateRoleProjection,
   PrivateStatusProjection,
   ProjectedCard,
+  PublicAgreementProjection,
+  PublicBallotProjection,
   PublicDeckProjection,
   PublicGameProjection,
+  PublicObjectiveProjection,
+  PublicPlacementProjection,
   PublicPlayerProjection,
+  PublicProjectContributionProjection,
+  PublicProjectProjection,
+  PublicProjectSabotageProjection,
   PublicRoleProjection,
   PublicStatusProjection,
+  PublicTileOwnershipProjection,
   SelfProjection,
 } from "./projections/types";

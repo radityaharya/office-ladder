@@ -24,6 +24,7 @@ import {
   rejected,
   rollCommand,
   rollState,
+  withRules,
 } from "./turn-loop-fixtures";
 
 const brand = <Id extends string>(value: string) => value as Id;
@@ -392,20 +393,26 @@ describe("tile decision prompts", () => {
     const base = beforeTrainingState(999_999);
     const owner = base.players[fixtureIds.owner];
     if (owner === undefined) throw new Error("fixture missing owner player");
-    const promotable: GameState = {
-      ...base,
-      players: {
-        ...base.players,
-        [fixtureIds.owner]: {
-          ...owner,
-          rank: { ...owner.rank, kind: "rank.general-manager" },
-          resources: {
-            ...owner.resources,
-            reputation: { ...owner.resources.reputation, value: 999 },
+    // Promotion is automatic only when the ruleset says so; the base fixture
+    // runs the Quick preset, where it is the player's own `promotion.attempt`.
+    // This case is about the automatic climb ending the match, so it asks for it.
+    const promotable: GameState = withRules(
+      {
+        ...base,
+        players: {
+          ...base.players,
+          [fixtureIds.owner]: {
+            ...owner,
+            rank: { ...owner.rank, kind: "rank.general-manager" },
+            resources: {
+              ...owner.resources,
+              reputation: { ...owner.resources.reputation, value: 999 },
+            },
           },
         },
       },
-    };
+      { agency: { promotionIsChoice: false } },
+    );
 
     const { state: nextState } = accepted(
       applyCommand(promotable, rollCommand(promotable), context([0])),

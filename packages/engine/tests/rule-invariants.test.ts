@@ -29,6 +29,7 @@ import {
   rejected,
   rollCommand,
   rollState,
+  withRules,
 } from "./turn-loop-fixtures";
 
 const brand = <Id extends string>(value: string) => value as Id;
@@ -61,9 +62,20 @@ function requireTrainingDecision(): TileDecisionConfig {
 
 const trainingDecision = requireTrainingDecision();
 
-/** A pre-roll turn one space short of the training tile, with a reputation resource. */
+/**
+ * A pre-roll turn one space short of the training tile, with a reputation
+ * resource.
+ *
+ * `agency.promotionIsChoice` is turned **off** explicitly. The base fixture runs
+ * the Quick preset, which makes promotion a player decision (`promotion.attempt`),
+ * and `roll-turn.ts` now honours that switch — so the automatic promotion these
+ * cases are about only happens under a ruleset that asks for it. Stating it here
+ * is what keeps them testing the deferral rule rather than the mode gate.
+ */
 function beforeTraining(money: number, reputationValue: number): GameState {
-  const state = rollState(TRAINING_INDEX - 1);
+  const state = withRules(rollState(TRAINING_INDEX - 1), {
+    agency: { promotionIsChoice: false },
+  });
   const owner = state.players[fixtureIds.owner];
   if (owner === undefined) throw new Error("fixture missing owner player");
 
@@ -329,6 +341,8 @@ describe("prompts do not outlive the match", () => {
         winningRole: null,
         endedAt: "2026-07-18T12:00:00.000Z",
         data: {},
+        scores: [],
+        winPath: "promotion",
       },
       prompts: [prompt],
     };

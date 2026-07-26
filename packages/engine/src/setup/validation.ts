@@ -134,5 +134,70 @@ export function validateSetup(
     );
   }
 
+  const rulesError = validateModeRules(setup, content, mode);
+  if (rulesError !== null) {
+    return rulesError;
+  }
+
   return mode;
+}
+
+/**
+ * Guards the parts of `ModeRules` that `createGame` itself depends on, plus the
+ * one invariant the spec states as a hard requirement (`winPaths` not all false).
+ *
+ * Deliberately not a full re-validation of the ruleset: a lobby-authored custom
+ * mode is untrusted input and is bounds-checked by `@office-ladder/contracts`
+ * before it ever reaches the engine (spec §8.4). What is checked here is only
+ * what would otherwise let setup produce nonsense canonical state — a quarter
+ * schedule that cannot be laid out, an unwinnable match, or an upkeep ladder that
+ * cannot be indexed by rank.
+ */
+function validateModeRules(
+  setup: GameSetup,
+  content: SetupContent,
+  mode: SetupModeContent,
+): SetupResult | null {
+  const { rules } = mode;
+  const { winPaths, quarters, economy } = rules;
+
+  if (
+    !winPaths.promotion &&
+    !winPaths.wealth &&
+    !winPaths.influence &&
+    !winPaths.survival
+  ) {
+    return createSetupError(
+      "INVALID_MODE_RULES",
+      "At least one win path must be enabled or the match is unwinnable.",
+      setup,
+      { modeId: setup.modeId },
+    );
+  }
+
+  if (quarters.enabled && (quarters.count < 1 || quarters.roundsEach < 1)) {
+    return createSetupError(
+      "INVALID_MODE_RULES",
+      "Enabled quarters require a positive count and rounds-per-quarter.",
+      setup,
+      { count: quarters.count, roundsEach: quarters.roundsEach },
+    );
+  }
+
+  if (
+    economy.upkeepEnabled &&
+    economy.upkeepByRankIndex.length !== content.ranks.length
+  ) {
+    return createSetupError(
+      "INVALID_MODE_RULES",
+      "The upkeep ladder must declare one charge per rank.",
+      setup,
+      {
+        upkeepEntries: economy.upkeepByRankIndex.length,
+        rankCount: content.ranks.length,
+      },
+    );
+  }
+
+  return null;
 }

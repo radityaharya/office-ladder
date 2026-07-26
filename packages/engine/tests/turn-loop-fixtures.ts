@@ -5,6 +5,7 @@ import {
   type CommandId,
   type GameEvent,
   type GameState,
+  type ModeRules,
   type RollTurnCommand,
   type StartGameCommand,
   createScriptedRandomSource,
@@ -99,6 +100,36 @@ export function rollState(position: number): GameState {
     },
     lastCommandId: null,
   };
+}
+
+/**
+ * One block of `ModeRules` at a time, merged over whatever ruleset the state
+ * already carries.
+ *
+ * Every v2 mechanic is gated on `state.rules`, so a test for either side of a
+ * gate needs to flip one nested flag — `withRules(state, { board: { ownershipEnabled: true } })`
+ * — without restating a hundred-field ruleset it does not care about. Merging is
+ * one level deep because that is the depth every gate lives at; a test that needs
+ * more should build the object explicitly so the reader can see it.
+ */
+export type RulesOverrides = {
+  readonly [Block in keyof ModeRules]?: ModeRules[Block] extends object
+    ? Partial<ModeRules[Block]>
+    : ModeRules[Block];
+};
+
+export function withRules(state: GameState, overrides: RulesOverrides): GameState {
+  const merged: Record<string, unknown> = { ...state.rules };
+
+  for (const [block, override] of Object.entries(overrides)) {
+    const current = merged[block];
+    merged[block] =
+      current !== null && typeof current === "object" && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>), ...(override as Record<string, unknown>) }
+        : override;
+  }
+
+  return { ...state, rules: merged as unknown as ModeRules };
 }
 
 export function startCommand(state: GameState, commandId = "command-start"): StartGameCommand {

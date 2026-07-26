@@ -5,6 +5,7 @@ import type {
   GameId,
   GameState,
   ModeId,
+  ModeRules,
   PlayerId,
   RankId,
   RoleId,
@@ -40,6 +41,12 @@ export type SetupModeContent = {
   };
   readonly startingTokens: Readonly<Record<string, number | undefined>>;
   readonly tokenCaps: Readonly<Record<string, number>>;
+  /**
+   * The ruleset this mode plays under. Snapshotted into `GameState.rules` by
+   * `createGame`; a custom mode (spec §8.4) supplies it directly instead of
+   * naming a content preset.
+   */
+  readonly rules: ModeRules;
 };
 
 export type SetupContent = {
@@ -62,7 +69,8 @@ export type SetupErrorCode =
   | "INVALID_PLAYER_ORDER"
   | "AUTHORIZED_STARTER_NOT_FOUND"
   | "UNSUPPORTED_MODE"
-  | "INVALID_CONTENT";
+  | "INVALID_CONTENT"
+  | "INVALID_MODE_RULES";
 
 export type SetupEngineError = {
   readonly name: "EngineError";

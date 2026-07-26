@@ -5,6 +5,8 @@ export type StableId<Kind extends string> = string & {
 };
 
 export type AbilityId = StableId<"AbilityId">;
+export type AgreementId = StableId<"AgreementId">;
+export type BallotId = StableId<"BallotId">;
 export type CardDefinitionId = StableId<"CardDefinitionId">;
 export type CardInstanceId = StableId<"CardInstanceId">;
 export type CharacterId = StableId<"CharacterId">;
@@ -16,8 +18,13 @@ export type EffectId = StableId<"EffectId">;
 export type EventId = StableId<"EventId">;
 export type FrameId = StableId<"FrameId">;
 export type GameId = StableId<"GameId">;
+export type IncomeStreamId = StableId<"IncomeStreamId">;
+export type LoanId = StableId<"LoanId">;
 export type ModeId = StableId<"ModeId">;
+export type ObjectiveId = StableId<"ObjectiveId">;
+export type PlacementId = StableId<"PlacementId">;
 export type PlayerId = StableId<"PlayerId">;
+export type ProjectId = StableId<"ProjectId">;
 export type PromptOptionId = StableId<"PromptOptionId">;
 export type RankId = StableId<"RankId">;
 export type ResourceId = StableId<"ResourceId">;
@@ -29,6 +36,8 @@ export type TokenId = StableId<"TokenId">;
 
 export type StableIdKind =
   | "AbilityId"
+  | "AgreementId"
+  | "BallotId"
   | "CardDefinitionId"
   | "CardInstanceId"
   | "CharacterId"
@@ -40,8 +49,13 @@ export type StableIdKind =
   | "EventId"
   | "FrameId"
   | "GameId"
+  | "IncomeStreamId"
+  | "LoanId"
   | "ModeId"
+  | "ObjectiveId"
+  | "PlacementId"
   | "PlayerId"
+  | "ProjectId"
   | "PromptOptionId"
   | "RankId"
   | "ResourceId"
@@ -53,6 +67,8 @@ export type StableIdKind =
 
 export type StableIdByKind = {
   readonly AbilityId: AbilityId;
+  readonly AgreementId: AgreementId;
+  readonly BallotId: BallotId;
   readonly CardDefinitionId: CardDefinitionId;
   readonly CardInstanceId: CardInstanceId;
   readonly CharacterId: CharacterId;
@@ -64,8 +80,13 @@ export type StableIdByKind = {
   readonly EventId: EventId;
   readonly FrameId: FrameId;
   readonly GameId: GameId;
+  readonly IncomeStreamId: IncomeStreamId;
+  readonly LoanId: LoanId;
   readonly ModeId: ModeId;
+  readonly ObjectiveId: ObjectiveId;
+  readonly PlacementId: PlacementId;
   readonly PlayerId: PlayerId;
+  readonly ProjectId: ProjectId;
   readonly PromptOptionId: PromptOptionId;
   readonly RankId: RankId;
   readonly ResourceId: ResourceId;

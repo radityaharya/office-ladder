@@ -2,12 +2,16 @@ import { createSeededRandomSource } from "../random";
 import type {
   CardState,
   DeckState,
+  HeatState,
+  ModeRules,
   PlayerId,
   PlayerState,
+  QuarterState,
   ResourceState,
   TokenState,
+  UpkeepState,
 } from "../model";
-import { createStableId } from "../model";
+import { createStableId, GAME_STATE_SCHEMA_VERSION } from "../model";
 import {
   type GameSetup,
   type SetupContent,
@@ -18,9 +22,11 @@ import {
 } from "./types";
 import { validateSetup } from "./validation";
 
-const STATE_SCHEMA_VERSION = 1;
 const REPLAY_SCHEMA_VERSION = 1;
 const ENGINE_VERSION = "office-ladder-engine/1";
+
+/** Every player starts as an Intern, which is rank index 0. */
+const STARTING_RANK_INDEX = 0;
 
 function createContentHash(content: SetupContent): string {
   const serialized = JSON.stringify(content);
@@ -32,6 +38,18 @@ function createContentHash(content: SetupContent): string {
   }
 
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/**
+ * A structural copy of the ruleset rather than a reference to the content pack's
+ * own object, so nothing outside the state can ever mutate a live match's rules.
+ *
+ * The clone is a plain JSON round-trip on purpose: it is exactly the boundary the
+ * repository puts the state through anyway, so whatever survives here is
+ * guaranteed to survive persistence too.
+ */
+function snapshotRules(rules: ModeRules): ModeRules {
+  return JSON.parse(JSON.stringify(rules)) as ModeRules;
 }
 
 function createResources(
@@ -96,6 +114,54 @@ function createTokens(
   };
 }
 
+/**
+ * Read from the ruleset, never from a constant: a mode with `upkeepEnabled`
+ * false charges nothing, and one with it enabled charges whatever its ladder
+ * says for the starting rank.
+ */
+function createUpkeep(rules: ModeRules): UpkeepState {
+  return {
+    perRound: rules.economy.upkeepEnabled
+      ? rules.economy.upkeepByRankIndex[STARTING_RANK_INDEX]
+      : 0,
+    lastChargedRound: 0,
+    missedPayments: 0,
+  };
+}
+
+function createHeat(rules: ModeRules): HeatState {
+  return {
+    value: 0,
+    threshold: rules.conflict.heatThreshold,
+    investigationsOpened: 0,
+    lastIncrementedAtRound: null,
+  };
+}
+
+/**
+ * The whole quarter schedule, laid out up front rather than appended as the
+ * match runs, because the spec requires each quarter's event to be announced a
+ * quarter ahead — you cannot announce what does not exist yet.
+ *
+ * Rounds are 1-based (the first round after `game.start` is round 1), so quarter
+ * `i` covers rounds `i * roundsEach + 1` through `(i + 1) * roundsEach`.
+ * `scheduledEventId` is null here: which global event lands in which quarter is a
+ * seeded decision for the `game.start` transition, not for setup.
+ */
+function createQuarters(rules: ModeRules): readonly QuarterState[] {
+  if (!rules.quarters.enabled) {
+    return [];
+  }
+
+  return Array.from({ length: rules.quarters.count }, (_, index) => ({
+    index,
+    startedAtRound: index * rules.quarters.roundsEach + 1,
+    endsAtRound: (index + 1) * rules.quarters.roundsEach,
+    scheduledEventId: null,
+    resolvedEventIds: [],
+  }));
+}
+
 function createPlayer(
   player: GameSetup["players"][number],
   mode: SetupModeContent,
@@ -107,7 +173,7 @@ function createPlayer(
     connected: true,
     position: 0,
     lapsCompleted: 0,
-    rank: { id: ids.internRankId, kind: "rank.intern", index: 0 },
+    rank: { id: ids.internRankId, kind: "rank.intern", index: STARTING_RANK_INDEX },
     role: { ...player.role, revealed: false },
     characterId: player.characterId,
     resources: createResources(player.id, mode),
@@ -118,6 +184,10 @@ function createPlayer(
     skipTurns: 0,
     inAudit: false,
     negativeEffectsIgnoredThisLap: 0,
+    upkeep: createUpkeep(mode.rules),
+    loans: [],
+    incomeStreams: [],
+    heat: createHeat(mode.rules),
   };
 }
 
@@ -149,8 +219,14 @@ export function createGame(
   const state: SetupGameState = {
     gameId: setup.gameId,
     modeId: setup.modeId,
+    /**
+     * Snapshotted, not referenced: the ruleset is copied out of content here and
+     * every later transition reads `state.rules`. Editing the content pack must
+     * not change how an in-flight or replayed match behaves.
+     */
+    rules: snapshotRules(validated.rules),
     versions: {
-      stateSchemaVersion: STATE_SCHEMA_VERSION,
+      stateSchemaVersion: GAME_STATE_SCHEMA_VERSION,
       replaySchemaVersion: REPLAY_SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
       rulesVersion: content.rulesetId,
@@ -180,6 +256,15 @@ export function createGame(
     prompts: [],
     pendingEffects: [],
     reactionWindows: [],
+    tileOwnership: {},
+    placements: [],
+    projects: [],
+    agreements: [],
+    objectives: [],
+    ballots: [],
+    quarters: createQuarters(validated.rules),
+    currentQuarterIndex: 0,
+    eliminatedPlayerIds: [],
     rng: {
       streams: {
         setup: setupRandomSource.getStreamState(),

@@ -125,8 +125,11 @@ function runScenario(): ScenarioResult {
   for (const [index, timestamp] of timestamps.slice(1).entries()) {
     const actorId = currentActor(state);
     const legalActions = enumerateLegalActions(state, actorId);
-    expect(legalActions).toHaveLength(1);
-    expect(legalActions[0]?.type).toBe("turn.roll");
+    // Rolling is still forced whenever it is legal, but it is no longer the
+    // *only* verb a turn offers (spec §6.2), so this asserts it is on the list
+    // rather than that the list has one entry.
+    expect(legalActions.map((action) => action.type)).toContain("turn.roll");
+    expect(legalActions.every((action) => action.actorId === actorId)).toBe(true);
 
     const commandId = createStableId("CommandId", `command.roll.${index + 1}`);
     const transition = acceptedTransition(
