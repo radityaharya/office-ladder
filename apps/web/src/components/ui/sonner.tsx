@@ -39,9 +39,21 @@ const Toaster = ({ ...props }: ToasterProps) => {
       duration={6000}
       gap={8}
       position="bottom-right"
-      /* Bottom-right sits over the tail of the activity log rather than over the
-         board or the action tray, and the log renders newest-first — so the rows
-         a toast can obscure are the ones already read. */
+      /*
+       * Bottom-right, lifted clear of the action region.
+       *
+       * The stack is wider than the rail (356px against 352px) and anchors to the
+       * viewport rather than to the rail's floor, so unoffset it lands ON the
+       * action bar — measured overlapping the roll control by 25,948px² during a
+       * live match. That is the one thing notices in this game may never do, so
+       * the offset is not cosmetic.
+       *
+       * Read from the shell's own clearance token so this cannot drift from the
+       * layout it is avoiding. Same value on mobile: the shell stacks the rail
+       * into a bottom sheet there, but the action bar is still the last row.
+       */
+      offset={{ bottom: "calc(var(--game-shell-action-clearance, 112px) + 12px)", right: "12px" }}
+      mobileOffset={{ bottom: "calc(var(--game-shell-action-clearance, 112px) + 12px)", right: "12px" }}
       visibleToasts={2}
       icons={{
         success: (

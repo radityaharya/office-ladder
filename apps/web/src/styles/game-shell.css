@@ -45,6 +45,22 @@
      below. `.hud-rail` fills the track rather than restating a width. */
   --game-shell-rail: 320px;
   /*
+   * How far anything floating must stay clear of the bottom of the shell.
+   *
+   * The action region is the one row deliberately left `auto`: a roll refusal
+   * long enough to wrap adds a line, and clipping the primary control is worse
+   * than growing the bar. So this is a CLEARANCE, not a mirror of its height —
+   * larger than the measured 97px on purpose, because a value that tracked the
+   * bar exactly would be wrong the moment the bar grew.
+   *
+   * It exists because the toast stack was measured sitting ON the action region
+   * (356x85 at y=760, overlapping it by 25,948px²), covering the roll control.
+   * The toaster's own comment claimed bottom-right "sits over the tail of the
+   * activity log rather than over the board or the action tray" — it did not,
+   * because the toast is wider than the rail and anchors below the rail's floor.
+   */
+  --game-shell-action-clearance: 112px;
+  /*
    * Stacked (< 1024px) the rail is a bottom sheet with a DEFINITE height, not an
    * `auto` row capped by a max-height. With an `auto` row the rail's own content
    * sized it, so a card notice or a catch-up control arriving in the rail

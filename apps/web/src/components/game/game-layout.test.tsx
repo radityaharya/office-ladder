@@ -495,12 +495,55 @@ const globalsSheet = readFileSync(
   "utf8",
 );
 
+const toasterSource = readFileSync(
+  fileURLToPath(new URL("../ui/sonner.tsx", import.meta.url)),
+  "utf8",
+);
+
 /** The declaration block of a top-level rule, by exact selector. */
 function cssRule(sheet: string, selector: string): string {
   const start = sheet.indexOf(`${selector} {`);
   expect(start, `${selector} is missing`).toBeGreaterThan(-1);
   return sheet.slice(start, sheet.indexOf("}", start));
 }
+
+describe("the toast stack keeps clear of the action bar", () => {
+  /**
+   * Measured during a live match before this was fixed: a 356x85 toast at y=760
+   * sat on the action region, overlapping the roll control by 25,948px². The
+   * toaster's own comment asserted the opposite — that bottom-right "sits over
+   * the tail of the activity log rather than over the board or the action tray"
+   * — which was wrong because the stack is wider than the rail (356 vs 352) and
+   * anchors to the viewport rather than to the rail's floor.
+   *
+   * Covering the primary control is the one thing a notice in this game may
+   * never do, so it is asserted rather than commented.
+   */
+  it("offsets the stack by the shell's clearance token", () => {
+    // Given the shell publishes a clearance for anything floating at the bottom
+    expect(shellSheet).toContain("--game-shell-action-clearance:");
+
+    // Then the toaster reads it rather than restating a number that would drift
+    expect(toasterSource).toContain("offset={{");
+    expect(toasterSource).toContain("var(--game-shell-action-clearance");
+
+    // And the narrow layout gets the same treatment: the rail becomes a bottom
+    // sheet there, but the action bar is still the last row.
+    expect(toasterSource).toContain("mobileOffset={{");
+  });
+
+  it("clears the action bar's real height with margin to spare", () => {
+    // Given the clearance the shell publishes
+    const root = cssRule(shellSheet, ":root");
+    const clearance = /--game-shell-action-clearance:\s*(\d+)px/.exec(root)?.[1];
+
+    // Then it exceeds the action bar measured in a live match (97px), because a
+    // value that tracked the bar exactly would be wrong the moment a wrapped
+    // roll refusal added a line — the region is deliberately `auto`.
+    expect(clearance).toBeDefined();
+    expect(Number(clearance)).toBeGreaterThan(97);
+  });
+});
 
 /** Every at-rule block starting with `prefix`, brace-matched so nested rules
     are included rather than truncated at the first `}`. */
