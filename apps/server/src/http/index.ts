@@ -6,4 +6,11 @@ export {
   type HttpErrorCode,
   type HttpResult,
 } from "./errors";
-export { json, parseJson, requireSameOriginMutation } from "./json";
+export {
+  json,
+  MAX_REQUEST_BODY_BYTES,
+  parseJson,
+  requireSameOriginMutation,
+} from "./json";
+export { isTrustedOrigin, trustedOrigins } from "./trusted-origins";
+export { requireTrustedUpgradeOrigin } from "./websocket-upgrade";

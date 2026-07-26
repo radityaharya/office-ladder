@@ -1,12 +1,9 @@
-import {
-  ContractValidationError,
-  parseOpaqueId,
-} from "@office-ladder/contracts";
+import { ContractValidationError } from "@office-ladder/contracts";
 import { parseProjectionUpdated } from "@office-ladder/contracts";
 import type { ProjectionUpdated } from "@office-ladder/contracts";
+import { log } from "@/observability/log";
+import { parseRoomTopic } from "./room-topic";
 import { broadcastToRoom } from "./ws-hub";
-
-const opaqueRoomTopicPattern = /^(?![A-Z0-9]{6}$)[A-Za-z0-9_-]{1,128}$/;
 
 export type PublishRoomUpdateInput = {
   readonly roomTopic: string;
@@ -22,24 +19,12 @@ export type PublishRoomUpdateResult =
         | { readonly kind: "invalid_projection_update" };
     };
 
-function parseOpaqueRoomTopic(roomTopic: string): string {
-  const opaqueRoomTopic = parseOpaqueId(roomTopic, "roomTopic");
-  if (!opaqueRoomTopicPattern.test(opaqueRoomTopic)) {
-    throw new ContractValidationError(
-      "roomTopic",
-      "must be an opaque Realtime topic, not a room code",
-    );
-  }
-
-  return opaqueRoomTopic;
-}
-
 export async function publishRoomUpdate(
   input: PublishRoomUpdateInput,
 ): Promise<PublishRoomUpdateResult> {
   let opaqueRoomTopic: string;
   try {
-    opaqueRoomTopic = parseOpaqueRoomTopic(input.roomTopic);
+    opaqueRoomTopic = parseRoomTopic(input.roomTopic);
   } catch (error) {
     if (!(error instanceof ContractValidationError)) {
       throw error;
@@ -59,6 +44,17 @@ export async function publishRoomUpdate(
     return { ok: false, error: { kind: "invalid_projection_update" } };
   }
 
-  broadcastToRoom(opaqueRoomTopic, update);
+  const recipients = broadcastToRoom(opaqueRoomTopic, update);
+  // `debug`, not `info`: zero recipients is legitimate and common (the host
+  // publishes the start of a match before anyone's socket is open), so a line
+  // per broadcast would be noise on every busy room. It is here because
+  // "recipients is always 0" is the signature of dead realtime, and turning
+  // LOG_LEVEL=debug for a minute is the cheapest way to confirm or clear that.
+  log("debug", "realtime.published", {
+    topic: opaqueRoomTopic,
+    revision: update.projectionRevision,
+    message: update.messageId,
+    recipients,
+  });
   return { ok: true };
 }
