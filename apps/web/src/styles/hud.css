@@ -161,6 +161,46 @@
 }
 
 /* --------------------------------------------------------------------------
+   Status lane — a reserved 28px row that always says what the region is doing.
+
+   Used by the action bar (action-tray.tsx). It is ALWAYS rendered: the roll
+   error used to be a row that existed only when there was an error, so a
+   rejected roll grew the action region and the board's grid row shrank
+   underneath it. A lane that is always present, and that holds the
+   waiting-on/your-move readout when there is no error, costs one row of height
+   once instead of moving the board every time something goes wrong.
+
+   `.hud-lane-text` deliberately overrides `.status-message`'s padding and
+   leading (globals.css, `@layer components`): these per-area sheets are
+   unlayered, so they win the cascade without an `!important`. A long message
+   may still wrap to a second line — that is the one remaining case where this
+   region changes height, and it takes a server rejection to reach it.
+   -------------------------------------------------------------------------- */
+
+.hud-lane {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 28px;
+}
+
+.hud-lane-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-family: var(--hud-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+
+/* --------------------------------------------------------------------------
    Resource-change deltas (§6.4 "explicit sign", §7.2 gameplay tick)
    -------------------------------------------------------------------------- */
 
@@ -467,125 +507,456 @@
    number of rows tall, and the shell's `auto` hud row follows it. */
 
 /* --------------------------------------------------------------------------
-   Turn rail — flush to the right edge and to the HUD strip's bottom seam.
-   Not a floating card: 0 radius, no shadow, 1px left hairline (§4.1–§4.3).
+   Turn rail — the tabbed panel rail (plans/24-gameplay-v2-spec.md §8.5)
 
-   IN FLOW, not absolutely positioned. The rail is placed by the shell's own
-   grid (`.game-shell` in styles/game-shell.css, area `rail`), so it no longer
-   has to hard-code the chrome above it or the action bar below it. That coupling
-   is what previously left a 20px dead gap under the rail and let a two-line
-   action bar overlap its last log row. Width is stated here because the rail
-   owns its own measure; placement is the shell's business.
+   Flush to the right edge and to the HUD strip's bottom seam. Not a floating
+   card: 0 radius, no shadow, 1px left hairline (§4.1–§4.3).
 
-   Below 1024px the shell restacks the rail under the board instead of hiding
-   it, so capability parity holds at every breakpoint (§9) — see game-shell.css
-   for the breakpoint table. This measure and that grid have to agree: a 272px
-   `.hud-rail` inside a full-width stacked row renders as a floating island,
-   which is exactly the look §4.3 rejects.
+   IN FLOW, not absolutely positioned, and it no longer states its own width:
+   the rail is a DEFINITE grid track in `.game-shell` (game-shell.css) at every
+   breakpoint, so the track is the single source of the measure and `.hud-rail`
+   simply fills it. Two things had to agree before (a `width` here and a column
+   there) and they had already drifted once — 320px against a 384px track.
+
+   THREE ROWS, in a grid so none of them can negotiate with the others:
+     head      persistent — turn state + clock, every seat as a chip, the local
+               seat's resources. Never behind a tab.
+     tabs      five destination groups, 32px.
+     viewport  the open group's panels; the only row that flexes (`1fr`).
+
+   `container-type: inline-size` makes the rail a query container named `rail`.
+   Everything inside it that adapts must use `@container rail (...)`, never a
+   viewport media query: the rail is a narrow column inside a wide window, so the
+   viewport is the wrong signal (this mistake has been made and fixed once).
+   Viewport queries in this sheet are limited to the side-by-side/stacked seam,
+   which is a shell decision, not a rail one.
    -------------------------------------------------------------------------- */
 
-/* Base case is STACKED (< 1024px): full width, seam on top rather than side. */
 .hud-rail {
-  display: flex;
-  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: 100%;
   max-width: 100%;
-  flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  /* The rail's own box is definite (see game-shell.css); its panels scroll
+     internally, so nothing inside it may spill into the board or the action
+     bar. */
+  overflow: hidden;
   background: var(--card);
   border-top: 1px solid var(--border);
+  container-type: inline-size;
+  container-name: rail;
 }
 
-/* 1024–1279px: §9's "compressed rail" band — the documented minimum measure the
-   rail may shrink to before the layout stacks instead. */
+/* Side by side: the seam moves from the top edge to the leading edge. */
 @media (min-width: 1024px) {
   .hud-rail {
-    width: 272px;
     border-top: 0;
     border-left: 1px solid var(--border);
   }
 }
 
-/* Wide desktop gets the spec measure. `geometry.rail-width` is 320px; §9 only
-   licenses compressing "toward a documented minimum" on the 1024–1279px band, so
-   272px was never right at full width — and it truncated the cash value out of
-   the seat row's own metadata line. */
-@media (min-width: 1280px) {
-  .hud-rail {
-    width: 320px;
+/* ------------------------------------------------------------- persistent head */
+
+/*
+ * One column of definite-height rows by default — the narrow-rail case. Each
+ * child draws its own bottom hairline, so the head reads as a stack of
+ * instrument rows rather than a card (§4.1).
+ */
+.hud-rail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  background: var(--card);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* The head's own bottom rule is the strong one; the last row inside it must not
+   draw a second hairline underneath (§4.1 — one seam, not two). */
+.hud-rail-head > :last-child {
+  border-bottom: 0;
+}
+
+/*
+ * A wider rail spends the width instead of the height: the turn state and the
+ * seat chips pair onto one row, saving 28px of the panel viewport. This is why
+ * the head is a container query and not a media query — the same 344px
+ * threshold is crossed by a phone in the stacked layout AND by an ultrawide
+ * desktop rail, and both should get the compact head for the same reason.
+ *
+ * The pairing follows DOM order, so nothing here needs `order` and the focus
+ * order still matches what is on screen (§8).
+ */
+@container rail (min-width: 344px) {
+  .hud-rail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .hud-rail-head > .hud-wait {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .hud-rail-head > .hud-rail-seat-strip {
+    flex: 0 0 auto;
+    border-left: 1px solid var(--border);
+  }
+
+  .hud-rail-head > .hud-rail-self,
+  .hud-rail-head > .hud-rail-aside {
+    flex: 1 1 100%;
   }
 }
 
+/* Turn clock: a fixed lane at the end of the turn-state row. Reserved so a
+   deadline appearing cannot shove the state text sideways (same reason as
+   `.hud-delta-slot`). */
+.hud-wait-clock {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 60px;
+  margin-inline-start: auto;
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* Every seat, always visible, at any tab. 16px numbered chips on one row. */
+.hud-rail-seat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 12px;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-rail-seat-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  /* The active seat is marked by a 2px accent rule under its chip — the same
+     grammar as the dossier row's top rule, never a glow or a scale-up (§6.4).
+     Drawn as a border on a wrapper so the chip itself never moves. */
+  border-bottom: 2px solid transparent;
+}
+
+.hud-rail-seat-slot[data-state="active"] {
+  border-bottom-color: var(--primary);
+}
+
+.hud-rail-seat-slot[data-state="away"] {
+  opacity: 0.5;
+}
+
+/* The local seat's own numbers: label + mono value per cell, 1px vertical rules
+   between them, exactly like `.hud-cell` in the strip above the board. */
+.hud-rail-self {
+  display: flex;
+  align-items: stretch;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-rail-self-cell {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
+.hud-rail-self-cell + .hud-rail-self-cell {
+  border-left: 1px solid var(--border);
+}
+
+.hud-rail-self-cell dt,
+.hud-rail-self-cell dd {
+  margin: 0;
+}
+
+/*
+ * Host for a control the shell hands the rail — currently the playback catch-up
+ * strip, which used to live in the action region under the board and moved the
+ * board 32px every time playback started or finished. Full-bleed: the control
+ * inside draws its own seams.
+ */
+.hud-rail-aside {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------------ tab strip */
+
+.hud-rail-tabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: 32px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+  /* Five tabs fit the 272px compressed measure; a sixth group, a translation or
+     a large text setting must scroll rather than wrap the strip to two rows,
+     because the rail's rows are definite. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.hud-rail-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.hud-rail-tab {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* §8's 28px pointer floor; the strip is 32px so the target is the full row. */
+  min-width: 52px;
+  min-height: 28px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms var(--hud-ease),
+    color 120ms var(--hud-ease);
+}
+
+.hud-rail-tab + .hud-rail-tab {
+  border-left: 1px solid var(--border);
+}
+
+.hud-rail-tab:hover {
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.hud-rail-tab:focus-visible {
+  /* Inset: the strip is a full-bleed scroll region, so an outside offset would
+     be clipped by its own overflow. */
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.hud-rail-tab:active {
+  background: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+/*
+ * Selected: one tonal step to the rail's own ground (so the tab reads as the
+ * front edge of the panel below it) plus a 2px accent bottom rule, per §5's
+ * "a 1px accent left/bottom rule under a tab — never a full accent fill".
+ * Drawn as an inset pseudo-element so selecting a tab never reflows the strip.
+ */
+.hud-rail-tab[aria-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.hud-rail-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--primary);
+  pointer-events: none;
+}
+
+/*
+ * Unread/attention badge. The COUNT is the carrier; the tone only borrows a
+ * status hairline (§8: never colour alone). The lane is always present and
+ * always the same width — an arriving badge must not widen its tab and shift
+ * every label beside it.
+ */
+.hud-rail-tab-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding-inline: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+.hud-rail-tab-badge[data-empty="true"] {
+  border-color: transparent;
+}
+
+.hud-rail-tab-badge[data-tone="caution"] {
+  border-color: var(--status-caution);
+}
+
+.hud-rail-tab-badge[data-tone="critical"] {
+  border-color: var(--status-critical);
+}
+
+/* Narrow rail: the labels keep their words (§6.4 forbids an icon standing in
+   for a label) and give up padding instead. */
+@container rail (max-width: 300px) {
+  .hud-rail-tab {
+    min-width: 44px;
+    padding-inline: 4px;
+    letter-spacing: 0.04em;
+  }
+}
+
+/* ------------------------------------------------------- panel viewport */
+
+/*
+ * Every group occupies the SAME single grid cell, so switching tabs cannot
+ * change the rail's geometry and no group's scroll position affects another's.
+ */
+.hud-rail-viewport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.hud-rail-group {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  /* Safety valve, not the normal case: with three panels at their 108px floors
+     inside a short rail the group scrolls rather than clipping a panel (§8). */
+  overflow-y: auto;
+}
+
+/* `display: flex` above beats the `hidden` attribute's UA `display: none`. */
+.hud-rail-group[hidden] {
+  display: none;
+}
+
+.hud-rail-group:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* ----------------------------------------------------------------- panels */
+
 .hud-rail-block {
   display: flex;
-  flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  flex-direction: column;
 }
 
 .hud-rail-block + .hud-rail-block {
   border-top: 1px solid var(--border);
 }
 
+/*
+ * Exactly one panel per group grows; the rest keep a floor and cannot be
+ * squeezed away.
+ *
+ * The floor is why this rule exists at all. `.hud-rail-block` sets
+ * `min-height: 0` (needed so a log can scroll rather than push the rail taller),
+ * which also removes a panel's natural floor — and against a `flex: 1 1 auto`
+ * neighbour it loses every fight for vertical space. The seat roster lost that
+ * fight once: the header still read "SEATS 3/6" above zero visible rows, so
+ * there was no way to see who you were playing against. 108px is header + one
+ * 44px row + a line of metadata, and every panel body scrolls internally, so a
+ * six-seat room stays reachable rather than overflowing silently (§8).
+ */
+.hud-rail-block[data-grow="true"],
 .hud-rail-block--log {
   flex: 1 1 auto;
 }
 
-/*
- * The seats block must never be squeezed away, at ANY width. `.hud-rail-block`
- * sets `min-height: 0` (needed so the log can scroll rather than push the rail
- * taller), which also removes the seats' natural floor — and with the log on
- * `flex: 1 1 auto` the seats lose every fight for vertical space. On a long
- * match the log's content grew until the roster was clipped to nothing: the
- * header still read "SEATS 3/6" above zero visible rows, so there was no way to
- * see who you were playing against.
- *
- * `flex-shrink: 0` plus a floor of "header + turn-state line + one row" keeps
- * the roster present, and `.hud-seat-list` already scrolls internally, so a full
- * six-seat room stays reachable instead of overflowing silently (§8). The
- * stacked-layout block below still caps it so the seats cannot eat the log
- * either — both directions of this fight have now been lost once.
- */
-.hud-rail-block:not(.hud-rail-block--log) {
+.hud-rail-block:not([data-grow="true"]) {
   flex: 0 0 auto;
   min-height: 108px;
+  /*
+   * ...and it cannot eat the group either. Both directions of this fight have
+   * been lost once: with no cap the seat roster took the whole rail at 200%
+   * zoom and the log measured 0px, which is a focusable scroll region a
+   * keyboard user cannot reach at all (§8). A percentage resolves against the
+   * group, which the shell gives a definite height — so this is one rule
+   * instead of the viewport breakpoint table it replaces, and it degrades to
+   * `none` rather than misbehaving if the height is ever indefinite.
+   */
+  max-height: 40%;
 }
 
-/*
- * Stacked (< 1024px), the rail has roughly a third of the viewport to divide
- * between the seats and the log, and BOTH have to survive. This block sits AFTER
- * the two base rules on purpose: `.hud-rail-block--log` here has the same
- * specificity as the base declaration above, so it only wins by source order.
- *
- * Three sizings were measured in headless Chrome; two of them clip content:
- *  - seats `flex: 0 0 auto` with no cap: at 200% zoom (a 1440x900 display
- *    reports 720x450 CSS px) the seats took the whole rail and the log measured
- *    0px tall. A focusable, scrollable region with no height cannot be reached
- *    at all — exactly what §8 forbids at 200% zoom.
- *  - log `flex-basis: 0`: the log then contributes nothing to the rail's
- *    max-content height, so the rail's `auto` grid row collapsed to the seats
- *    plus the log's floor and the log showed one row at every stacked width.
- *  - what ships: the log keeps an `auto` basis (its content is what makes the
- *    rail want its full 33vh) plus a floor, and the seats are capped instead of
- *    shrunk, so both blocks always keep a real measure.
- *
- * Each floor is "header + one row"; together they equal the 168px `min-height`
- * on `.game-shell-rail`. Change one and change the other.
- */
-@media (max-width: 1023px) {
-  .hud-rail-block--log {
-    /* 28px sticky header + one 28px log row. */
-    min-height: 56px;
-  }
+/* A panel that is alone in its group takes the whole viewport: §4.5 forbids a
+   panel floating in free space with its own edges. Both the cap and the fixed
+   basis above have to go with it — there is nothing left to share with. */
+.hud-rail-block:only-child {
+  flex: 1 1 auto;
+  max-height: none;
+}
 
-  .hud-rail-block:not(.hud-rail-block--log) {
-    /* Floor: 28px header + 28px turn-state notice + one 44px seat row (rounded
-       to the 4px grid). Cap: the same plus two more seat rows, and it scales
-       with the viewport so a short screen splits the rail instead of letting the
-       seats eat it. */
-    flex: 0 0 auto;
-    min-height: 108px;
-    max-height: min(188px, 24vh);
-  }
+/* Resting state of a destination with nothing in it yet. */
+.hud-rail-empty {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--hud-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* In-panel attention marker: LED plus the count as text. */
+.hud-rail-flag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  margin-inline-end: auto;
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
 }
 
 /* Sticky uppercase header on surface-raised with a strong bottom rule (§6.3). */
@@ -1003,6 +1374,7 @@
   .hud-header-back,
   .hud-log,
   .hud-meter-fill,
+  .hud-rail-tab,
   .hud-seat-row {
     transition: none;
   }

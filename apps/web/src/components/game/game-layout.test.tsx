@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,9 +19,9 @@ import {
 import { ActionTray } from "./action-tray";
 import type { DiceRollFeedItem } from "./dice";
 import { EVENT_PACING, revealedEventCount, createEventPacingState } from "./event-feedback-policy";
-import { GameLayout } from "./game-layout";
-import { createGameView } from "./game-view";
-import { TurnRail } from "./turn-rail";
+import { AttentionNotice, GameLayout } from "./game-layout";
+import { createAttentionNotice, createGameView } from "./game-view";
+import { RAIL_DESTINATIONS, RAIL_GROUPS, TurnRail } from "./turn-rail";
 
 const selfRoll = {
   eventId: "event-9",
@@ -444,6 +447,444 @@ describe("action region composition", () => {
     expect(markup).not.toContain("aria-modal");
     expect(markup).not.toContain("backdrop");
     expect(markup).toContain('data-slot="action-tray-roll"');
+  });
+});
+
+/* ------------------------------------------------------------------------- */
+/* Shell geometry.                                                           */
+/*                                                                           */
+/* None of this is observable in a `renderToStaticMarkup` string — there is   */
+/* no layout in this environment — so the invariants are pinned against the   */
+/* stylesheets themselves, the same way turn-rail.test.tsx pins the log's     */
+/* wrapping rules. Each one of these has been a real, reported defect.        */
+/* ------------------------------------------------------------------------- */
+
+const shellSheet = readFileSync(
+  fileURLToPath(new URL("../../styles/game-shell.css", import.meta.url)),
+  "utf8",
+);
+
+const hudSheet = readFileSync(
+  fileURLToPath(new URL("../../styles/hud.css", import.meta.url)),
+  "utf8",
+);
+
+/** The declaration block of a top-level rule, by exact selector. */
+function cssRule(sheet: string, selector: string): string {
+  const start = sheet.indexOf(`${selector} {`);
+  expect(start, `${selector} is missing`).toBeGreaterThan(-1);
+  return sheet.slice(start, sheet.indexOf("}", start));
+}
+
+/** Every at-rule block starting with `prefix`, brace-matched so nested rules
+    are included rather than truncated at the first `}`. */
+function atRuleBlocks(sheet: string, prefix: string): readonly string[] {
+  const blocks: string[] = [];
+  let index = sheet.indexOf(prefix);
+
+  while (index > -1) {
+    let depth = 0;
+    let end = sheet.indexOf("{", index);
+    for (; end < sheet.length; end += 1) {
+      if (sheet[end] === "{") depth += 1;
+      if (sheet[end] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    blocks.push(sheet.slice(index, end + 1));
+    index = sheet.indexOf(prefix, end);
+  }
+
+  return blocks;
+}
+
+describe("match shell geometry", () => {
+  /**
+   * The rail column was `auto` once: it sized itself to its widest content, so
+   * the moment a card notice moved into the rail the notice's own width sized
+   * the column and starved the board. A definite track on both axes is the
+   * whole fix, and it has to hold at every band.
+   */
+  it("gives the rail a definite track on both axes", () => {
+    // Given
+    const shell = cssRule(shellSheet, ".game-shell");
+
+    // Then — stacked: the rail's ROW is a length, not `auto` under a max-height.
+    expect(shell).toContain("var(--game-shell-sheet)");
+    expect(shellSheet).toMatch(/--game-shell-sheet: min\(\d+vh, \d+px\)/);
+
+    // And side by side: the rail's COLUMN is a length at every band.
+    expect(shellSheet).toMatch(
+      /@media \(min-width: 1024px\)[\s\S]*?grid-template-columns: minmax\(0, 1fr\) var\(--game-shell-rail\)/,
+    );
+    for (const measure of ["272px", "320px", "352px", "384px"]) {
+      expect(shellSheet).toContain(`--game-shell-rail: ${measure}`);
+    }
+    expect(shell).not.toMatch(/grid-template-columns:[^;]*auto/);
+  });
+
+  /**
+   * `.game-shell-rail` was `display: flex` with no `flex-direction`, so it
+   * defaulted to `row` and the seat roster was laid out beside the log at 111px
+   * wide. A single-column grid cannot regress that way.
+   */
+  it("flows rail children down one column", () => {
+    // Given
+    const region = cssRule(shellSheet, ".game-shell-rail");
+    const rail = cssRule(hudSheet, ".hud-rail");
+
+    // Then
+    expect(region).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(region).toContain("grid-auto-flow: row");
+    expect(region).not.toContain("flex-direction: row");
+    // The rail itself: head, tabs, then the only flexible row.
+    expect(rail).toContain("grid-template-rows: auto auto minmax(0, 1fr)");
+  });
+
+  /**
+   * "the popup event notification is causing the board to jump up and down."
+   * The band holds everything time-limited, and its row is the same height
+   * occupied or empty — a `min-height` here would let content grow the row and
+   * hand the difference straight back to the board.
+   */
+  it("keeps the attention band out of the board's layout", () => {
+    // Given
+    const band = cssRule(shellSheet, ".game-shell-attention");
+
+    // Then
+    expect(shellSheet).toContain("--game-shell-attention: 40px");
+    expect(band).toContain("height: var(--game-shell-attention)");
+    expect(band).not.toContain("min-height");
+    expect(band).not.toContain("position: absolute");
+    // It is a row of the shell grid, so it can never overlap the board either.
+    expect(cssRule(shellSheet, ".game-shell")).toContain("var(--game-shell-attention)");
+  });
+
+  it("renders the band whether or not anything is pending, and never as a modal", () => {
+    // Given
+    const empty = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+    const occupied = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        attention={
+          <AttentionNotice
+            deadline="12:00:30"
+            detail="Audit release is waiting on you."
+            label="Decision"
+            tone="caution"
+          />
+        }
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+
+    // Then — same region, same box, different content.
+    expect(empty).toContain('class="game-shell-attention"');
+    expect(occupied).toContain('class="game-shell-attention"');
+    expect(empty).toContain('data-occupied="false"');
+    expect(occupied).toContain('data-occupied="true"');
+    expect(empty).toContain('data-slot="game-attention-rest"');
+    expect(occupied).toContain('data-slot="game-attention-notice"');
+    expect(occupied).toContain("12:00:30");
+
+    // And it interrupts nothing: no dialog, no backdrop, no focus trap.
+    expect(occupied).not.toContain('role="dialog"');
+    expect(occupied).not.toContain("aria-modal");
+    expect(occupied).not.toContain("backdrop");
+  });
+
+  /**
+   * The catch-up strip used to be a flow row of the action region, appearing and
+   * vanishing during playback and moving the board 32px (631px -> 599px) every
+   * time. It now lives in the rail head, which is a definite grid track, so the
+   * action region hosts nothing transient at all and needs no reservation.
+   *
+   * This asserts the ABSENCE, because the regression this guards against is
+   * someone adding a conditional row back to the region — which would silently
+   * reintroduce the swing rather than fail loudly.
+   */
+  it("keeps the action region free of anything that comes and goes", () => {
+    // Given
+    const action = cssRule(shellSheet, ".game-shell-action");
+
+    // Then — no reserved lane, because nothing transient is hosted here.
+    expect(action).not.toContain("padding-block-start");
+    expect(shellSheet).not.toContain("--game-shell-lane");
+    expect(shellSheet).not.toContain('.game-shell-action:has(> [data-slot="dice-catchup"])');
+
+    // And the two regions that DO host transient content are still definite, so
+    // the board's `1fr` row cannot be resized by either of them.
+    expect(shellSheet).toContain("--game-shell-attention: 40px");
+    expect(shellSheet).toContain("--game-shell-rail: 320px");
+  });
+
+  it("puts the attention band between the instruments and the board", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+
+    // Then
+    const hudIndex = markup.indexOf('data-slot="game-hud-region"');
+    const attentionIndex = markup.indexOf('data-slot="game-attention-region"');
+    const boardIndex = markup.indexOf('data-slot="game-board-region"');
+    expect(hudIndex).toBeLessThan(attentionIndex);
+    expect(attentionIndex).toBeLessThan(boardIndex);
+  });
+});
+
+describe("rail destinations", () => {
+  function rail(props: Partial<Parameters<typeof TurnRail>[0]> = {}) {
+    return renderToStaticMarkup(
+      <TurnRail game={game} room={room} selfPlayerId="player-1" {...props} />,
+    );
+  }
+
+  /**
+   * plans/24-gameplay-v2-spec.md §8.5: twelve destinations. All of them exist
+   * at rest — a destination with nothing in it yet states that in words rather
+   * than disappearing, so the rail's shape does not change as panels are wired.
+   */
+  it("renders every destination behind five tabs", () => {
+    // Given
+    const markup = rail();
+
+    // When
+    const tabs = markup.match(/data-slot="rail-tab"/g) ?? [];
+    const panels = markup.match(/data-slot="rail-panel"/g) ?? [];
+
+    // Then
+    expect(tabs).toHaveLength(RAIL_GROUPS.length);
+    expect(panels).toHaveLength(Object.keys(RAIL_DESTINATIONS).length);
+    expect(panels).toHaveLength(12);
+    for (const destination of Object.values(RAIL_DESTINATIONS)) {
+      expect(markup).toContain(`>${destination.title}</h2>`);
+    }
+    for (const group of RAIL_GROUPS) {
+      expect(markup).toContain(`>${group.label}</span>`);
+    }
+
+    // Exactly one group open, the rest present but not shown.
+    expect(markup.match(/aria-selected="true"/g) ?? []).toHaveLength(1);
+    expect(markup.match(/hidden=""/g) ?? []).toHaveLength(RAIL_GROUPS.length - 1);
+  });
+
+  /**
+   * "still cant see all seats." The dossier rows live behind a tab now, so the
+   * things a player needs continuously must not: whose turn it is, the turn
+   * clock, every seat as a numbered chip, and their own resources all live in a
+   * persistent head above the tab strip.
+   */
+  it("keeps turn, clock, seats and resources out of the tabs", () => {
+    // Given
+    const markup = rail();
+
+    // Then
+    const head = markup.indexOf('data-slot="rail-head"');
+    const tabs = markup.indexOf('data-slot="rail-tabs"');
+    expect(head).toBeGreaterThan(-1);
+    expect(head).toBeLessThan(tabs);
+    expect(markup).toContain('data-slot="turn-rail-turn-state"');
+    expect(markup).toContain('data-slot="rail-turn-clock"');
+    expect(markup).toContain('data-slot="rail-self"');
+    // One chip per seat, always visible, carrying the seat NUMBER (§8).
+    const chips = markup.match(/data-slot="rail-seat-chip"/g) ?? [];
+    expect(chips).toHaveLength(game.players.length);
+    expect(markup.indexOf('data-slot="rail-seat-strip"')).toBeLessThan(tabs);
+  });
+
+  it("badges the group that holds a panel wanting attention, as a number", () => {
+    // Given
+    const markup = rail({
+      panels: [{ id: "ballots", attention: { count: 2, tone: "caution" } }],
+    });
+
+    // When — the SOCIAL tab, from its own marker to the next tab's.
+    const socialTab = markup.slice(
+      markup.indexOf('data-group="social"'),
+      markup.indexOf('data-group="track"'),
+    );
+
+    // Then — the count is text, not colour alone (§8), and it is announced.
+    expect(socialTab).toContain('data-tone="caution"');
+    expect(socialTab).toContain(">2<");
+    expect(socialTab).toContain("2 need attention.");
+    // Every other tab keeps the same reserved, empty badge lane, so an arriving
+    // badge cannot widen its tab and shove the strip sideways.
+    expect(markup.match(/data-empty="true"/g) ?? []).toHaveLength(RAIL_GROUPS.length - 1);
+  });
+
+  it("hosts the playback catch-up control in the rail, not under the board", () => {
+    // Given
+    const markup = rail({
+      catchUp: (
+        <button data-slot="dice-catchup" type="button">
+          Catch up
+        </button>
+      ),
+    });
+
+    // Then
+    expect(markup).toContain('data-slot="rail-catchup"');
+    expect(markup.indexOf('data-slot="rail-head"')).toBeLessThan(
+      markup.indexOf('data-slot="dice-catchup"'),
+    );
+    expect(markup.indexOf('data-slot="dice-catchup"')).toBeLessThan(
+      markup.indexOf('data-slot="rail-tabs"'),
+    );
+  });
+
+  it("lets a caller fill a destination without losing the panel frame", () => {
+    // Given
+    const markup = rail({
+      panels: [{ id: "hand", content: <p data-slot="hand-body">Two cards.</p>, summary: "2" }],
+    });
+
+    // Then
+    expect(markup).toContain('data-slot="hand-body"');
+    expect(markup).toContain("Two cards.");
+    expect(markup).toContain('data-panel="hand"');
+    // The destination it replaced no longer shows its resting line.
+    expect(markup).not.toContain("Your hand is empty.");
+    expect(markup).toContain("No projects on the floor yet.");
+  });
+
+  /**
+   * Contributed entries merge over the shell's own, so wave 4 can badge a panel
+   * the shell already fills without blanking it — the seat roster surviving a
+   * `{ id: "seats", attention }` entry is the case that matters.
+   */
+  it("badges a built-in panel without replacing what is in it", () => {
+    // Given
+    const markup = rail({ panels: [{ id: "seats", attention: { count: 1 } }] });
+
+    // Then
+    const seats = markup.match(/data-slot="turn-rail-seat"/g) ?? [];
+    expect(seats).toHaveLength(game.players.length);
+    expect(markup).toContain('data-slot="rail-panel-flag"');
+    expect(markup).toContain("2/6");
+  });
+
+  /**
+   * The rail is a narrow column inside a wide window, so viewport width is the
+   * wrong signal for anything inside it — a mistake this layout has made and
+   * had to unmake once. Viewport queries stay in game-shell.css, where the
+   * side-by-side/stacked decision actually lives.
+   */
+  it("adapts inside the rail with container queries only", () => {
+    // Then
+    expect(cssRule(hudSheet, ".hud-rail")).toContain("container-type: inline-size");
+    expect(hudSheet).toContain("container-name: rail");
+    expect(hudSheet).toMatch(/@container rail \(min-width: 344px\)/);
+    expect(hudSheet).toMatch(/@container rail \(max-width: 300px\)/);
+
+    const viewportBlocks = [
+      ...atRuleBlocks(hudSheet, "@media (min-width"),
+      ...atRuleBlocks(hudSheet, "@media (max-width"),
+    ];
+    expect(viewportBlocks.length).toBeGreaterThan(0);
+    for (const block of viewportBlocks) {
+      expect(block).not.toMatch(
+        /\.hud-rail-(head|tabs|tab|self|seat-strip|viewport|group|block|empty|flag)/,
+      );
+    }
+  });
+
+  /**
+   * A panel that can be squeezed to zero height is a panel that is not there:
+   * the seat roster lost exactly that fight once and rendered "SEATS 3/6" above
+   * no rows at all.
+   */
+  it("keeps a floor under every panel that is not its group's primary", () => {
+    // Then
+    expect(hudSheet).toContain('.hud-rail-block:not([data-grow="true"]) {');
+    expect(cssRule(hudSheet, '.hud-rail-block:not([data-grow="true"])')).toContain(
+      "min-height: 108px",
+    );
+    expect(cssRule(hudSheet, '.hud-rail-block[data-grow="true"],\n.hud-rail-block--log')).toContain(
+      "flex: 1 1 auto",
+    );
+  });
+});
+
+describe("action bar status lane", () => {
+  /**
+   * The roll error used to be a row that existed only when there was an error,
+   * so a rejected roll grew the action region and the board's row shrank under
+   * it. The lane is always there and always says something.
+   */
+  it("holds the same lane whether the roll failed or not", () => {
+    // Given
+    const resting = renderToStaticMarkup(
+      <ActionTray
+        activePlayerName="Avery"
+        canRoll
+        isRolling={false}
+        onRoll={vi.fn()}
+        rollError={null}
+      />,
+    );
+    const failed = renderToStaticMarkup(
+      <ActionTray
+        activePlayerName="Avery"
+        canRoll
+        isRolling={false}
+        onRoll={vi.fn()}
+        rollError="The turn changed before that roll reached the server."
+      />,
+    );
+
+    // Then
+    expect(resting).toContain('data-slot="action-tray-lane"');
+    expect(failed).toContain('data-slot="action-tray-lane"');
+    expect(resting).toContain('data-slot="action-tray-ready"');
+    expect(failed).toContain('data-slot="action-tray-error"');
+    expect(cssRule(hudSheet, ".hud-lane")).toContain("min-height: 28px");
+  });
+});
+
+describe("attention notice derivation", () => {
+  it("puts an open decision on the band, with the turn deadline it is on", () => {
+    // Given
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: { ...game, deadlineAt: "2026-07-24T12:00:30.000Z" },
+      legalActions: [
+        {
+          type: "prompt.respond",
+          expectedRevision: 8,
+          decisionPointId: "decision-1",
+          kind: "audit-release",
+          options: [{ id: "pay-fine" }, { id: "attempt-roll" }],
+        },
+      ],
+    } as unknown as GameBootstrap);
+
+    // Then
+    expect(notice).not.toBeNull();
+    expect(notice?.label).toBe("Decision");
+    expect(notice?.tone).toBe("caution");
+    expect(notice?.detail).toContain("Audit release");
+    expect(notice?.deadline).toBe("12:00:30");
+  });
+
+  it("says nothing when nothing is on a clock", () => {
+    expect(createAttentionNotice(bootstrap)).toBeNull();
   });
 });
 

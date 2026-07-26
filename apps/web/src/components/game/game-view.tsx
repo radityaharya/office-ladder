@@ -166,6 +166,67 @@ export function createGameView(bootstrap: GameBootstrap) {
   };
 }
 
+/**
+ * What the shell's attention band should be showing, or `null` for "nothing is
+ * on a clock".
+ *
+ * The band is a fixed row in the shell grid (see `GameLayout`), so this only
+ * decides its CONTENT — nothing here can move the board. It is the home for
+ * anything time-limited: today the only such thing is an open decision, and v2
+ * adds reaction windows, closing ballots and the quarter/event track.
+ *
+ * Deliberately derived from the CANONICAL bootstrap by the caller, not from the
+ * paced one: a countdown that plays back late is a lie about a deadline.
+ */
+export type AttentionNoticeDescriptor = {
+  readonly label: string;
+  readonly detail: string;
+  readonly tone: "info" | "caution" | "critical";
+  /** Pre-formatted clock, or null. The band never runs a clock of its own. */
+  readonly deadline: string | null;
+};
+
+export function createAttentionNotice(
+  bootstrap: GameBootstrap,
+): AttentionNoticeDescriptor | null {
+  const game = bootstrap.publicProjection;
+  const prompt = findPromptAction(bootstrap.legalActions);
+  const deadline = readDeadline(game);
+
+  if (prompt !== null) {
+    return {
+      label: "Decision",
+      detail: `${promptKindLabel(prompt)} is waiting on you.`,
+      tone: "caution",
+      deadline,
+    };
+  }
+  if (game.status === "paused") {
+    return { label: "Paused", detail: "The match is paused.", tone: "info", deadline: null };
+  }
+
+  return null;
+}
+
+/**
+ * Read through a shape check rather than the declared type: the turn-timer and
+ * prompt fields are being reshaped in packages/contracts, and a band that
+ * degrades to "no deadline" is better than one that cannot compile.
+ */
+function readDeadline(game: PublicGameProjection): string | null {
+  const candidate: { readonly deadlineAt?: unknown } = game;
+  if (typeof candidate.deadlineAt !== "string") return null;
+  return /T(\d{2}:\d{2}:\d{2})/.exec(candidate.deadlineAt)?.[1] ?? null;
+}
+
+function promptKindLabel(prompt: object): string {
+  const candidate: { readonly kind?: unknown } = prompt;
+  if (typeof candidate.kind !== "string" || candidate.kind.length === 0) {
+    return "A decision";
+  }
+  return sentenceCase(candidate.kind.replaceAll("-", " "));
+}
+
 export function findRollAction(
   actions: readonly LegalActionSummary[],
 ): Extract<LegalActionSummary, { readonly type: "turn.roll" }> | null {

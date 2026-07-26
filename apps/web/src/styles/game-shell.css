@@ -33,28 +33,77 @@
    * copy above it rather than being re-centred in free space (§4.5).
    */
   --game-shell-measure: 1152px;
+  /*
+   * DEFINITE geometry for every region that hosts something transient. Each of
+   * these is a reservation: the thing it holds may come and go, and the board
+   * must not move when it does.
+   */
+  /* The attention band: one 40px instrument row, the same height as the HUD
+     strip (§6.4). Always in flow, occupied or not. */
+  --game-shell-attention: 40px;
+  /* The rail's measure. Definite at every breakpoint; overridden per band
+     below. `.hud-rail` fills the track rather than restating a width. */
+  --game-shell-rail: 320px;
+  /*
+   * Stacked (< 1024px) the rail is a bottom sheet with a DEFINITE height, not an
+   * `auto` row capped by a max-height. With an `auto` row the rail's own content
+   * sized it, so a card notice or a catch-up control arriving in the rail
+   * resized the board — the jump this layout is supposed to have stopped, just
+   * moved one region over.
+   *
+   * Stated as a `min()` with no floor on purpose. Every other row in the stacked
+   * shell is either fixed or `auto`, so a floor here would be taken out of the
+   * board's `1fr` first and then, once that hit zero, out of the ACTION BAR by
+   * clipping — `.game-viewport` is `overflow: hidden`. Scaling with the viewport
+   * means a short window gets a short sheet (whose panels scroll internally)
+   * rather than a shell whose last row falls off the bottom.
+   */
+  --game-shell-sheet: min(40vh, 336px);
 }
 
 /* --------------------------------------------------------------------------
    1. The match shell
    --------------------------------------------------------------------------
-   One grid owns every structural region, so the HUD chrome, the board, the
-   rail and the action bar all resolve against the same row and column edges
-   (§4.5) instead of reserving space for each other with padding and offsets.
+   One grid owns every structural region, so the HUD chrome, the attention band,
+   the board, the rail and the action bar all resolve against the same row and
+   column edges (§4.5) instead of reserving space for each other with padding and
+   offsets.
 
-   DOM order stays board -> action -> rail (the order a screen reader and the
-   keyboard should meet them in: look at the floor, act, then read telemetry);
-   named grid areas place the rail in the right column regardless.
+   DOM order is hud -> attention -> board -> action -> rail. That is the order a
+   keyboard and a screen reader should meet them in: read the instruments, see
+   what needs you, look at the floor, act, then read telemetry. Named grid areas
+   place the rail in the right column regardless of that order.
 
-   Breakpoints are §9's, literally. The STACKED shape is the base case, and the
-   three-region shell is a >= 1024px override:
-     >= 1280px  full three-region shell, rail at its 320px `rail-width` measure
-     1024-1279  same shell, rail compressed to 272px
-     < 1024px   rail stacks BELOW the board ("tablet portrait" in §9), so the
-                board gets the full width instead of ~500px of it
-   This also makes 200% browser zoom fall out for free: at 200% a 1440-2048px
-   display reports 720-1024 CSS px, which lands in the stacked case rather than
-   squeezing a two-column shell.
+   THE ONE RULE THIS GRID EXISTS TO ENFORCE: every region that hosts something
+   transient has a DEFINITE size, so an arriving notice, control or countdown
+   cannot resize the board. That was the reported defect ("the popup event
+   notification is causing the board to jump up and down") and it had three
+   separate causes, all of them an `auto` track sized by transient content:
+     - the rail column was `auto`, so a card notice's own width sized it;
+     - the stacked rail ROW was `auto` under a max-height, so rail content sized
+       the board's height;
+     - the catch-up strip was an extra flow row in the action region, measured at
+       a 32px board swing (631px -> 599px) every time playback started.
+   The rail is now a definite track on both axes, the attention band is a
+   definite row whether or not anything occupies it, and the action region
+   reserves the catch-up strip's lane.
+
+   Breakpoints (§9). Viewport queries are used HERE and only here — the
+   side-by-side/stacked decision is the one responsive question the shell owns.
+   Everything inside the rail adapts with container queries (see hud.css):
+     >= 1800px  side by side, 384px rail — the leftover from the board's aspect
+                cap goes to the rail rather than to dead gutter
+     >= 1600px  side by side, 352px rail
+     >= 1280px  side by side, 320px rail (`geometry.rail-width`)
+     1024-1279  side by side, 272px rail — §9's documented compressed minimum;
+                the board still takes every pixel the rail does not
+     < 1024px   STACKED: the rail becomes a full-width bottom sheet of definite
+                height between the board and the action bar. Board and rail never
+                share a narrow width — at 400px neither would be usable — and
+                nothing available on desktop becomes desktop-only (§9).
+   200% browser zoom falls out of this for free: at 200% a 1440-2048px display
+   reports 720-1024 CSS px, which lands in the stacked case rather than squeezing
+   a two-column shell.
    -------------------------------------------------------------------------- */
 
 .game-shell {
@@ -73,9 +122,15 @@
    * list, which measured 0px tall and could not be scrolled to. The board is the
    * region that already pans inside itself, so it is the one that yields.
    */
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows:
+    auto
+    var(--game-shell-attention)
+    minmax(0, 1fr)
+    var(--game-shell-sheet)
+    auto;
   grid-template-areas:
     "hud"
+    "attention"
     "board"
     "rail"
     "action";
@@ -89,9 +144,92 @@
 }
 
 /*
+ * The attention band — where anything time-limited goes: a reaction window, a
+ * prompt countdown, a ballot about to close, the quarter/event track.
+ *
+ * NOT a modal and not a toast. The repo owner's constraint is explicit — "notif
+ * gak modal yang nutupin" — so this covers nothing, dims nothing and takes no
+ * focus. And it does not move the board: the row is `var(--game-shell-attention)`
+ * tall whether it is occupied or empty, so the only thing that changes when a
+ * countdown opens is what is drawn inside a box that was already there.
+ *
+ * Contract for callers: this is ONE 40px instrument row. Content must be a
+ * single row of readouts and at most a couple of 28px controls. It scrolls
+ * horizontally rather than wrapping (§9's own treatment for the HUD strip),
+ * because wrapping would grow the row and the board would move again.
+ */
+.game-shell-attention {
+  grid-area: attention;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: var(--game-shell-attention);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.game-shell-attention::-webkit-scrollbar {
+  display: none;
+}
+
+.game-shell-attention:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* Resting content: the lane names itself and states that it holds no data, in
+   the same "label + value" grammar as every other readout in the shell. */
+.game-shell-attention-rest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding-inline: 12px;
+}
+
+/* The house shape for an occupied band (see `AttentionNotice` in
+   game-layout.tsx): LED, label, sentence, deadline, then any controls. One row,
+   `nowrap`, because the row cannot grow. */
+.game-shell-attention-notice {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
+/* Sentence-case prose (§2.2). It is the one part of the row allowed to run out
+   of room, and it says so with an ellipsis rather than pushing the deadline and
+   the controls — which are the parts a player acts on — off the end. */
+.game-shell-attention-detail {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--game-shell-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+}
+
+/* The deadline sits at the trailing end, ahead of any controls. */
+.game-shell-attention-notice > .game-shell-value {
+  margin-inline-start: auto;
+}
+
+/*
  * A grid display so the board fills the cell on both axes without a flex
  * `align-items: center` in the way — `.board-viewport` is `width/height: 100%`
  * with `container-type: size`, so it needs a definite box to resolve against.
+ * The board's column is always `minmax(0, 1fr)`: it takes every pixel the rail
+ * does not, and board.css lets the frame go landscape inside it rather than
+ * letterboxing itself square.
  */
 .game-shell-board {
   grid-area: board;
@@ -103,44 +241,49 @@
 }
 
 /*
- * The action region is a STACK of structural rows, not one bar. In DOM order:
- * the non-blocking card feed (cards.css), the playback catch-up strip
- * (dice.css), then the action bar itself (dice.css). Each is full-bleed and owns
- * its own 1px top seam, so the stack reads as one continuous surface (§4.1,
- * §4.3) and the board row — `minmax(0, 1fr)` — yields the height rather than
- * being covered by any of them.
+ * The action region holds the action bar (dice.css) and nothing transient.
  *
- * The one seam none of those sheets can resolve on its own is where two of them
- * meet: the catch-up strip declares a bottom hairline (correct when it is the
- * last row) which would double with the action bar's own top hairline into a 2px
- * rule. Collapsed here, in the sheet that owns the region, rather than by
- * editing either area's stylesheet.
+ * It used to also host the playback catch-up strip as a flow row, and every
+ * appearance of that strip re-sized the board's `1fr` row — a measured 32px
+ * swing (631px -> 599px). That was first neutralised by reserving a permanent
+ * 34px lane here; the strip has since moved to the rail head (`.hud-rail-aside`,
+ * a definite grid track where an arriving control costs the board nothing), so
+ * the reservation is gone too and the region is flush against the board again.
+ *
+ * Nothing conditional may be added back to this region. Anything that comes and
+ * goes belongs in the attention band or the rail, both of which are definite.
  */
 .game-shell-action {
   grid-area: action;
+  position: relative;
   display: flex;
   min-width: 0;
   flex-direction: column;
 }
 
-.game-shell-action > [data-slot="dice-catchup"]:not(:last-child) {
-  border-bottom: 0;
-}
 
 /*
- * A COLUMN. This region holds more than one block now — the seats-plus-activity
- * rail and, below it, the events feed — and `display: flex` alone defaults to
- * `row`, which laid them out side by side: the feed was squeezed to whatever
- * width `.hud-rail`'s `flex: 1 1 auto` left over (111px), and a card notice then
- * wrapped itself 472px tall inside it. Stacking them is what makes the rail read
- * as seats / activity / events down the column.
+ * A COLUMN, and a definite one.
+ *
+ * `display: flex` alone defaults to `row`, which laid the rail's blocks out side
+ * by side and collapsed the seat roster to nothing. A single-column grid with
+ * explicit rows cannot regress that way: `grid-template-columns` states the one
+ * column, the rail itself takes the `1fr` row, and anything else a caller puts
+ * in this region (the card feed, for now) gets an `auto` row under it without
+ * ever competing for the rail's width.
  */
 .game-shell-rail {
   grid-area: rail;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  /* The rail takes the flexible row and keeps a 120px floor; a second child (the
+     card feed, until it becomes the rail's `feed` destination) gets an `auto` row
+     under it that can shrink rather than push the rail out of the region. */
+  grid-template-rows: minmax(120px, 1fr) minmax(0, auto);
+  grid-auto-flow: row;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 @media (min-width: 640px) {
@@ -149,45 +292,28 @@
   }
 }
 
-/*
- * Stacked (< 1024px): the rail sits under the board rather than vanishing, so
- * nothing available on desktop becomes desktop-only (§9). It is capped at a
- * third of the viewport so the board keeps the clear majority of the screen;
- * the rail's own seat list and log scroll internally, so nothing is lost to
- * the cap.
- */
-.game-shell-rail {
-  max-height: 33vh;
-  /*
-   * Floor, and it beats the cap when the two disagree (min-height is applied
-   * after max-height): the rail's two blocks need 108px + 56px to each show a
-   * header and one row, so below a ~500px-tall viewport the rail stops shrinking
-   * and the board takes the squeeze instead. See the note on `.game-shell`.
-   */
-  min-height: 168px;
-}
-
 /* >= 1024px: the documented three-region shell — board and rail side by side,
-   the action bar spanning both. */
+   the action bar spanning both. The rail track is DEFINITE at every band: with
+   `auto` the column sized itself to its widest content, so the moment the card
+   feed moved into the rail a card's own width sized the whole column and starved
+   the board to a narrow strip. */
 @media (min-width: 1024px) {
   .game-shell {
-    /*
-     * A DEFINITE rail track, not `auto`. With `auto` the column sized itself to
-     * its widest content, so the moment the card feed moved into the rail a
-     * card's own width sized the whole column and starved the board to a narrow
-     * strip. 320px is `geometry.rail-width` and the measure hud.css already
-     * targets; the >=1800px block below widens it deliberately.
-     */
-    grid-template-columns: minmax(0, 1fr) 320px;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    --game-shell-rail: 272px;
+
+    grid-template-columns: minmax(0, 1fr) var(--game-shell-rail);
+    grid-template-rows: auto var(--game-shell-attention) minmax(0, 1fr) auto;
     grid-template-areas:
       "hud hud"
+      "attention attention"
       "board rail"
       "action action";
   }
+}
 
-  .game-shell-rail {
-    max-height: none;
+@media (min-width: 1280px) {
+  .game-shell {
+    --game-shell-rail: 320px;
   }
 }
 
@@ -198,19 +324,21 @@
  * never exceeds a 3:1 aspect. On a very wide — or a short — window that cap
  * binds, and whatever it does not take used to become symmetric dead gutter
  * either side of the board. The rail is the honest home for it: the activity log
- * is the surface a player reads to follow the match, and it is the one region
- * that gets strictly better with more width.
- *
- * Implementation note: the rail column becomes a definite 384px track, and
- * `.hud-rail` is `flex: 1 1 auto` inside it, so it grows from its 320px measure
- * to fill the track without hud.css needing a fourth breakpoint. 1800px is
- * deliberately a floor rather than the exact point the board cap engages — that
+ * and the panel set are the surfaces a player reads to follow the match, and they
+ * are the regions that get strictly better with more width. 1600/1800px are
+ * deliberately floors rather than the exact point the board cap engages — that
  * point depends on viewport HEIGHT (cap = height x 3), so no width breakpoint can
- * name it precisely. Below this the documented 320px measure is unchanged.
+ * name it precisely.
  */
+@media (min-width: 1600px) {
+  .game-shell {
+    --game-shell-rail: 352px;
+  }
+}
+
 @media (min-width: 1800px) {
   .game-shell {
-    grid-template-columns: minmax(0, 1fr) 384px;
+    --game-shell-rail: 384px;
   }
 }
 

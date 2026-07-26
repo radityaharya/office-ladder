@@ -1,6 +1,6 @@
 import { useReducedMotion } from "motion/react";
 import * as m from "motion/react-m";
-import { useState } from "react";
+import { type KeyboardEvent, type ReactNode, useState } from "react";
 
 import type {
   BotDifficulty,
@@ -69,6 +69,123 @@ export type ActivityLogDelta = {
   readonly text?: string;
 };
 
+/* -------------------------------------------------------------------------- */
+/* The rail seam — what the shell renders, what a panel owner fills in.       */
+/*                                                                            */
+/* plans/24-gameplay-v2-spec.md §8.5: v2 needs twelve rail destinations (hand, */
+/* projects, market/auction, agreements, ballots, objectives, heat, chat,      */
+/* quarter/event track, on top of seats, activity and the card feed). Twelve   */
+/* stacked blocks is the crowded rail the spec rejects, and twelve TABS is the */
+/* same scroll column turned sideways, so the destinations are grouped into    */
+/* FIVE tabs and the three things a player needs continuously — whose turn it  */
+/* is, the turn clock, and their own resources — never go behind a tab at all: */
+/* they live in the rail's persistent head above the tab strip.                */
+/*                                                                            */
+/* Ownership: this file owns the rail SHELL (head, tab strip, panel frames,    */
+/* attention badges and the two panels the shell has real data for — seats and */
+/* activity). Everything else arrives through `panels`: one entry per          */
+/* destination, whose `content` is rendered inside that panel's body. A        */
+/* destination with no entry renders its resting empty state rather than       */
+/* disappearing, so the rail's shape is the same at every stage of the build.  */
+/* -------------------------------------------------------------------------- */
+
+/** The five tab groups. Grouping, not twelve tabs — see the note above. */
+export type RailGroupId = "table" | "work" | "market" | "social" | "track";
+
+/** Every destination §8.5 names, plus the two the shell fills itself. */
+export type RailDestinationId =
+  | "seats"
+  | "heat"
+  | "quarter"
+  | "hand"
+  | "projects"
+  | "objectives"
+  | "market"
+  | "agreements"
+  | "ballots"
+  | "chat"
+  | "activity"
+  | "feed";
+
+/**
+ * "Something in here needs you." Presentational only at this stage: wave 4
+ * computes the real counts. `count` is rendered as a number so the badge is
+ * never colour alone (DESIGN.md §8); `tone` only chooses which status token the
+ * badge's hairline borrows.
+ */
+export type RailAttention = {
+  readonly count?: number;
+  readonly tone?: "info" | "caution" | "critical";
+};
+
+/** One destination's contributed content. See the seam note above. */
+export type RailPanelContent = {
+  readonly id: RailDestinationId;
+  /** Rendered inside the panel body. Omit to keep the resting empty state. */
+  readonly content?: ReactNode;
+  readonly attention?: RailAttention | null;
+  /** Optional right-aligned readout in the panel header, e.g. "3/6". */
+  readonly summary?: string;
+  /** `data-slot` for that readout. Defaults to `rail-panel-summary`. */
+  readonly summarySlot?: string;
+};
+
+type RailDestinationMeta = {
+  readonly title: string;
+  /**
+   * The group's primary surface: it takes the height the fixed-floor panels
+   * beside it do not. Exactly one destination per group sets this.
+   */
+  readonly grow: boolean;
+  /** Resting state. A true statement about an empty panel, never "TODO". */
+  readonly empty: string;
+};
+
+export const RAIL_DESTINATIONS = {
+  seats: { title: "Seats", grow: false, empty: "No seats taken yet." },
+  activity: { title: "Activity", grow: true, empty: "No entries committed yet." },
+  hand: { title: "Hand", grow: true, empty: "Your hand is empty." },
+  projects: { title: "Projects", grow: false, empty: "No projects on the floor yet." },
+  objectives: { title: "Objectives", grow: false, empty: "No objectives assigned yet." },
+  market: { title: "Market", grow: true, empty: "Nothing listed." },
+  agreements: { title: "Agreements", grow: false, empty: "No agreements in force." },
+  heat: { title: "Heat", grow: false, empty: "No pressure recorded yet." },
+  ballots: { title: "Ballots", grow: false, empty: "No ballot open." },
+  chat: { title: "Chat", grow: true, empty: "No messages yet." },
+  quarter: { title: "Quarter", grow: false, empty: "The quarter track is not open yet." },
+  feed: { title: "Card feed", grow: true, empty: "No cards or events yet." },
+} as const satisfies Record<RailDestinationId, RailDestinationMeta>;
+
+type RailGroup = {
+  readonly id: RailGroupId;
+  readonly label: string;
+  readonly destinations: readonly RailDestinationId[];
+};
+
+/**
+ * Tab order, left to right. Two or three destinations each: any more and the
+ * group becomes the scroll column the tabs exist to avoid (each non-primary
+ * panel carries a 108px floor in hud.css so it cannot be squeezed to nothing).
+ *
+ * TABLE is first and open by default because it is the rail this view already
+ * had — the seat dossiers and the activity log — and the log is how a match is
+ * followed at all ("i genuinely cant follow the game"). Nothing about the new
+ * destinations is allowed to demote it.
+ *
+ * The other four group by the question a player is asking:
+ *   WORK    what am I holding and what am I working towards
+ *   MARKET  what the floor's economy is doing
+ *   SOCIAL  what the other seats and I are deciding together
+ *   TRACK   what the office is doing to us, over time
+ */
+export const RAIL_GROUPS = [
+  { id: "table", label: "Table", destinations: ["seats", "activity"] },
+  { id: "work", label: "Work", destinations: ["hand", "projects", "objectives"] },
+  { id: "market", label: "Market", destinations: ["market", "agreements", "heat"] },
+  { id: "social", label: "Social", destinations: ["ballots", "chat"] },
+  { id: "track", label: "Track", destinations: ["quarter", "feed"] },
+] as const satisfies readonly RailGroup[];
+
 type TurnRailProps = {
   readonly room: RoomProjection;
   readonly game: PublicGameProjection;
@@ -77,6 +194,20 @@ type TurnRailProps = {
   readonly deltas?: readonly ActivityLogDelta[];
   /** How many of the newest entries to keep rendered. */
   readonly maxEntries?: number;
+  /** Contributed destination content. See {@link RailPanelContent}. */
+  readonly panels?: readonly RailPanelContent[];
+  /** Which tab is open on first render. */
+  readonly defaultGroup?: RailGroupId;
+  /**
+   * The playback catch-up control, hosted in the rail head.
+   *
+   * It belongs here rather than in the action region under the board: it
+   * appears and vanishes during event playback, and in the action region that
+   * moved the board 32px every time (measured 631px -> 599px). The rail's own
+   * box is a definite grid track in game-shell.css, so a control arriving here
+   * redistributes rail height and costs the board nothing.
+   */
+  readonly catchUp?: ReactNode;
 };
 
 const DEFAULT_MAX_ENTRIES = 40;
@@ -130,60 +261,415 @@ export function TurnRail({
   selfPlayerId,
   deltas,
   maxEntries = DEFAULT_MAX_ENTRIES,
+  panels = [],
+  defaultGroup = "table",
+  catchUp = null,
 }: TurnRailProps) {
   const entries = buildActivityLog(game, room, deltas, selfPlayerId)
     .slice(-maxEntries)
     .reverse();
   const turnState = resolveTurnState(room, game, selfPlayerId);
   const mineCount = entries.filter((entry) => entry.origin === "local").length;
+  const [openGroup, setOpenGroup] = useState<RailGroupId>(defaultGroup);
+  const contributed = new Map(panels.map((panel) => [panel.id, panel]));
+
+  /*
+   * The two panels the shell has real data for. Both are contributed through the
+   * same map every other destination goes through, so there is exactly one code
+   * path for "what is inside a panel" — and wave 4 can override either by
+   * passing its own entry for that id.
+   */
+  const built = new Map<RailDestinationId, RailPanelContent>([
+    [
+      "seats",
+      {
+        id: "seats",
+        summary: `${game.players.length}/${room.capacity}`,
+        content: (
+          <ol className="hud-seat-list">
+            {game.players.map((player) => (
+              <SeatRow
+                active={player.id === game.activePlayerId}
+                key={player.id}
+                member={memberFor(room, player.id)}
+                name={playerName(room, player.id)}
+                player={player}
+                self={player.id === selfPlayerId}
+                slot={seatSlot(game, player.id)}
+              />
+            ))}
+          </ol>
+        ),
+      },
+    ],
+    [
+      "activity",
+      {
+        id: "activity",
+        /*
+         * "dipisah yang sendiri atau lawan" — the header states the split in
+         * numbers so the mine/theirs treatment on the rows below has a legend
+         * rather than being something the player has to infer.
+         */
+        summary: `${mineCount} you · ${entries.length} all · R${game.revision}`,
+        summarySlot: "turn-rail-log-count",
+        content: <ActivityLog entries={entries} />,
+      },
+    ],
+  ]);
+
+  /**
+   * Contributed entries MERGE over the built-in ones rather than replacing
+   * them, so a caller can badge or re-summarise a panel the shell already fills
+   * — `{ id: "seats", attention: { count: 1 } }` must not blank the roster.
+   */
+  function panelFor(id: RailDestinationId): RailPanelContent | undefined {
+    const base = built.get(id);
+    const extra = contributed.get(id);
+    if (extra === undefined) return base;
+    if (base === undefined) return extra;
+
+    return {
+      ...base,
+      ...extra,
+      content: extra.content ?? base.content,
+      summary: extra.summary ?? base.summary,
+      summarySlot: extra.summarySlot ?? base.summarySlot,
+    };
+  }
 
   return (
-    <aside aria-label="Players and activity" className="hud-rail" data-slot="turn-rail">
-      <section aria-labelledby="turn-rail-seats-heading" className="hud-rail-block">
-        <header className="hud-rail-header">
-          <h2 className="hud-rail-heading" id="turn-rail-seats-heading">
-            Seats
-          </h2>
-          <span className="hud-sub">
-            {game.players.length}/{room.capacity}
-          </span>
-        </header>
-        <TurnStateNotice state={turnState} />
-        <ol className="hud-seat-list">
-          {game.players.map((player) => (
-            <SeatRow
-              active={player.id === game.activePlayerId}
-              key={player.id}
-              member={memberFor(room, player.id)}
-              name={playerName(room, player.id)}
-              player={player}
-              self={player.id === selfPlayerId}
-              slot={seatSlot(game, player.id)}
-            />
-          ))}
-        </ol>
-      </section>
-      <section
-        aria-labelledby="turn-rail-log-heading"
-        className="hud-rail-block hud-rail-block--log"
-      >
-        <header className="hud-rail-header">
-          <h2 className="hud-rail-heading" id="turn-rail-log-heading">
-            Activity
-          </h2>
-          {/*
-            "dipisah yang sendiri atau lawan" — the header states the split in
-            numbers so the mine/theirs treatment on the rows below has a legend
-            rather than being something the player has to infer.
-          */}
-          <span className="hud-sub" data-slot="turn-rail-log-count">
-            {mineCount} you · {entries.length} all · R{game.revision}
-          </span>
-        </header>
-        <ActivityLog entries={entries} />
-      </section>
+    <aside aria-label="Match rail" className="hud-rail" data-slot="turn-rail">
+      {/*
+        The persistent head. Never behind a tab, never conditional: whose turn it
+        is, the turn clock, every seat as a numbered chip, and the local seat's
+        own resources. It is an `auto` row of the rail's own grid, so when it
+        does change height — a long "waiting on" line wrapping, the catch-up
+        control arriving — the panel viewport below absorbs it. The rail's
+        outside box is a definite track either way, so the board never moves.
+      */}
+      <div className="hud-rail-head" data-slot="rail-head">
+        <TurnStateNotice clock={turnClockLabel(game)} state={turnState} />
+        <RailSeatStrip activePlayerId={game.activePlayerId} game={game} room={room} />
+        <RailSelfReadout game={game} selfPlayerId={selfPlayerId} />
+        {catchUp === null ? null : (
+          <div className="hud-rail-aside" data-slot="rail-catchup">
+            {catchUp}
+          </div>
+        )}
+      </div>
+      <RailTabs
+        attention={groupAttention(panelFor)}
+        onSelect={setOpenGroup}
+        openGroup={openGroup}
+      />
+      <div className="hud-rail-viewport" data-slot="rail-viewport">
+        {RAIL_GROUPS.map((group) => (
+          <div
+            aria-labelledby={`rail-tab-${group.id}`}
+            className="hud-rail-group"
+            data-group={group.id}
+            data-slot="rail-group"
+            hidden={group.id !== openGroup}
+            id={`rail-group-${group.id}`}
+            key={group.id}
+            role="tabpanel"
+            tabIndex={0}
+          >
+            {group.destinations.map((id) => (
+              <RailPanel id={id} key={id} panel={panelFor(id)} />
+            ))}
+          </div>
+        ))}
+      </div>
     </aside>
   );
+}
+
+/**
+ * One destination's frame: a 28px uppercase header (§6.3) and a body that
+ * scrolls internally rather than growing the rail. The frame is always rendered
+ * — a destination with nothing in it states that in words instead of vanishing,
+ * so the rail's shape does not change as panels get wired up.
+ */
+function RailPanel({
+  id,
+  panel,
+}: {
+  readonly id: RailDestinationId;
+  readonly panel: RailPanelContent | undefined;
+}) {
+  const meta = RAIL_DESTINATIONS[id];
+  const attention = panel?.attention ?? null;
+  const content = panel?.content ?? null;
+
+  return (
+    <section
+      aria-labelledby={`rail-panel-${id}-heading`}
+      /* `--log` is retained on the activity panel: hud.css and its tests have
+         named that block since before the rail was tabbed. */
+      className={cn("hud-rail-block", id === "activity" && "hud-rail-block--log")}
+      data-grow={meta.grow ? "true" : "false"}
+      data-panel={id}
+      data-slot="rail-panel"
+    >
+      <header className="hud-rail-header">
+        <h2 className="hud-rail-heading" id={`rail-panel-${id}-heading`}>
+          {meta.title}
+        </h2>
+        {attention === null ? null : <RailFlag attention={attention} />}
+        {panel?.summary === undefined ? null : (
+          <span className="hud-sub" data-slot={panel.summarySlot ?? "rail-panel-summary"}>
+            {panel.summary}
+          </span>
+        )}
+      </header>
+      {content ?? (
+        <p className="hud-rail-empty" data-slot="rail-panel-empty">
+          {meta.empty}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** In-panel attention marker: an LED and the count as text, never colour alone. */
+function RailFlag({ attention }: { readonly attention: RailAttention }) {
+  const count = attention.count ?? 0;
+
+  return (
+    <span className="hud-rail-flag" data-slot="rail-panel-flag" data-tone={attention.tone ?? "info"}>
+      <span aria-hidden="true" className={cn("hud-led", `hud-led--${ledTone(attention.tone)}`)} />
+      {count > 0 ? formatNumber(count) : "New"}
+    </span>
+  );
+}
+
+function ledTone(tone: RailAttention["tone"]): string {
+  if (tone === "critical") return "away";
+  if (tone === "caution") return "attention";
+  return "remote";
+}
+
+/**
+ * The tab strip. Five destinations groups, each with a badge lane that is
+ * ALWAYS rendered — an arriving badge must not widen its tab and shove the
+ * strip sideways, which is the same class of bug as a notice moving the board.
+ */
+function RailTabs({
+  attention,
+  onSelect,
+  openGroup,
+}: {
+  readonly attention: ReadonlyMap<RailGroupId, RailAttention>;
+  readonly onSelect: (group: RailGroupId) => void;
+  readonly openGroup: RailGroupId;
+}) {
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const count = RAIL_GROUPS.length;
+    const next =
+      event.key === "ArrowRight"
+        ? (index + 1) % count
+        : event.key === "ArrowLeft"
+          ? (index - 1 + count) % count
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? count - 1
+              : null;
+    if (next === null) return;
+
+    const group = RAIL_GROUPS[next];
+    if (group === undefined) return;
+
+    event.preventDefault();
+    onSelect(group.id);
+    const strip = event.currentTarget.parentElement;
+    strip?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
+
+  return (
+    <div
+      aria-label="Rail destinations"
+      className="hud-rail-tabs"
+      data-slot="rail-tabs"
+      role="tablist"
+    >
+      {RAIL_GROUPS.map((group, index) => {
+        const open = group.id === openGroup;
+        const flag = attention.get(group.id);
+        const count = flag?.count ?? 0;
+
+        return (
+          <button
+            aria-controls={`rail-group-${group.id}`}
+            aria-selected={open}
+            className="hud-rail-tab"
+            data-group={group.id}
+            data-slot="rail-tab"
+            id={`rail-tab-${group.id}`}
+            key={group.id}
+            onClick={() => onSelect(group.id)}
+            onKeyDown={(event) => handleKeyDown(event, index)}
+            role="tab"
+            tabIndex={open ? 0 : -1}
+            type="button"
+          >
+            <span className="hud-rail-tab-label">{group.label}</span>
+            {/* Reserved lane. Empty carries no border and no glyph, so the tab
+                measures the same whether or not anything needs the player. */}
+            <span
+              className="hud-rail-tab-badge"
+              data-empty={flag === undefined ? "true" : "false"}
+              data-slot="rail-tab-badge"
+              data-tone={flag?.tone ?? "info"}
+            >
+              {flag === undefined ? null : count > 0 ? formatNumber(count) : "·"}
+              {flag === undefined ? null : (
+                <span className="sr-only">
+                  {count > 0 ? ` ${count} need attention.` : " Needs attention."}
+                </span>
+              )}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * A group's badge is the sum of its destinations' counts, at the worst tone any
+ * of them reported — a player should not have to open a tab to find out that
+ * one of the two panels behind it wants them.
+ */
+function groupAttention(
+  panelFor: (id: RailDestinationId) => RailPanelContent | undefined,
+): ReadonlyMap<RailGroupId, RailAttention> {
+  const table = new Map<RailGroupId, RailAttention>();
+
+  for (const group of RAIL_GROUPS) {
+    let count = 0;
+    let tone: RailAttention["tone"] | undefined;
+    let flagged = false;
+
+    for (const id of group.destinations) {
+      const attention = panelFor(id)?.attention;
+      if (!attention) continue;
+      flagged = true;
+      count += attention.count ?? 0;
+      tone = worstTone(tone, attention.tone);
+    }
+
+    if (!flagged) continue;
+    table.set(group.id, { count, ...(tone === undefined ? {} : { tone }) });
+  }
+
+  return table;
+}
+
+const TONE_RANK = { info: 0, caution: 1, critical: 2 } as const;
+
+function worstTone(
+  current: RailAttention["tone"],
+  candidate: RailAttention["tone"],
+): RailAttention["tone"] {
+  if (candidate === undefined) return current;
+  if (current === undefined) return candidate;
+  return TONE_RANK[candidate] > TONE_RANK[current] ? candidate : current;
+}
+
+/**
+ * Every seat as a numbered chip, in turn order, always visible.
+ *
+ * The dossier rows live behind the TABLE tab; this is the answer to "still cant
+ * see all seats" at any width and on any tab — six 16px chips fit the narrowest
+ * rail measure, and the chip carries the seat NUMBER, so it ties to a board
+ * token without relying on colour (§8).
+ */
+function RailSeatStrip({
+  activePlayerId,
+  game,
+  room,
+}: {
+  readonly activePlayerId: string | null;
+  readonly game: PublicGameProjection;
+  readonly room: RoomProjection;
+}) {
+  return (
+    <ol className="hud-rail-seat-strip" data-slot="rail-seat-strip">
+      {game.players.map((player) => {
+        const slot = seatSlot(game, player.id);
+        const active = player.id === activePlayerId;
+        const member = memberFor(room, player.id);
+        const away = !(member?.isBot ?? false) && !player.connected;
+
+        return (
+          <li
+            className="hud-rail-seat-slot"
+            data-slot="rail-seat-chip"
+            data-state={active ? "active" : away ? "away" : "idle"}
+            key={player.id}
+          >
+            <span aria-hidden="true" className={cn("hud-seat-chip", `hud-seat-${slot}`)}>
+              {slot}
+            </span>
+            <span className="sr-only">
+              Seat {slot}, {playerName(room, player.id)}
+              {active ? ", active" : away ? ", away" : ""}.
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/**
+ * The local seat's own numbers, held beside the turn state so they are legible
+ * without opening a tab. The HUD strip above the board carries the same figures
+ * at full width; this is the copy that survives a narrow rail and the stacked
+ * mobile sheet, where the strip has scrolled out of the way.
+ */
+function RailSelfReadout({
+  game,
+  selfPlayerId,
+}: {
+  readonly game: PublicGameProjection;
+  readonly selfPlayerId: string;
+}) {
+  const player = game.players.find((candidate) => candidate.id === selfPlayerId);
+
+  return (
+    <dl className="hud-rail-self" data-slot="rail-self">
+      <div className="hud-rail-self-cell">
+        <dt className="hud-label">Cash</dt>
+        <dd className="hud-sub">{player ? `$${formatNumber(player.resources["money"] ?? 0)}` : "—"}</dd>
+      </div>
+      <div className="hud-rail-self-cell">
+        <dt className="hud-label">Rep</dt>
+        <dd className="hud-sub">{player ? formatNumber(player.resources["reputation"] ?? 0) : "—"}</dd>
+      </div>
+      <div className="hud-rail-self-cell">
+        <dt className="hud-label">Energy</dt>
+        <dd className="hud-sub">{player ? formatNumber(player.resources["energy"] ?? 0) : "—"}</dd>
+      </div>
+    </dl>
+  );
+}
+
+/**
+ * The turn clock, read from the projection's own deadline.
+ *
+ * Read defensively (the same shape-check `authoredCardName` uses) because the
+ * turn-timer fields are being reshaped in packages/contracts: a missing or
+ * non-string deadline degrades to "—" rather than breaking the rail. Rendered
+ * as the deadline instant, not as a live countdown — this component renders on
+ * the server too, and a ticking clock in the markup would disagree with it.
+ */
+function turnClockLabel(game: PublicGameProjection): string {
+  const candidate: { readonly deadlineAt?: unknown } = game;
+  return typeof candidate.deadlineAt === "string" ? clockLabel(candidate.deadlineAt) : "—";
 }
 
 /**
@@ -488,13 +974,25 @@ export function resolveTurnState(
   };
 }
 
-function TurnStateNotice({ state }: { readonly state: TurnState }) {
+function TurnStateNotice({
+  clock,
+  state,
+}: {
+  readonly clock: string;
+  readonly state: TurnState;
+}) {
   return (
     <p className="hud-wait" data-slot="turn-rail-turn-state" data-tone={state.tone}>
       <span aria-hidden="true" className={cn("hud-led", `hud-led--${state.tone}`)} />
       <TurnStateSeatChip slot={state.slot} />
       <span className="hud-wait-text hud-fade-in" key={state.key}>
         {state.text}
+      </span>
+      {/* The turn clock keeps a fixed lane whether or not a deadline is set, so
+          a timer arriving cannot shift the text beside it. */}
+      <span className="hud-wait-clock" data-slot="rail-turn-clock">
+        <span className="sr-only">Turn deadline </span>
+        {clock}
       </span>
     </p>
   );

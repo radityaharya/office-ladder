@@ -12,8 +12,13 @@ import { useEventPacing } from "./event-feedback-policy";
 import { GameHud } from "./game-hud";
 import { CardDrawFeed, GameFeedback } from "./game-feedback";
 import { shouldShowGameWinner } from "./game-completion-policy";
-import { GameLayout } from "./game-layout";
-import { createGameView, findPromptAction, findRollAction } from "./game-view";
+import { AttentionNotice, GameLayout } from "./game-layout";
+import {
+  createAttentionNotice,
+  createGameView,
+  findPromptAction,
+  findRollAction,
+} from "./game-view";
 import {
   ActivityLog,
   buildActivityLog,
@@ -144,6 +149,16 @@ export function GameClient({ roomId }: GameClientProps) {
    * canonical either way — the roll control is never gated on playback.
    */
   const view = useMemo(() => (shown ? createGameView(shown) : null), [shown]);
+
+  /*
+   * Canonical, NOT paced — deliberately the opposite choice to `view` above.
+   * Everything in the attention band is on a real clock, and a deadline derived
+   * from played-back state would understate how long the player actually has.
+   */
+  const attentionNotice = useMemo(
+    () => (canonical ? createAttentionNotice(canonical) : null),
+    [canonical],
+  );
 
   /*
    * The dice instrument is a pure derivation of whatever projection it is handed:
@@ -318,67 +333,94 @@ export function GameClient({ roomId }: GameClientProps) {
           />
         }
         actionTray={
-          <>
-            {/*
-              The catch-up control. Gated on `isBehind` rather than
-              `isPlayingBack` deliberately: playback is true for a second or two
-              of EVERY turn, so gating on it would make this appear and vanish
-              constantly — worse chrome than none. Pressing it reveals everything
-              committed at the current revision; it does not change the game.
-            */}
-            {paced.isBehind ? (
-              <button
-                className="dice-catchup"
-                data-slot="dice-catchup"
-                onClick={paced.skip}
-                type="button"
-              >
-                <span className="dice-catchup-label">Playing back</span>
-                <span className="dice-catchup-count">{paced.pendingCount}</span>
-                <span className="dice-catchup-action">Catch up</span>
-              </button>
-            ) : null}
-            {/*
-              Canonical `canRoll` and canonical active-player name. DESIGN.md
-              §7.2: the roll control is live the instant the server says the
-              action is legal, whatever is still animating or playing back.
-            */}
-            <ActionTray
-              activePlayerName={activePlayerName(state.bootstrap)}
-              canRoll={view.canRoll}
-              dice={diceRoll}
-              isRolling={isRolling}
-              onRoll={() => void roll()}
-              rollError={rollError}
-            />
-          </>
+          /*
+            Canonical `canRoll` and canonical active-player name. DESIGN.md
+            §7.2: the roll control is live the instant the server says the
+            action is legal, whatever is still animating or playing back.
+
+            The catch-up control used to sit above this as a second stacked row.
+            It now lives in the rail head — see `catchUp` below.
+          */
+          <ActionTray
+            activePlayerName={activePlayerName(state.bootstrap)}
+            canRoll={view.canRoll}
+            dice={diceRoll}
+            isRolling={isRolling}
+            onRoll={() => void roll()}
+            rollError={rollError}
+          />
         }
         turnRail={
-          <>
-            {/* Paced: the activity log is the thing the player reads to follow
-                the match, so it is the primary consumer of the presentation
-                cursor. The seat dossiers in the same rail read canonical
-                `game.players`. */}
-            <TurnRail
-              game={shown.publicProjection}
-              room={state.bootstrap.room}
-              selfPlayerId={state.bootstrap.self.playerId}
-            />
-            {/*
-              Events — the rail's third block, after seats and activity.
+          /* Paced: the activity log is the thing the player reads to follow
+             the match, so it is the primary consumer of the presentation
+             cursor. The seat dossiers in the same rail read canonical
+             `game.players`. */
+          <TurnRail
+            catchUp={
+              /*
+                Gated on `isBehind` rather than `isPlayingBack` deliberately:
+                playback is true for a second or two of EVERY turn, so gating on
+                it would make this appear and vanish constantly — worse chrome
+                than none. Pressing it reveals everything committed at the
+                current revision; it does not change the game.
 
-              Non-blocking by construction: a drawn card reports something the
-              server ALREADY committed, so it never dims, never covers the board
-              and never needs a click. Living in the rail rather than in the
-              action stack under the board is what keeps the board a fixed size:
-              the rail shares the board's grid ROW, so a card arriving costs the
-              board nothing and nothing has to be reserved for it. It needs the
-              definite 320px rail track in game-shell.css to stay put, and
-              `.card-feed`'s container query is what reflows the notice to that
-              measure instead of to the viewport.
-            */}
-            <CardDrawFeed bootstrap={shown} />
-          </>
+                Hosted in the rail head rather than the action region because
+                there it moved the board 32px (631px -> 599px) every time it
+                appeared. The rail is a definite grid track, so a control
+                arriving here redistributes rail height and costs the board
+                nothing.
+              */
+              paced.isBehind ? (
+                <button
+                  className="dice-catchup"
+                  data-slot="dice-catchup"
+                  onClick={paced.skip}
+                  type="button"
+                >
+                  <span className="dice-catchup-label">Playing back</span>
+                  <span className="dice-catchup-count">{paced.pendingCount}</span>
+                  <span className="dice-catchup-action">Catch up</span>
+                </button>
+              ) : null
+            }
+            game={shown.publicProjection}
+            panels={[
+              {
+                /*
+                  Events, as the TRACK tab's card-feed destination.
+
+                  Non-blocking by construction: a drawn card reports something
+                  the server ALREADY committed, so it never dims, never covers
+                  the board and never needs a click. Living in the rail rather
+                  than in the action stack under the board is what keeps the
+                  board a fixed size — the rail shares the board's grid ROW, so
+                  a card arriving costs the board nothing. `.card-feed`'s
+                  container query reflows the notice to the rail's measure
+                  rather than to the viewport.
+                */
+                content: <CardDrawFeed bootstrap={shown} />,
+                id: "feed",
+              },
+            ]}
+            room={state.bootstrap.room}
+            selfPlayerId={state.bootstrap.self.playerId}
+          />
+        }
+        attention={
+          /*
+            Canonical, never paced: a countdown derived from played-back state
+            would be a lie about a real deadline. The band is a permanently
+            reserved row, so what changes here is only the text inside it —
+            nothing in this prop can move the board.
+          */
+          attentionNotice === null ? null : (
+            <AttentionNotice
+              deadline={attentionNotice.deadline}
+              detail={attentionNotice.detail}
+              label={attentionNotice.label}
+              tone={attentionNotice.tone}
+            />
+          )
         }
       />
     </main>
