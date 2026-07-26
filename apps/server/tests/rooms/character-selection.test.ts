@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 
+import { deadlineDashModes, type ModeRules } from "@office-ladder/content";
 import { createStableId } from "@office-ladder/engine";
 import { CHARACTER_IDS, characterLabel } from "../../src/rooms/characters";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
 import { setupFor } from "../../src/rooms/service/game-setup";
 import type { RoomService, StoredRoom } from "../../src/rooms/service/types";
+
+/** The shipped quick-mode ruleset: what a room with no authored one plays under. */
+const QUICK_RULES = deadlineDashModes["mode.quick"].rules;
+/** A shipped preset that has hidden roles switched on. */
+const ROLES_ON_RULES = deadlineDashModes["mode.standard"].rules;
 
 const players = {
   host: createStableId("PlayerId", "user-host"),
@@ -294,6 +300,7 @@ describe("character assignment at setup", () => {
       }),
       gameId,
       "seed-1",
+      QUICK_RULES,
     );
 
     expect(setup.players.map((player) => player.characterId)).toEqual([
@@ -308,6 +315,7 @@ describe("character assignment at setup", () => {
       roomWith([players.host, players.second, players.third], {}),
       gameId,
       "seed-1",
+      QUICK_RULES,
     );
 
     expect(setup.players.map((player) => player.characterId)).toEqual(
@@ -324,6 +332,7 @@ describe("character assignment at setup", () => {
       }),
       gameId,
       "seed-1",
+      QUICK_RULES,
     );
 
     const assigned = setup.players.map((player) => String(player.characterId));
@@ -343,6 +352,7 @@ describe("character assignment at setup", () => {
       }),
       gameId,
       "seed-1",
+      QUICK_RULES,
     );
 
     const assigned = setup.players.map((player) => String(player.characterId));
@@ -356,6 +366,7 @@ describe("character assignment at setup", () => {
       roomWith(Object.values(players), { [players.sixth]: WORKAHOLIC }),
       gameId,
       "seed-1",
+      QUICK_RULES,
     );
 
     expect(new Set(setup.players.map((player) => String(player.characterId)))).toEqual(
@@ -371,8 +382,26 @@ describe("character assignment at setup", () => {
   });
 });
 
+/**
+ * The hidden-role assignment, and the leak it used to be.
+ *
+ * `game-setup.ts` assigned Management by `(order + 1) % 3 === 0` while `order`
+ * was published to every client as `member.seat`, so seats 2 and 5 were
+ * Management in every match ever played and every player could derive every
+ * other player's secret role by counting. The replacement draws the seats from a
+ * partial Fisher-Yates over a `:roles`-suffixed stream of the server-side game
+ * seed, and is gated on `hidden.rolesEnabled` like every other mechanic.
+ *
+ * The tests below are the two halves of that: the assignment is *deterministic
+ * given the seed* (so a match replays identically) and *undetermined given the
+ * seat* (so the projection leaks nothing).
+ */
 describe("hidden role assignment", () => {
-  function rolesFor(seed: string, memberIds: readonly string[]): readonly string[] {
+  function rolesFor(
+    seed: string,
+    memberIds: readonly string[],
+    rules: ModeRules = ROLES_ON_RULES,
+  ): readonly string[] {
     const setup = setupFor(
       {
         id: roomId,
@@ -394,6 +423,7 @@ describe("hidden role assignment", () => {
       },
       gameId,
       seed,
+      rules,
     );
     return setup.players.map((player) => String(player.role.kind));
   }
@@ -401,8 +431,8 @@ describe("hidden role assignment", () => {
   const sixSeats = Object.values(players);
 
   it("Given the same seed, When the setup is built twice, Then the roles are identical", () => {
-    // Replay-safety: the roles are a pure function of (seed, seat count), with no
-    // clock and no Math.random anywhere near them.
+    // Replay-safety: the roles are a pure function of (seed, seat count, rules),
+    // with no clock and no Math.random anywhere near them.
     expect(rolesFor("seed-1", sixSeats)).toEqual(rolesFor("seed-1", sixSeats));
   });
 
@@ -429,21 +459,83 @@ describe("hidden role assignment", () => {
     },
   );
 
-  it("Given many different seeds, When roles are assigned, Then no seat is always management", () => {
-    // The audit's finding: `(order + 1) % 3 === 0` made seats 2 and 5 Management in
-    // every match ever played, and `order` is published to every client as `seat`.
-    // Any seat being management in *all* seeds would restore that.
-    const seatCounts = [0, 0, 0, 0, 0, 0];
-    const seeds = Array.from({ length: 40 }, (_unused, index) => `seed-${index}`);
+  it("Given a mode with roles switched off, When roles are assigned, Then no seat holds one", () => {
+    // The mode gate (spec §4: a mechanic that cannot be switched off from config
+    // is a bug). `mode.quick` ships with `hidden.rolesEnabled: false`, and
+    // `legal-actions.ts` refuses the role-reveal verb under the same flag — so
+    // assigning roles here would create a hidden team nobody could ever use, and
+    // uniform is also the only assignment that cannot leak.
+    expect(QUICK_RULES.hidden.rolesEnabled).toBe(false);
+
+    const roles = rolesFor("seed-1", sixSeats, QUICK_RULES);
+
+    expect(roles).toEqual(Array.from({ length: 6 }, () => "role.worker"));
+  });
+
+  it("Given many seeds, When roles are assigned, Then every seat holds each role sometimes", () => {
+    // The audit's finding, stated as a predicate: a seat whose role is the same
+    // in every seed *is* a derivable role, because seat number is public. Both
+    // roles being observed at every seat is exactly the negation of "role is a
+    // function of seat".
+    const seeds = Array.from({ length: 200 }, (_unused, index) => `seed-${index}`);
+    const managementBySeat = [0, 0, 0, 0, 0, 0];
     for (const seed of seeds) {
       rolesFor(seed, sixSeats).forEach((role, seat) => {
-        if (role === "role.management") seatCounts[seat] = (seatCounts[seat] ?? 0) + 1;
+        if (role === "role.management") managementBySeat[seat] = (managementBySeat[seat] ?? 0) + 1;
       });
     }
 
-    for (const count of seatCounts) {
+    for (const count of managementBySeat) {
       expect(count).toBeGreaterThan(0);
       expect(count).toBeLessThan(seeds.length);
+    }
+  });
+
+  it("Given many seeds, When roles are assigned, Then no seat is management much more often than chance", () => {
+    // Stronger than "not always": a seat that drew Management 90% of the time
+    // would still pass the test above while being every bit as predictable. Two
+    // of six seats are Management, so the expectation per seat is 1/3; the band
+    // is wide enough that a fair shuffle never trips it and narrow enough that a
+    // seat-dependent rule does.
+    const seeds = Array.from({ length: 600 }, (_unused, index) => `predictability-${index}`);
+    const managementBySeat = [0, 0, 0, 0, 0, 0];
+    for (const seed of seeds) {
+      rolesFor(seed, sixSeats).forEach((role, seat) => {
+        if (role === "role.management") managementBySeat[seat] = (managementBySeat[seat] ?? 0) + 1;
+      });
+    }
+
+    // Every seat draws it, and the six counts sum to exactly two per match.
+    expect(managementBySeat.reduce((total, count) => total + count, 0)).toBe(
+      seeds.length * 2,
+    );
+    for (const count of managementBySeat) {
+      const share = count / seeds.length;
+      expect(share).toBeGreaterThan(0.2);
+      expect(share).toBeLessThan(0.47);
+    }
+  });
+
+  it("Given a seat's own role, When the seed changes, Then the other seats' roles do not follow it", () => {
+    // The remaining derivation risk: even with the seat freed, a fixed *pairing*
+    // (seat 0 management implies seat 3 management, say) would still hand a
+    // player every other role the moment they learned their own. Measured as: for
+    // every ordered pair of seats, the second is not always management when the
+    // first is, and not never.
+    const seeds = Array.from({ length: 400 }, (_unused, index) => `pairing-${index}`);
+    const draws = seeds.map((seed) => rolesFor(seed, sixSeats));
+
+    for (let first = 0; first < 6; first += 1) {
+      const matching = draws.filter((roles) => roles[first] === "role.management");
+      expect(matching.length).toBeGreaterThan(0);
+      for (let second = 0; second < 6; second += 1) {
+        if (second === first) continue;
+        const alsoManagement = matching.filter(
+          (roles) => roles[second] === "role.management",
+        ).length;
+        expect(alsoManagement).toBeGreaterThan(0);
+        expect(alsoManagement).toBeLessThan(matching.length);
+      }
     }
   });
 });

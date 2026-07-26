@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createStableId } from "@office-ladder/engine";
 import { createBotDriver } from "../../src/rooms/bots/bot-driver";
+import { botSubmitterFor } from "./bot-submitter";
 import { shouldDriveBots } from "../../src/rooms/bots/should-drive";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
@@ -305,9 +306,9 @@ describe("a legacy room snapshot through the whole read path", () => {
     const { repository, service } = await writeLegacyRow({ turnTimeoutMs: 0 });
     const events: string[] = [];
     const driver = createBotDriver({
-      roomService: service,
+      submit: botSubmitterFor(service, repository),
       repository,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => undefined,
       onEvent: (event) => {

@@ -67,6 +67,23 @@ export const BOT_TURN_DELAY_DISABLED_MS = 0;
  */
 export const MAXIMUM_BOT_TURN_DELAY_MS = 10_000;
 
+/**
+ * Whether `BOT_TURN_DELAY_MS` was set at all, as opposed to what it resolves to.
+ *
+ * The distinction became load-bearing once a mode could pace its own bots
+ * (`ModeRules.bots.thinkMsRange`, spec §4.1). An *unset* variable must let the
+ * mode decide; an explicitly set one — including `0` — is an operator override
+ * that outranks the mode, because an override a room could quietly ignore is not
+ * an override. Before this, {@link parseBotTurnDelayMs} answered
+ * {@link DEFAULT_BOT_TURN_DELAY_MS} for both cases, which would have made every
+ * mode's range dead configuration on any deployment.
+ */
+export function isBotTurnDelayConfigured(
+  configured: string | undefined,
+): configured is string {
+  return configured !== undefined && configured.trim().length > 0;
+}
+
 export type BotTurnDelayConfigResult =
   | { readonly ok: true; readonly delayMs: number }
   | {
@@ -91,7 +108,7 @@ export type BotTurnDelayConfigResult =
 export function parseBotTurnDelayMs(
   configured: string | undefined,
 ): BotTurnDelayConfigResult {
-  if (configured === undefined || configured.trim().length === 0) {
+  if (!isBotTurnDelayConfigured(configured)) {
     return { ok: true, delayMs: DEFAULT_BOT_TURN_DELAY_MS };
   }
 

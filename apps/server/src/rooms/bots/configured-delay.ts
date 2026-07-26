@@ -1,5 +1,5 @@
 import { log } from "@/observability/log";
-import { parseBotTurnDelayMs } from "./turn-delay";
+import { isBotTurnDelayConfigured, parseBotTurnDelayMs } from "./turn-delay";
 
 /**
  * The process-wide bot pacing delay, resolved once from `BOT_TURN_DELAY_MS`.
@@ -25,3 +25,19 @@ function resolveBotTurnDelayMs(): number {
 }
 
 export const BOT_TURN_DELAY_MS = resolveBotTurnDelayMs();
+
+/**
+ * The same number, but `null` when nothing was configured.
+ *
+ * This is what the driver actually passes to {@link botThinkMs}: an unset
+ * variable hands pacing to the room's own `ModeRules.bots.thinkMsRange`, while a
+ * set one — `0` included — overrides every mode on this deployment. Exported
+ * beside {@link BOT_TURN_DELAY_MS} rather than replacing it because the flat
+ * value is still the right answer for anything that just wants "how long is a
+ * bot pause here" without a room in hand.
+ */
+export const BOT_TURN_DELAY_OVERRIDE_MS: number | null = isBotTurnDelayConfigured(
+  process.env.BOT_TURN_DELAY_MS,
+)
+  ? BOT_TURN_DELAY_MS
+  : null;

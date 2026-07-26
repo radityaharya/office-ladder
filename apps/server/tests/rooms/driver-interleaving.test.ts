@@ -4,6 +4,8 @@ import { createStableId, type GameState, type PlayerId } from "@office-ladder/en
 import { createBotDriver, type BotDriver } from "../../src/rooms/bots/bot-driver";
 import { botSeatFor } from "../../src/rooms/bots/bot-seats";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
+import type { BotCommandSubmitter } from "../../src/rooms/bots/bot-command-submitter";
+import { botSubmitterFor } from "./bot-submitter";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
 import type {
   RoomRepository,
@@ -56,7 +58,13 @@ const TIMEOUT_MS = 30_000;
 type Commit = {
   readonly source: "bot-driver" | "timeout-driver" | "human";
   readonly actorId: PlayerId;
-  readonly kind: "roll" | "respond";
+  /**
+   * The command type. Was `"roll" | "respond"` when those were the only two a
+   * bot could send; a bot turn is now a short chain (a promotion, a free action,
+   * then the roll), and every link has to be counted or the revision-delta
+   * assertions below stop meaning anything.
+   */
+  readonly kind: string;
   /** The game revision the command was applied against. */
   readonly expectedRevision: number | undefined;
 };
@@ -155,10 +163,35 @@ async function startMatch(options: {
     },
   });
 
+  /**
+   * The bot driver is observed at its *transport*, not at the room service.
+   *
+   * Only two of the twenty-eight commands a bot can send reach `roll()` or
+   * `respondToPrompt()`, so wrapping the service would record part of a bot's
+   * turn and miss the rest — and every assertion here is a count of committed
+   * commands against a revision delta.
+   */
+  const botSubmit = botSubmitterFor(botService, repository, {
+    now,
+    turnTimeoutMs: TIMEOUT_MS,
+  });
+  const observedBotSubmit: BotCommandSubmitter = async (submission) => {
+    const result = await botSubmit(submission);
+    if (result.ok) {
+      commits.push({
+        source: "bot-driver",
+        actorId: submission.actorId,
+        kind: submission.command.type,
+        expectedRevision: submission.expectedRevision,
+      });
+    } else refusals.push(`bot-driver:${submission.command.type}:${result.error.code}`);
+    return result;
+  };
+
   const botDriver = createBotDriver({
-    roomService: observed(botService, "bot-driver"),
+    submit: observedBotSubmit,
     repository,
-    delayMs: 0,
+    configuredDelayMs: 0,
     sleep: async () => undefined,
     publish: async () => undefined,
     onEvent: () => undefined,

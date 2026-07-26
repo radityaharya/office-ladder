@@ -1,28 +1,34 @@
 import {
   enumerateLegalActions,
   type GameState,
-  type LegalAction,
   type PlayerId,
 } from "@office-ladder/engine";
 import { BOT_COMMAND_ID_PREFIX, type RoomStatus } from "@office-ladder/contracts";
 import { createRoomDrainScheduler } from "@/rooms/drain-scheduler";
 import type {
-  ActiveStoredRoom,
   RoomRepository,
-  RoomService,
   RoomServiceErrorCode,
-  RoomServiceResult,
+  StoredRoom,
 } from "@/rooms/service/types";
-import { decideBotAction, type BotDecision } from "./bot-policy";
-import { botSeatFor, normalizeStoredRoom } from "./bot-seats";
+import { botThinkingLine, botDecisionLine, type BotChatLine } from "./bot-chat";
+import type { BotCommandSubmitter } from "./bot-command-submitter";
+import { decideBotAction, type BotActionSlug, type BotDecision } from "./bot-policy";
+import { botSeatFor, botSeats, normalizeStoredRoom } from "./bot-seats";
+import { readBotTable } from "./bot-view";
+import { botThinkMs } from "./think-time";
 
 /**
- * Hard cap on commands applied per drain. Bots only ever act while the active
- * player is a bot, so the loop already terminates on any human turn or on the
- * match ending — this exists so a rules bug (e.g. a grantExtraRoll cycle that
- * never advances) degrades into a reported anomaly instead of a hot loop.
+ * Hard cap on commands applied per drain.
+ *
+ * Raised from 40 with the command set: a bot turn used to be exactly one
+ * `turn.roll`, and is now up to a handful of pre-roll decisions (a promotion, a
+ * free action, a claim, a card) before the roll that ends it, times however many
+ * bot seats are chained together. The cap is still what it always was — a
+ * backstop so a rules bug degrades into a reported anomaly instead of a hot loop
+ * — not a budget anything is expected to reach. Every policy rung is written to
+ * consume the thing that offered it; see bot-policy.ts's "every rung terminates".
  */
-const MAX_ACTIONS_PER_DRAIN = 40;
+const MAX_ACTIONS_PER_DRAIN = 120;
 
 /**
  * Outcomes that mean "the world moved on without us". A drain is best-effort
@@ -62,7 +68,12 @@ export type BotDrainStop =
   /** Somebody won, or the match is quarantined. Correct. */
   | { readonly kind: "match-not-active"; readonly gameStatus: GameState["status"] }
   | { readonly kind: "no-active-player" }
-  /** The correct reason to stop: this seat is a human's. */
+  /**
+   * The correct reason to stop: this seat is a human's, and no bot at the table
+   * is holding anything up. The second half is new — a bot can owe the table a
+   * reaction, a vote or an answer to an offer while somebody else is on turn,
+   * and those are driven before this stop is reported. See {@link drainPass}.
+   */
   | { readonly kind: "human-turn"; readonly playerId: PlayerId }
   /**
    * A bot holds the turn and has no legal action. Nobody else can move, so the
@@ -74,13 +85,8 @@ export type BotDrainStop =
       readonly phase: GameState["turn"]["phase"];
       readonly gameRevision: number;
     }
-  /** decideBotAction chose an action the enumerator did not offer: a defect. */
-  | {
-      readonly kind: "legal-action-missing";
-      readonly playerId: PlayerId;
-      readonly wanted: LegalAction["type"];
-      readonly gameRevision: number;
-    }
+  /** The bot's own view of the game could not be built: torn or missing state. */
+  | { readonly kind: "bot-not-seated"; readonly playerId: PlayerId }
   | {
       readonly kind: "command-rejected";
       readonly playerId: PlayerId;
@@ -98,6 +104,23 @@ export type BotDrainStop =
  */
 export type BotDriverEvent =
   | { readonly type: "bot.drain.started"; readonly roomId: string }
+  /**
+   * A bot has decided and is about to pause before committing.
+   *
+   * Emitted *before* the pause, and carrying the phrase the room should be shown
+   * while it lasts. This is the difference between pacing and a freeze: a delay
+   * nobody is told about looks exactly like a server that stopped answering.
+   */
+  | {
+      readonly type: "bot.thinking";
+      readonly roomId: string;
+      readonly playerId: PlayerId;
+      readonly decision: BotActionSlug;
+      readonly why: string;
+      readonly thinkMs: number;
+      /** `null` in any chat mode but `quick` — see bot-chat.ts. */
+      readonly line: BotChatLine | null;
+    }
   | {
       readonly type: "bot.command.applied";
       readonly roomId: string;
@@ -106,6 +129,8 @@ export type BotDriverEvent =
       readonly commandId: string;
       readonly revision: number;
       readonly gameRevision: number;
+      /** The remark the bot makes about what it just did, if any. */
+      readonly line: BotChatLine | null;
     }
   | {
       readonly type: "bot.publish.failed";
@@ -126,7 +151,7 @@ export type BotDriverEvent =
 export function isBotDrainDefect(stop: BotDrainStop): boolean {
   switch (stop.kind) {
     case "bot-cannot-decide":
-    case "legal-action-missing":
+    case "bot-not-seated":
     case "room-missing-game":
     case "action-cap":
       return true;
@@ -145,30 +170,21 @@ export function isBotDrainDefect(stop: BotDrainStop): boolean {
 }
 
 export type BotDriverDependencies = {
-  readonly roomService: RoomService;
   readonly repository: RoomRepository;
   /**
-   * Pause taken **before** each bot command, including the first of a chain, so
-   * humans see turns land one at a time. See turn-delay.ts for how the number is
-   * chosen; this is where the *placement* is argued.
-   *
-   * Before rather than after, reasoned from what the player sees:
-   *
-   * - The first pause is the one that matters most. Without it the first bot's
-   *   command commits in the same instant as the human's own — two turns' worth of
-   *   events reaching the client as one arrival, which is the burst this pacing
-   *   exists to remove. So the first bot in a chain waits like every other.
-   * - A pause *after* the last commit is dead air with nothing pending behind it,
-   *   and worse, it is dead air the player is charged for: the turn is already
-   *   theirs the moment that command commits. Ending the chain on a commit hands
-   *   control back with no added latency.
-   *
-   * Taken outside the room service's per-room lock (`sleep` here, `withRoomLock`
-   * inside the service), so a bot pause never blocks a human command, a bootstrap
-   * read, or the turn-timeout driver's timer write. It does hold this driver's own
-   * per-room drain slot, which is what bounds it — see MAXIMUM_BOT_TURN_DELAY_MS.
+   * How a decision reaches the engine. See bot-command-submitter.ts — it keeps
+   * `turn.roll` and `prompt.respond` on the room service's own locked path and
+   * applies the other twenty-six itself, because `RoomService` has no method for
+   * them yet (spec §11.1's single command endpoint is another owner's).
    */
-  readonly delayMs: number;
+  readonly submit: BotCommandSubmitter;
+  /**
+   * The deployment-wide `BOT_TURN_DELAY_MS`, or `null` when it is unset — in
+   * which case each room paces itself from its own `ModeRules.bots`. See
+   * think-time.ts for the precedence and why `0` has to stay distinguishable
+   * from "not configured".
+   */
+  readonly configuredDelayMs: number | null;
   /**
    * Mirrors the route layer's publishProjectionUpdate(roomId, revision,
    * messageId) so each bot turn is pushed to clients individually.
@@ -177,8 +193,9 @@ export type BotDriverDependencies = {
   readonly sleep?: (ms: number) => Promise<void>;
   /**
    * Required, not optional: a driver you can construct without a sink is a
-   * driver that can wedge a match in production and tell nobody. See
-   * bot-driver-log.ts for the production one.
+   * driver that can wedge a match in production and tell nobody. It also now
+   * carries the thinking beat, so a missing sink would silently turn paced bots
+   * back into frozen ones. See bot-driver-log.ts for the production one.
    */
   readonly onEvent: (event: BotDriverEvent) => void;
 };
@@ -197,10 +214,6 @@ function defaultSleep(ms: number): Promise<void> {
   });
 }
 
-function moneyOf(game: GameState, playerId: PlayerId): number {
-  return game.players[playerId]?.resources["money"]?.value ?? 0;
-}
-
 /**
  * Deterministic per (game, revision, action kind): a duplicated drain that
  * somehow reached the same state twice re-derives the same command id, which
@@ -212,13 +225,52 @@ function moneyOf(game: GameState, playerId: PlayerId): number {
  * compute this id could otherwise send it first, and the engine's
  * already-applied check would then refuse the bot's real turn — silently
  * freezing a match nobody else can move. See isServerActorCommandId.
+ *
+ * Exported so the test that documents that wedge derives the id the same way the
+ * driver does. Two spellings of this format would make that test pass against an
+ * id no bot ever mints, which is worse than not having it.
  */
-function botCommandId(game: GameState, decision: BotDecision): string {
+export function botCommandId(game: GameState, decision: BotDecision): string {
   return `${BOT_COMMAND_ID_PREFIX}${String(game.gameId)}:${game.revision}:${decision.kind}`;
 }
 
 function isQuietStop(code: RoomServiceErrorCode): boolean {
   return QUIET_STOP_CODES.includes(code);
+}
+
+/**
+ * The seat this pass should act for.
+ *
+ * Out-of-turn work comes first, and it has to: reaction windows, ballots and
+ * trade offers are answered by players who are *not* on turn, and while a window
+ * is open the active player is blocked by it. A driver that only ever looked at
+ * `turn.activePlayerId` therefore left every window raised on a bot unanswered
+ * until the expiry scheduler fired — with a human sitting on a turn they could
+ * not take. Blocking the whole table on a bot's silence is worse than a bot that
+ * answers slightly out of order.
+ *
+ * Bot seats are considered in room order so the choice is stable across reads.
+ */
+function seatToDrive(room: StoredRoom, game: GameState): PlayerId | null {
+  for (const seat of botSeats(room)) {
+    if (game.players[seat.playerId] === undefined) continue;
+    if (game.eliminatedPlayerIds.includes(seat.playerId)) continue;
+    if (seat.playerId === game.turn.activePlayerId) continue;
+    const owed = enumerateLegalActions(game, seat.playerId).some(
+      (action) =>
+        action.type === "reaction.play" ||
+        action.type === "reaction.pass" ||
+        action.type === "management.block-promotion" ||
+        action.type === "ballot.cast" ||
+        action.type === "agreement.respond",
+    );
+    if (owed) return seat.playerId;
+  }
+
+  const activePlayerId = game.turn.activePlayerId;
+  if (activePlayerId === null) return null;
+
+  return botSeatFor(room, activePlayerId) === null ? null : activePlayerId;
 }
 
 type DrainPassOutcome = {
@@ -240,35 +292,6 @@ export function createBotDriver(deps: BotDriverDependencies): BotDriver {
     } catch {
       // Intentionally empty: see above.
     }
-  }
-
-  async function applyDecision(
-    roomId: string,
-    botPlayerId: PlayerId,
-    action: LegalAction,
-    decision: BotDecision,
-    commandId: string,
-  ): Promise<RoomServiceResult<ActiveStoredRoom>> {
-    if (decision.kind === "respond") {
-      return deps.roomService.respondToPrompt({
-        roomId,
-        actorId: botPlayerId,
-        // Declared, not assumed: the service re-checks the id against
-        // StoredRoom.bots and refuses if this driver ever names a human member.
-        actorKind: "bot",
-        commandId,
-        expectedRevision: action.expectedRevision,
-        decisionPointId: decision.decisionPointId,
-        optionId: decision.optionId,
-      });
-    }
-    return deps.roomService.roll({
-      roomId,
-      actorId: botPlayerId,
-      actorKind: "bot",
-      commandId,
-      expectedRevision: action.expectedRevision,
-    });
   }
 
   /**
@@ -295,72 +318,84 @@ export function createBotDriver(deps: BotDriverDependencies): BotDriver {
       }
 
       const activePlayerId = game.turn.activePlayerId;
-      if (activePlayerId === null) return { actions, stop: { kind: "no-active-player" } };
-      const seat = botSeatFor(room, activePlayerId);
-      if (seat === null) {
+      const botPlayerId = seatToDrive(room, game);
+      if (botPlayerId === null) {
+        if (activePlayerId === null) return { actions, stop: { kind: "no-active-player" } };
         return { actions, stop: { kind: "human-turn", playerId: activePlayerId } };
       }
 
-      const legalActions = enumerateLegalActions(game, activePlayerId);
+      const table = readBotTable(game, botPlayerId);
+      if (table === null) {
+        // A seat listed as a bot that the game does not know about. Nothing can
+        // act for it and nothing else can take its turn, so it is a defect.
+        return { actions, stop: { kind: "bot-not-seated", playerId: botPlayerId } };
+      }
+
+      const seat = botSeatFor(room, botPlayerId);
       const decision = decideBotAction({
-        legalActions,
-        difficulty: seat.difficulty,
-        money: moneyOf(game, activePlayerId),
+        legalActions: enumerateLegalActions(game, botPlayerId),
+        difficulty: seat?.difficulty ?? "standard",
+        table,
       });
       if (decision.kind === "none") {
-        // A bot that is the active player but has nothing legal to do stalls
-        // the whole match, so this is a defect worth surfacing, not a no-op.
+        // Reported rather than skipped, in both directions. On turn it stalls the
+        // whole match — nobody else may act on a bot's turn. Off turn it is a
+        // disagreement between `seatToDrive` (which only picks a seat that owes
+        // the table something) and the policy (which has an answer for every one
+        // of those), and skipping it would spin this loop to the action cap.
         return {
           actions,
           stop: {
             kind: "bot-cannot-decide",
-            playerId: activePlayerId,
+            playerId: botPlayerId,
             phase: game.turn.phase,
             gameRevision: game.revision,
           },
         };
       }
 
-      const wanted = decision.kind === "respond" ? "prompt.respond" : "turn.roll";
-      const action = legalActions.find((candidate) => candidate.type === wanted);
-      if (action === undefined) {
-        // Unreachable by construction: decideBotAction only ever names an action
-        // it found in this same list. If it happens, the policy and the
-        // enumerator disagree, which is a silent stall — so it is reported.
-        return {
-          actions,
-          stop: {
-            kind: "legal-action-missing",
-            playerId: activePlayerId,
-            wanted,
-            gameRevision: game.revision,
-          },
-        };
-      }
-
       const commandId = botCommandId(game, decision);
-      // Delay before acting, so a human watching sees the bot "think" — and so the
+      const thinkMs = botThinkMs({
+        rules: game.rules,
+        configuredDelayMs: deps.configuredDelayMs,
+        seed: commandId,
+      });
+      // Announced *before* the pause, so the wait has a visible reason while it
+      // is happening rather than an explanation that arrives with the command.
+      report({
+        type: "bot.thinking",
+        roomId,
+        playerId: botPlayerId,
+        decision: decision.kind,
+        why: decision.why,
+        thinkMs,
+        line: botThinkingLine(game.rules.social.chat),
+      });
+      // Delay before acting, so a human watching sees the bot think — and so the
       // *previous* turn (the human's own, or the last bot's) has finished playing
       // out on the client before this one's events arrive. The room service stamps
       // every event of one command with a single `occurredAt`, so this pause is the
       // only thing that separates one turn from the next in what clients receive.
-      // See BotDriverDependencies.delayMs for why it is here and not after the
-      // commit.
-      await sleep(deps.delayMs);
+      //
+      // Taken outside the room service's per-room lock, so a bot pause never
+      // blocks a human command, a bootstrap read, or the turn-timeout driver's
+      // timer write. It does hold this driver's own per-room drain slot, which is
+      // what bounds it — see MAXIMUM_BOT_TURN_DELAY_MS.
+      await sleep(thinkMs);
 
-      const result = await applyDecision(
+      const result = await deps.submit({
         roomId,
-        activePlayerId,
-        action,
-        decision,
+        actorId: botPlayerId,
         commandId,
-      );
+        expectedRevision: decision.expectedRevision,
+        command: decision.command,
+      });
       if (!result.ok) {
         return {
           actions,
           stop: {
             kind: "command-rejected",
-            playerId: activePlayerId,
+            playerId: botPlayerId,
             decision: decision.kind,
             code: result.error.code,
             expected: isQuietStop(result.error.code),
@@ -372,11 +407,12 @@ export function createBotDriver(deps: BotDriverDependencies): BotDriver {
       report({
         type: "bot.command.applied",
         roomId,
-        playerId: activePlayerId,
+        playerId: botPlayerId,
         decision: decision.kind,
         commandId,
         revision: result.value.revision,
         gameRevision: result.value.game.revision,
+        line: botDecisionLine(game.rules.social.chat, decision.kind),
       });
 
       try {

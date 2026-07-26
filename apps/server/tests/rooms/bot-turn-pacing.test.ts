@@ -9,6 +9,8 @@ import {
   parseBotTurnDelayMs,
 } from "../../src/rooms/bots/turn-delay";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
+import type { BotCommandSubmitter } from "../../src/rooms/bots/bot-command-submitter";
+import { botSubmitterFor } from "./bot-submitter";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
 import type { RoomService, StoredRoom } from "../../src/rooms/service/types";
 import {
@@ -145,10 +147,33 @@ async function startSoloMatch(options: StartOptions): Promise<Harness> {
     },
   });
 
+  /**
+   * The bot is observed at its transport, not at the room service.
+   *
+   * A bot turn is no longer one `turn.roll`: it may promote, take a free action
+   * or steer the roll first, and only the roll would reach `roll()`. Recording
+   * at the service would therefore miss most of a chain — and every assertion in
+   * this file is "one pause per committed bot command", which is a statement
+   * about all of them.
+   */
+  const submit = botSubmitterFor(service, repository, { now, turnTimeoutMs });
+  const observedSubmit: BotCommandSubmitter = async (submission) => {
+    const result = await submit(submission);
+    if (result.ok) {
+      commits.push({
+        source: "bot-driver",
+        actorId: submission.actorId,
+        atMs: nowMs,
+        expectedRevision: submission.expectedRevision,
+      });
+    } else refusals.push(`bot-driver:${result.error.code}`);
+    return result;
+  };
+
   const botDriver = createBotDriver({
-    roomService: observed("bot-driver"),
+    submit: observedSubmit,
     repository,
-    delayMs: options.delayMs,
+    configuredDelayMs: options.delayMs,
     sleep: async (ms) => {
       sleeps.push(ms);
       nowMs += ms;

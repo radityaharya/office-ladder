@@ -42,6 +42,11 @@ export function botDriverEventLevel(event: BotDriverEvent): LogLevel {
     // both at info would double every line on the polling path for no gain.
     case "bot.drain.started":
       return "debug";
+    // One per applied command and always followed by bot.command.applied, so it
+    // adds nothing at info — its value is the payload the realtime fan-out and a
+    // debug session read, not a second line per turn in production logs.
+    case "bot.thinking":
+      return "debug";
     // A committed bot turn is a real state change, at most ~1/second per room.
     case "bot.command.applied":
       return "info";
@@ -76,13 +81,8 @@ function stopContext(stop: BotDrainStop): LogContext {
         phase: stop.phase,
         gameRevision: stop.gameRevision,
       };
-    case "legal-action-missing":
-      return {
-        stop: stop.kind,
-        player: stop.playerId,
-        wanted: stop.wanted,
-        gameRevision: stop.gameRevision,
-      };
+    case "bot-not-seated":
+      return { stop: stop.kind, player: stop.playerId };
     case "command-rejected":
       return {
         stop: stop.kind,
@@ -103,6 +103,16 @@ export function botDriverEventContext(event: BotDriverEvent): LogContext {
   switch (event.type) {
     case "bot.drain.started":
       return { room: event.roomId };
+    case "bot.thinking":
+      return {
+        room: event.roomId,
+        player: event.playerId,
+        decision: event.decision,
+        // The bot's own one-clause reason. This is what makes "the bots did
+        // something and I could not tell what" answerable from a log tail.
+        why: event.why,
+        thinkMs: event.thinkMs,
+      };
     case "bot.command.applied":
       return {
         room: event.roomId,

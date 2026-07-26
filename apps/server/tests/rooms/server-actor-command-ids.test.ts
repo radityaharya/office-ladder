@@ -7,11 +7,15 @@ import {
   type GameState,
 } from "@office-ladder/engine";
 import {
+  botCommandId,
   createBotDriver,
   type BotDriverEvent,
 } from "../../src/rooms/bots/bot-driver";
+import { decideBotAction } from "../../src/rooms/bots/bot-policy";
 import { botSeatFor } from "../../src/rooms/bots/bot-seats";
+import { readBotTable } from "../../src/rooms/bots/bot-view";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
+import { botSubmitterFor } from "./bot-submitter";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
 import type { RoomService, StoredRoom } from "../../src/rooms/service/types";
 import {
@@ -144,9 +148,9 @@ describe("server-actor command id namespace", () => {
     const service = createService(repository, () => "2026-07-26T12:00:00.000Z", 0);
     const events: BotDriverEvent[] = [];
     const driver = createBotDriver({
-      roomService: service,
+      submit: botSubmitterFor(service, repository),
       repository,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => undefined,
       onEvent: (event) => events.push(event),
@@ -233,9 +237,9 @@ describe("server-actor command id namespace", () => {
     const service = createService(repository, () => "2026-07-26T12:00:00.000Z", 0);
     const events: BotDriverEvent[] = [];
     const driver = createBotDriver({
-      roomService: service,
+      submit: botSubmitterFor(service, repository),
       repository,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => undefined,
       onEvent: (event) => events.push(event),
@@ -250,18 +254,51 @@ describe("server-actor command id namespace", () => {
     await service.addBot({ roomId, actorId: host, difficulty: "standard" });
     await service.addBot({ roomId, actorId: host, difficulty: "easy" });
     await service.start({ roomId, actorId: host, actorKind: "human" });
-    // Every human roll pre-claims the id the bot driver would derive at the
-    // revision that roll produces. Whichever roll actually hands the turn over is
-    // therefore guaranteed to have poisoned the bot's first command id, without
-    // the test having to predict which roll that is.
     const handover = await rollUntilBotTurn(
       service,
       repository,
-      (nextRevision, game) => `bot:${String(game.gameId)}:${nextRevision}:roll`,
+      (nextRevision) => `human:${nextRevision}`,
     );
+
+    // The id the driver will actually mint for this bot's next command, derived
+    // through the driver's own helper and the policy's own decision rather than
+    // by assuming a spelling.
+    //
+    // The previous version of this test pre-claimed
+    // `bot:<gameId>:<revision>:roll` from every human roll, which worked only
+    // while `roll` was one of two things a bot could ever do. A bot now opens
+    // its turn with whichever rung of the ladder fires first, so a hard-coded
+    // slug would have quietly stopped colliding — and a wedge test that no
+    // longer wedges anything passes for the wrong reason.
+    const room = await requireRoom(repository);
+    const activePlayerId = handover.turn.activePlayerId;
+    if (activePlayerId === null) throw new Error("no active player");
+    const table = readBotTable(handover, activePlayerId);
+    if (table === null) throw new Error("the bot is not seated");
+    const decision = decideBotAction({
+      legalActions: enumerateLegalActions(handover, activePlayerId),
+      difficulty: botSeatFor(room, activePlayerId)?.difficulty ?? "standard",
+      table,
+    });
+    const claimed = botCommandId(handover, decision);
+    expect(isServerActorCommandId(claimed)).toBe(true);
+
+    // Written straight to the repository, which is what a *client* command
+    // carrying that id would have left behind: `lastCommandId` is the engine's
+    // whole idempotency check. It cannot be produced by an actual request here,
+    // because by this point the turn belongs to a bot and no human may act on it
+    // — which is precisely why pre-claiming is the attack and why the namespace
+    // is reserved at the route instead.
     expect(
-      isServerActorCommandId(`bot:${String(handover.gameId)}:${handover.revision}:roll`),
-    ).toBe(true);
+      await repository.save(
+        {
+          ...room,
+          revision: room.revision + 1,
+          game: { ...handover, lastCommandId: createStableId("CommandId", claimed) },
+        },
+        room.revision,
+      ),
+    ).toEqual({ ok: true });
 
     await driver.drive(roomId);
 

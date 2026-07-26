@@ -118,6 +118,49 @@ describe("shouldDriveBots", () => {
     expect(shouldDriveBots(bootstrapWith({ activePlayerId: null }))).toBe(false);
   });
 
+  it("Given a human on turn but an open reaction window, When the read path checks, Then the drain is kicked so a bot can answer it", () => {
+    // The case a turn-based predicate cannot see. A reaction window is answered
+    // out of turn, and while one is open the *active* player is blocked by it —
+    // so a window raised on a bot during a human's turn used to be nobody's job,
+    // and the human sat unable to act until the expiry scheduler fired.
+    const bootstrap = bootstrapWith({ activePlayerId: humanMember.id });
+    expect(
+      shouldDriveBots({
+        ...bootstrap,
+        reactions: [
+          {
+            id: "decision-1",
+            kind: "prevention",
+            deadlineAt: null,
+            hasPriority: true,
+            hasPassed: false,
+            hasPlayed: false,
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("Given an open reaction window in a room with no bots, When the read path checks, Then nothing is kicked", () => {
+    const bootstrap = bootstrapWith({ activePlayerId: humanMember.id });
+    expect(
+      shouldDriveBots({
+        ...bootstrap,
+        room: { ...room, members: [humanMember] },
+        reactions: [
+          {
+            id: "decision-1",
+            kind: "prevention",
+            deadlineAt: null,
+            hasPriority: true,
+            hasPassed: false,
+            hasPlayed: false,
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("Given a lobby bootstrap with bot seats, When the read path checks, Then nothing is kicked", () => {
     const lobby: RoomBootstrap = {
       room,

@@ -11,8 +11,10 @@ import {
   botDriverEventContext,
   botDriverEventLevel,
 } from "../../src/rooms/bots/bot-driver-log";
+import type { BotCommandSubmitter } from "../../src/rooms/bots/bot-command-submitter";
 import { InMemoryRoomRepository } from "../../src/rooms/in-memory-repository";
 import { createRoomService } from "../../src/rooms/service/create-room-service";
+import { botSubmitterFor } from "./bot-submitter";
 import type {
   RoomRepository,
   RoomService,
@@ -76,22 +78,20 @@ async function startSoloMatch(delayMs = 0): Promise<Harness> {
     turnTimeoutMs: 0,
   });
 
-  const observed: RoomService = {
-    ...service,
-    async roll(input) {
-      timeline.push(`roll:${input.actorId}`);
-      return service.roll(input);
-    },
-    async respondToPrompt(input) {
-      timeline.push(`respond:${input.actorId}`);
-      return service.respondToPrompt(input);
-    },
+  // Wrapped at the transport rather than at the two service methods: a bot now
+  // submits twenty-eight command types and only two of them reach `roll()` or
+  // `respondToPrompt()`, so observing the service would record a partial turn and
+  // make the sleep/command alternation below look broken when it was not.
+  const submit = botSubmitterFor(service, repository);
+  const observedSubmit: BotCommandSubmitter = async (submission) => {
+    timeline.push(`${submission.command.type}:${submission.actorId}`);
+    return submit(submission);
   };
 
   const driver = createBotDriver({
-    roomService: observed,
+    submit: observedSubmit,
     repository,
-    delayMs,
+    configuredDelayMs: delayMs,
     sleep: async () => {
       timeline.push("sleep");
     },
@@ -115,7 +115,7 @@ async function startSoloMatch(delayMs = 0): Promise<Harness> {
   const started = await service.start({ roomId, actorId: host, actorKind: "human" });
   expect(started).toMatchObject({ ok: true, value: { status: "active" } });
 
-  return { repository, service: observed, driver, events, defects, published, timeline };
+  return { repository, service, driver, events, defects, published, timeline };
 }
 
 type Deferred = {
@@ -223,10 +223,12 @@ describe("bot driver", () => {
       afterHuman.eventSummaries.length,
     );
 
-    // Both bot seats acted for themselves, not the human on their behalf.
+    // Both bot seats acted for themselves, not the human on their behalf. Each
+    // one's turn ends in a roll, whatever it did before that — a bot that never
+    // rolled would be a bot that never hands the turn on.
     const botEntries = harness.timeline.filter((entry) => !entry.endsWith(host));
-    expect(botEntries).toContain(`roll:${firstBot}`);
-    expect(botEntries).toContain(`roll:${secondBot}`);
+    expect(botEntries).toContain(`turn.roll:${firstBot}`);
+    expect(botEntries).toContain(`turn.roll:${secondBot}`);
 
     // One publish per committed bot command, each with a distinct, deterministic
     // message id, and the delay always precedes the command.
@@ -237,7 +239,9 @@ describe("bot driver", () => {
       harness.published.length,
     );
     for (const { messageId } of harness.published) {
-      expect(messageId).toMatch(/^bot:game-bot-driver-test:\d+:(roll|respond)$/);
+      // The slug is the decision's own, so the id names the verb rather than
+      // just "a bot did something" — see BOT_ACTION_SLUGS.
+      expect(messageId).toMatch(/^bot:game-bot-driver-test:\d+:[a-z-]+$/);
     }
     for (let index = 0; index < botEntries.length; index += 2) {
       expect(botEntries[index]).toBe("sleep");
@@ -325,9 +329,9 @@ describe("bot driver", () => {
 
     const defects: BotDriverEvent[] = [];
     const driver = createBotDriver({
-      roomService: harness.service,
+      submit: botSubmitterFor(harness.service, gated),
       repository: gated,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => undefined,
       onEvent: (event) => {
@@ -500,9 +504,9 @@ describe("bot driver", () => {
 
     const events: BotDriverEvent[] = [];
     const driver = createBotDriver({
-      roomService: harness.service,
+      submit: botSubmitterFor(harness.service, harness.repository),
       repository: harness.repository,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => {
         throw new Error("socket exploded");
@@ -531,9 +535,9 @@ describe("bot driver", () => {
     await takeHumanTurn(harness);
 
     const driver = createBotDriver({
-      roomService: harness.service,
+      submit: botSubmitterFor(harness.service, harness.repository),
       repository: harness.repository,
-      delayMs: 0,
+      configuredDelayMs: 0,
       sleep: async () => undefined,
       publish: async () => undefined,
       onEvent: () => {
