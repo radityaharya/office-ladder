@@ -1,7 +1,7 @@
 # Office Ladder Planning Portfolio
 
 Status: Draft planning baseline
-Updated: 2026-07-18
+Updated: 2026-07-26
 
 This folder is the implementation planning source for the Office Ladder application and the Deadline Dash v3.2 game design. Each document owns one concern so architecture, production, and operational decisions do not become mixed into one large plan.
 
@@ -9,7 +9,7 @@ This folder is the implementation planning source for the Office Ladder applicat
 
 - Postgres is the durable game authority.
 - Clients submit intent; the server commits outcomes.
-- Supabase Realtime distributes committed updates but does not own game state.
+- Committed updates are distributed over the server's own native WebSocket fan-out (`hono/bun`), which does not own game state. (This principle originally named Supabase Realtime; that was rejected — see `AGENTS.md`. The rest of the principle is unchanged.)
 - The game engine is deterministic, framework-independent, and driven by versioned content.
 - Public, player-private, and server-private information are separate projections.
 - Artwork and localized text are presentation data, not executable game rules.
@@ -45,17 +45,19 @@ This folder is the implementation planning source for the Office Ladder applicat
 | `21-risk-register-and-open-questions.md` | Current blockers, risks, and decisions requiring approval |
 | `22-product-operations-playtesting.md` | Onboarding, rules reference, playtests, support, community, legal operations |
 | `23-failure-recovery-runbooks.md` | Failure matrix, recovery policies, pause/terminate/fork, runbook requirements |
+| `24-gameplay-v2-spec.md` | **Authoritative gameplay v2 build contract**: mode-as-ruleset config, new engine state, the command set, wall-clock boundaries, per-viewer projections, panels, wave order |
 
 ## Authority Order
 
 Until the governance plan is implemented, use this temporary order:
 
-1. Explicit approved decisions in `plans/01-product-scope-and-rules-decisions.md`.
-2. `docs/DEADLINE_DASH_FULL_GDD.md` for intended v3.2 mechanics.
-3. `docs/Office_Board_Game_Design_Workbook.xlsx` for concrete card and board inventory.
-4. `DESIGN.md` for the digital visual system.
-5. Root `PLAN.md` for existing technical stack decisions.
-6. `docs/GAME_DESIGN.md` as historical reference only when it conflicts with v3.2.
+1. `plans/24-gameplay-v2-spec.md` for the **implementation shape** of gameplay v2 — state, commands, type signatures, authorisation. It explicitly supersedes `AGENTS.md`'s "Known gaps" description of gameplay. Rules *decisions* still land in `01-…` below.
+2. Explicit approved decisions in `plans/01-product-scope-and-rules-decisions.md`.
+3. `docs/DEADLINE_DASH_FULL_GDD.md` for intended v3.2 mechanics.
+4. `docs/Office_Board_Game_Design_Workbook.xlsx` for concrete card and board inventory.
+5. `DESIGN.md` for the digital visual system.
+6. Root `PLAN.md` for existing technical stack decisions.
+7. `docs/GAME_DESIGN.md` as historical reference only when it conflicts with v3.2.
 
 ## Maintenance
 
