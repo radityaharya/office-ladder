@@ -1,0 +1,928 @@
+/*
+ * shell.css — pre-match shell: landing, auth, room entry, lobby roster.
+ *
+ * Plain CSS only. Every class and keyframe is prefixed `shell-` so it cannot
+ * collide with a sibling stylesheet. All colour/geometry values come from the
+ * design tokens declared on :root in globals.css — see DESIGN.md.
+ *
+ * Motion budget (DESIGN.md §7): 80ms press, 120ms hover/controls, 160ms panel
+ * and row changes. Easing is always cubic-bezier(0.2, 0, 0, 1).
+ */
+
+/* ---------------------------------------------------------------- shell grid */
+
+.shell-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/*
+ * One continuous desk surface. The frame carries the outer vertical seams and
+ * owns the single gutter value that every region, bar, strip cell and roster row
+ * reads, so their inner column edges land on the same line at every breakpoint
+ * — that shared edge is what makes this read as one console rather than
+ * assembled components (DESIGN.md §4.3, §4.5).
+ */
+.shell-frame {
+  --shell-gutter: 16px;
+
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1280px;
+  margin-inline: auto;
+  border-inline: 1px solid var(--border);
+}
+
+@media (min-width: 768px) {
+  .shell-frame {
+    --shell-gutter: 24px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .shell-frame {
+    --shell-gutter: 32px;
+  }
+}
+
+/* Header rail — 48px, surface fill, bottom seam. */
+.shell-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding-inline: var(--shell-gutter, 16px);
+  background-color: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/*
+ * Telemetry strip — fixed 40px, surface fill, bottom seam, readouts separated
+ * by 1px vertical rules. Scrolls horizontally rather than collapsing to icons
+ * (DESIGN.md §6.4, §9).
+ */
+.shell-strip {
+  display: flex;
+  align-items: stretch;
+  background-color: var(--card);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.shell-strip-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 40px;
+  padding: 4px var(--shell-gutter, 16px);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.shell-strip-cell:last-child {
+  border-right: 0;
+}
+
+.shell-strip-cell-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/*
+ * Generic region: padding only. Seams are declared explicitly by whichever
+ * component owns the boundary, so no region ever collapses into its neighbour
+ * and no two hairlines ever stack into a 2px rule (DESIGN.md §4.1).
+ */
+.shell-region {
+  padding: 16px var(--shell-gutter, 16px);
+}
+
+.shell-seam-top {
+  border-top: 1px solid var(--border);
+}
+
+.shell-seam-bottom {
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-region-surface {
+  background-color: var(--card);
+}
+
+.shell-region-sunken {
+  background-color: var(--surface-sunken);
+}
+
+.shell-region-raised {
+  background-color: var(--surface-raised);
+}
+
+/*
+ * The frame already draws the outer vertical seams, so a panel mounted directly
+ * into it drops its own border rather than doubling the hairline into 2px.
+ */
+.shell-frame-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.shell-frame-body > .shell-panel {
+  border: 0;
+}
+
+.shell-region-tall {
+  padding-block: 32px;
+}
+
+.shell-split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.shell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shell-stack-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.shell-row-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.shell-panel {
+  background-color: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.shell-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px var(--shell-gutter, 16px);
+  background-color: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* Two columns sharing one vertical seam; stacks with a horizontal seam. */
+.shell-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.shell-columns > * + * {
+  border-top: 1px solid var(--border);
+}
+
+@media (min-width: 768px) {
+  .shell-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shell-columns > * + * {
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  .shell-columns-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.shell-rail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.shell-rail-columns > * + * {
+  border-top: 1px solid var(--border);
+}
+
+@media (min-width: 1024px) {
+  .shell-rail-columns {
+    grid-template-columns: minmax(0, 1fr) 384px;
+  }
+
+  .shell-rail-columns > * + * {
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+}
+
+/* ---------------------------------------------------------------- typography */
+
+.shell-display {
+  font-family: var(--font-heading);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.shell-headline {
+  font-family: var(--font-heading);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+}
+
+.shell-body {
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+.shell-prose {
+  max-width: 68ch;
+}
+
+.shell-label {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shell-data {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-data-lg {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-caption {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-high {
+  color: var(--foreground);
+}
+
+.shell-medium {
+  color: var(--muted-foreground);
+}
+
+.shell-low {
+  color: var(--taupe);
+}
+
+.shell-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ controls */
+
+/*
+ * Five states, every control: default / hover / focus-visible / active /
+ * disabled (DESIGN.md §5). 28px pointer-target floor (§8).
+ */
+.shell-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  min-width: 28px;
+  padding-inline: 16px;
+  background-color: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.shell-btn:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+.shell-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.shell-btn:active:not(:disabled) {
+  background-color: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+.shell-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The single accent commitment in a view: the one next action. */
+.shell-btn-primary {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+  border-radius: 4px;
+}
+
+.shell-btn-primary:hover:not(:disabled) {
+  background-color: color-mix(in oklch, var(--primary), var(--foreground) 12%);
+  border-color: color-mix(in oklch, var(--primary), var(--foreground) 12%);
+}
+
+.shell-btn-primary:active:not(:disabled) {
+  background-color: color-mix(in oklch, var(--primary), var(--background) 14%);
+  border-color: color-mix(in oklch, var(--primary), var(--background) 14%);
+}
+
+.shell-btn-outline {
+  background-color: transparent;
+  border-color: var(--border-strong);
+}
+
+.shell-btn-ghost {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--muted-foreground);
+}
+
+.shell-btn-ghost:hover:not(:disabled) {
+  color: var(--foreground);
+}
+
+.shell-btn-danger {
+  background-color: transparent;
+  border-color: color-mix(in oklch, var(--status-critical), transparent 45%);
+  color: color-mix(in oklch, var(--status-critical), var(--foreground) 35%);
+}
+
+.shell-btn-danger:hover:not(:disabled) {
+  background-color: color-mix(in oklch, var(--status-critical), transparent 88%);
+  border-color: var(--status-critical);
+}
+
+.shell-btn-lg {
+  min-height: 44px;
+  border-radius: 4px;
+  padding-inline: 24px;
+}
+
+.shell-btn-sm {
+  min-height: 28px;
+  padding-inline: 8px;
+}
+
+.shell-btn-icon {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding-inline: 0;
+}
+
+.shell-btn-block {
+  width: 100%;
+}
+
+.shell-btn-glyph {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/*
+ * Text links. Hover thickens the rule rather than shifting hue, so a link never
+ * competes with the view's single accent spend (DESIGN.md §1.5).
+ */
+.shell-link {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-thickness 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.shell-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.shell-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.shell-link:active {
+  color: var(--muted-foreground);
+}
+
+.shell-brand {
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.shell-brand:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shell-brand:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------- forms */
+
+.shell-field {
+  display: grid;
+  gap: 4px;
+}
+
+.shell-field-label {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.shell-field-hint {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+}
+
+.shell-input,
+.shell-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  background-color: var(--surface-sunken);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition:
+    background-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.shell-input:hover:not(:disabled),
+.shell-select:hover:not(:disabled) {
+  background-color: var(--card);
+  border-color: var(--border-strong);
+}
+
+.shell-input:focus-visible,
+.shell-select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-color: var(--border-strong);
+}
+
+.shell-input:active:not(:disabled),
+.shell-select:active:not(:disabled) {
+  background-color: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+.shell-input:disabled,
+.shell-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.shell-input::placeholder {
+  color: var(--taupe);
+}
+
+.shell-input[aria-invalid="true"] {
+  border-color: color-mix(in oklch, var(--status-critical), transparent 40%);
+}
+
+@media (max-width: 767px) {
+  .shell-input,
+  .shell-select {
+    font-size: 1rem;
+  }
+}
+
+.shell-input-code {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Native select: caret drawn by the wrapper so no remote asset is needed. */
+.shell-select-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.shell-select {
+  appearance: none;
+  padding-right: 28px;
+}
+
+.shell-select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  border-right: 1px solid var(--muted-foreground);
+  border-bottom: 1px solid var(--muted-foreground);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------- status parts */
+
+/*
+ * Indicator LED: a 6px square, never a circle, and never the only carrier of
+ * meaning — every use is paired with a text label (DESIGN.md §6.4, §8).
+ */
+.shell-led {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background-color: var(--taupe);
+}
+
+.shell-led-active {
+  background-color: var(--status-active);
+}
+
+.shell-led-caution {
+  background-color: var(--status-caution);
+}
+
+.shell-led-critical {
+  background-color: var(--status-critical);
+}
+
+.shell-led-info {
+  background-color: var(--status-info);
+}
+
+.shell-led-idle {
+  background-color: var(--taupe);
+}
+
+.shell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Static metadata tag — not a control, so no pointer-target floor applies. */
+.shell-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding-inline: 4px;
+  background-color: var(--surface-sunken);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.shell-tag-strong {
+  background-color: var(--surface-raised);
+  color: var(--foreground);
+  border-color: var(--border-strong);
+}
+
+.shell-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background-color: var(--surface-sunken);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.shell-msg-error {
+  border-color: color-mix(in oklch, var(--status-critical), transparent 55%);
+  background-color: color-mix(in oklch, var(--status-critical), transparent 90%);
+}
+
+.shell-msg-caution {
+  border-color: color-mix(in oklch, var(--status-caution), transparent 60%);
+  background-color: color-mix(in oklch, var(--status-caution), transparent 92%);
+}
+
+.shell-msg-info {
+  border-color: color-mix(in oklch, var(--status-info), transparent 55%);
+  background-color: color-mix(in oklch, var(--status-info), transparent 92%);
+}
+
+.shell-msg-led {
+  margin-top: 4px;
+}
+
+.shell-msg-body {
+  min-width: 0;
+}
+
+/* Meter: sunken track, flat fill, no gradient, no glow (DESIGN.md §6.4). */
+.shell-meter {
+  height: 8px;
+  background-color: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.shell-meter-fill {
+  height: 100%;
+  background-color: var(--sand);
+  transition: width 160ms linear;
+}
+
+.shell-meter-fill-reached {
+  background-color: var(--status-active);
+}
+
+/* --------------------------------------------------------------------- seats */
+
+.shell-roster {
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-roster-head,
+.shell-seat {
+  display: grid;
+  grid-template-columns:
+    32px minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr)
+    minmax(0, auto);
+  align-items: center;
+  gap: 16px;
+  padding-block: 8px;
+  padding-right: var(--shell-gutter, 16px);
+  padding-left: calc(var(--shell-gutter, 16px) - 3px);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+}
+
+.shell-roster-head {
+  min-height: 28px;
+  padding-block: 4px;
+  background-color: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--muted-foreground);
+}
+
+.shell-seat {
+  min-height: 44px;
+  border-left-color: var(--shell-seat-color, transparent);
+  transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.shell-seat:last-child {
+  border-bottom: 0;
+}
+
+.shell-seat-self {
+  background-color: var(--surface-raised);
+}
+
+.shell-seat-open {
+  background-color: var(--surface-sunken);
+  color: var(--muted-foreground);
+}
+
+.shell-seat-num {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+.shell-seat-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shell-seat-cell {
+  min-width: 0;
+}
+
+.shell-seat-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Mobile: stacked key/value rows per record, hairline-separated, no cards. */
+@media (max-width: 767px) {
+  .shell-roster-head {
+    display: none;
+  }
+
+  .shell-seat {
+    grid-template-columns: 32px minmax(0, 1fr);
+    row-gap: 4px;
+    padding-block: 12px;
+  }
+
+  .shell-seat-cell,
+  .shell-seat-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  /* `.shell-seat-actions` carries `data-label="Status"` but not the cell class,
+     so it was the one stacked row losing its key label. Every record row gets
+     the same [key value] grammar. */
+  .shell-seat-cell[data-label]::before,
+  .shell-seat-actions[data-label]::before {
+    content: attr(data-label) " ";
+    display: inline;
+    flex: 0 0 auto;
+    align-self: center;
+    font-family: var(--font-geist-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+}
+
+/* ------------------------------------------------------------------ skeleton */
+
+/*
+ * Skeleton rows sit at surface-sunken (DESIGN.md §6.3) — no floating spinner.
+ *
+ * Deliberately STATIC. The earlier `shell-skel-breathe … infinite` (1600ms) was
+ * a §7 violation twice over: an infinite loop, and a cycle eight times the
+ * ~200ms ceiling. §6.3's "subtle duration-base pulse" reads as a transition
+ * duration, not a licence for a loop — at 160ms a loop is a strobe — so §7 wins
+ * and the loading state is carried by the sunken row shape alone. The
+ * `game-shell.css` skeleton already resolves it the same way.
+ */
+.shell-skel {
+  background-color: var(--surface-sunken);
+  border-radius: 0;
+}
+
+.shell-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 44px;
+  padding: 8px var(--shell-gutter, 16px);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-skel-row:last-child {
+  border-bottom: 0;
+}
+
+.shell-skel-block {
+  height: 12px;
+}
+
+/* -------------------------------------------------------------- page gutters */
+
+.shell-gap-top {
+  margin-top: 16px;
+}
+
+.shell-footnote {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Hairline-separated key/value rows — no zebra striping (DESIGN.md §6.3). */
+.shell-note-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+  padding: 8px var(--shell-gutter, 16px);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-note-row:last-child {
+  border-bottom: 0;
+}
+
+.shell-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Focus outlines and tonal steps must survive a reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  .shell-btn,
+  .shell-input,
+  .shell-select,
+  .shell-seat,
+  .shell-meter-fill {
+    transition-duration: 0ms;
+  }
+}

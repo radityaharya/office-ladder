@@ -333,15 +333,45 @@ The HUD is the terminal's live-telemetry strip — the place the "in-game corpor
 
 ## 7. Motion
 
-Motion exists to confirm state changes a user already expects, not to entertain. This is instrumentation, not a game trailer.
+This system has **two motion layers with different rules**. Confusing them is the most common way to break the aesthetic. Chrome is instrumentation and stays severe; the board is a game and is allowed to move.
+
+### 7.1 Chrome motion — severe, unchanged
+
+Applies to every control, panel, rail, header, HUD readout, menu, dialog frame, toast, table row, and form. Motion here exists to confirm a state change the user already expects, not to entertain.
 
 - `duration-instant` (80ms): press/active feedback.
 - `duration-fast` (120ms): hover, focus, small control transitions.
 - `duration-base` (160ms): panel/tray state changes, row insertion in tables/logs, tag fade-in.
-- No duration in this system exceeds ~200ms except a deliberate token-travel animation on the board itself, which is a gameplay affordance, not chrome, and is scoped separately if/when the board is specified.
+- **No chrome transition exceeds ~200ms.**
 - Easing is `easing-standard` for all transform/opacity changes; `easing-linear` only for literal progress/loading meters.
-- No bounce, no overshoot, no elastic easing anywhere in this system.
-- `prefers-reduced-motion: reduce`: every transition above collapses to an instant state change or, where a fade genuinely aids comprehension (e.g., a new log line), a maximum 80ms crossfade.
+- **No bounce, no overshoot, no elastic easing, no spring in the chrome layer.** A settings toggle that springs is wrong in this system.
+
+### 7.2 Gameplay motion — the sanctioned expressive layer
+
+§7's earlier revision reserved "a deliberate token-travel animation on the board itself, a gameplay affordance, not chrome, scoped separately if/when the board is specified." This is that specification, deliberately widened: the board and its pieces are the one place this system is allowed to feel physical, because a board game whose pieces teleport is not legible — a player must be able to *see* what happened to whom.
+
+**Sanctioned library: [Motion](https://motion.dev) (`motion`, imported from `motion/react`).** It is the only animation library in this system. Do not add a second one.
+
+Applies **only** to: player tokens on the board, the dice readout, drawn cards, resource-value changes, promotion/rank changes, and turn hand-off. Everything else is §7.1.
+
+| Budget | Value | Use |
+| --- | --- | --- |
+| `gameplay-hop` | ~140ms per tile | One step of token travel. A 6-space move reads as six discrete hops (~840ms), not one glide. |
+| `gameplay-settle` | ≤700ms total | Dice arriving at their committed faces. |
+| `gameplay-reveal` | ~240ms | A card, prompt, or notice entering. |
+| `gameplay-tick` | ~400ms | A numeric readout counting to its new value. |
+| `gameplay-emphasis` | ~320ms | A one-shot acknowledgement of a discrete event (promotion, salary, audit). |
+
+Rules that still bind in this layer:
+
+- **Springs are permitted here, and must stay tight.** Critically damped or near it — a token that wobbles to rest reads as a toy. No elastic, no anticipation, no squash-and-stretch.
+- **Discrete over continuous.** A token moving six spaces hops tile to tile; dice step through faces and lock. The game's state is discrete and the motion should say so.
+- **One-shot, never ambient.** No looping, breathing, pulsing, drifting, or idle animation anywhere. If it repeats forever, it is wrong.
+- **Motion never gates input.** The roll control must be live the instant the server says it is legal, regardless of what is still animating. Animation is presentation; it must never sit between a player and a legal action.
+- **Motion never becomes the source of truth.** The canonical projection is authoritative; a paced or animated view must always converge on it. A UI that ends up disagreeing with the server is worse than one that snapped.
+- **No glow, no blur halo, no shadow-as-decoration, no particles, no confetti.** §4.1 and §4.4 are unamended. Celebration is still forbidden — a promotion is acknowledged, not congratulated.
+- **`prefers-reduced-motion: reduce` collapses this entire layer** to instant state changes (or a ≤80ms crossfade where a fade aids comprehension). Read it via Motion's `useReducedMotion`, and never at module scope. A reduced-motion player must still be able to tell what happened — if the only evidence of an event was the animation, the design is incomplete.
+- **Server-driven pacing is presentation, not rules.** Bot turns and committed event streams may be played out over time so a human can follow them, but the underlying state is already committed and must never be delayed, reordered, or withheld.
 
 ## 8. Accessibility Constraints
 

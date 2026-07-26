@@ -1,0 +1,454 @@
+/* ==========================================================================
+   Overlays — modal dialogs, the decision prompt, and the toast stack.
+   Owned by the "popups" area. Plain CSS on purpose: no @apply, no @theme.
+   Every class and keyframe here is prefixed "overlay-" so it cannot collide
+   with a sibling area's stylesheet.
+
+   DESIGN.md contract for this file:
+   - §4.4 is the ONLY sanctioned elevation in the system: one short-throw
+     near-black shadow on transient interrupting overlays, supplementing the
+     hairline border rather than replacing it.
+   - §4.2 radius ceiling: 4px on the modal container / primary CTA, 2px on
+     other controls. Nothing here rounds further.
+   - §5 every interactive element defines default / hover / focus-visible /
+     active / disabled.
+   - §7 motion: 80ms press, 120ms controls, 160ms panels; easing is always
+     cubic-bezier(0.2, 0, 0, 1). No scale, bounce, spring, glow or blur.
+
+   Colour/background/radius of the dialog shell itself deliberately live on
+   Tailwind utility classes in dialog.tsx (not here) so callers can still
+   override them through cn() — rules in this file are unlayered and would
+   otherwise beat every utility class.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Shared overlay shell
+   -------------------------------------------------------------------------- */
+
+/* The backdrop reads as the terminal dimming down to its recessed canvas —
+   never a photographic blur. */
+.overlay-backdrop {
+  background-color: oklch(0.115 0.004 80 / 88%);
+  transition: opacity 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.overlay-backdrop[data-starting-style],
+.overlay-backdrop[data-ending-style] {
+  opacity: 0;
+}
+
+.overlay-dialog {
+  /* §4.4 — the one sanctioned shadow in the system. */
+  box-shadow: 0 2px 8px oklch(0 0 0 / 40%);
+  transition:
+    opacity 160ms cubic-bezier(0.2, 0, 0, 1),
+    transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Opacity plus a 4px rise. `transform` is used rather than `translate` so it
+   composes with the Tailwind centring utilities instead of fighting them. */
+.overlay-dialog[data-starting-style],
+.overlay-dialog[data-ending-style] {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+/* The decision prompt is the ONE overlay left in the game view (a modal is
+   justified only when the game cannot proceed without this player's input), and
+   DESIGN.md §7.2 lists "a prompt entering" in the gameplay layer. Its rise is
+   therefore owned by Motion — `.overlay-notice-reveal` below, at
+   `GAMEPLAY_MOTION_MS.reveal` with `GAMEPLAY_SPRING.surface` — so the frame
+   drops its own translate and keeps only the opacity crossfade. Two mechanisms
+   must never move the same notice. */
+.overlay-dialog[data-prompt-kind][data-starting-style],
+.overlay-dialog[data-prompt-kind][data-ending-style] {
+  transform: none;
+}
+
+/* The popup is `display: grid; gap: 16px` (dialog.tsx). Wrapping its children in
+   the Motion element that performs the reveal would collapse them into one grid
+   item, so the wrapper restates the same grid. */
+.overlay-notice-reveal {
+  display: grid;
+  gap: 16px;
+}
+
+/* --------------------------------------------------------------------------
+   Status lights — 6px squares (§6.4). Always rendered beside a text label;
+   never the only carrier of meaning.
+   -------------------------------------------------------------------------- */
+
+.overlay-led {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background-color: var(--taupe);
+}
+
+.overlay-led-caution {
+  background-color: var(--status-caution);
+}
+
+.overlay-led-critical {
+  background-color: var(--status-critical);
+}
+
+.overlay-led-info {
+  background-color: var(--status-info);
+}
+
+.overlay-led-active {
+  background-color: var(--status-active);
+}
+
+/* --------------------------------------------------------------------------
+   Decision notice (the prompt dialog)
+   -------------------------------------------------------------------------- */
+
+.overlay-notice-head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.overlay-notice-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* HUD-strip grammar (§6.4): 11px uppercase label + mono value, separated by
+   1px vertical rules. One tonal step down from the dialog plane. */
+.overlay-notice-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  border: 1px solid var(--border);
+  background-color: var(--card);
+}
+
+.overlay-notice-meta-cell {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.overlay-notice-meta-cell:last-child {
+  border-right: 0;
+}
+
+.overlay-notice-meta-label {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.overlay-notice-meta-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+/* Response/cost table — §6.3: hairline row separators, no zebra striping,
+   uppercase header, numeric column right-aligned. */
+.overlay-notice-table {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.overlay-notice-table th,
+.overlay-notice-table td {
+  vertical-align: top;
+}
+
+.overlay-notice-table thead th {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-strong);
+  background-color: var(--card);
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.overlay-notice-table thead th:last-child {
+  text-align: right;
+}
+
+.overlay-notice-table tbody tr + tr > * {
+  border-top: 1px solid var(--border);
+}
+
+.overlay-notice-table tbody th {
+  padding: 12px;
+  font-weight: 400;
+}
+
+.overlay-notice-option-label {
+  display: block;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--foreground);
+}
+
+.overlay-notice-option-outcome {
+  display: block;
+  margin: 4px 0 0;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.overlay-notice-option-note {
+  display: block;
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+.overlay-notice-cost {
+  padding: 12px;
+  text-align: right;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+.overlay-notice-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Notice actions — exactly one primary (§6.1), the rest outline.
+   -------------------------------------------------------------------------- */
+
+.overlay-notice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (min-width: 640px) {
+  .overlay-notice-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}
+
+.overlay-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background-color: transparent;
+  color: var(--foreground);
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.overlay-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background-color: color-mix(in oklch, var(--surface-raised), var(--foreground) 6%);
+}
+
+.overlay-action:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.overlay-action:active:not(:disabled) {
+  background-color: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+.overlay-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.overlay-action-primary {
+  /* §4.2 — 4px is the system ceiling and it is spent here, on the single
+     primary action. §1.4 — a filled control takes the inverse hairline. */
+  border-radius: 4px;
+  border-color: oklch(0 0 0 / 22%);
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.overlay-action-primary:hover:not(:disabled) {
+  border-color: oklch(0 0 0 / 22%);
+  background-color: color-mix(in oklch, var(--primary), var(--foreground) 8%);
+}
+
+.overlay-action-primary:active:not(:disabled) {
+  background-color: color-mix(in oklch, var(--primary), var(--background) 18%);
+}
+
+.overlay-action-cost {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* --------------------------------------------------------------------------
+   Toasts — "entries, not toasts": only the handful of events a player must
+   not miss reach this surface. Selectors are deliberately specific enough to
+   beat sonner's own runtime-injected stylesheet.
+   -------------------------------------------------------------------------- */
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background-color: var(--surface-raised);
+  color: var(--foreground);
+  box-shadow: 0 2px 8px oklch(0 0 0 / 40%);
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] [data-icon] {
+  width: 6px;
+  height: 6px;
+  margin: 4px 4px 0 0;
+  align-self: flex-start;
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] .overlay-toast-title {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] .overlay-toast-body {
+  margin-top: 4px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+/* Signed deltas inside a toast body stay mono and always carry their sign. */
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] .overlay-toast-delta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] [data-close-button] {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background-color: var(--surface-raised);
+  color: var(--muted-foreground);
+  opacity: 1;
+  transition:
+    background-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 120ms cubic-bezier(0.2, 0, 0, 1),
+    color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] [data-close-button]:hover {
+  background-color: color-mix(in oklch, var(--surface-raised), var(--foreground) 6%);
+  color: var(--foreground);
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] [data-close-button]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+[data-sonner-toaster] .overlay-toast[data-sonner-toast] [data-close-button]:active {
+  background-color: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+/* --------------------------------------------------------------------------
+   Reduced motion — collapse to an instant change, or a <=80ms crossfade
+   where the fade genuinely aids comprehension. globals.css already zeroes
+   durations globally; this keeps the intent explicit and drops the
+   translate so nothing moves.
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-backdrop,
+  .overlay-dialog,
+  .overlay-action,
+  [data-sonner-toaster] .overlay-toast[data-sonner-toast] {
+    transition-duration: 80ms;
+  }
+
+  .overlay-dialog[data-starting-style],
+  .overlay-dialog[data-ending-style] {
+    transform: none;
+  }
+}

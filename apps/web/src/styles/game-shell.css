@@ -1,0 +1,919 @@
+/* ==========================================================================
+   Office Ladder — the in-match shell grid and the terminal's non-board modes
+   (connecting / no match / feed dropped / end-of-match report).
+
+   Plain CSS only. Every class name in this sheet is prefixed `game-shell-`
+   (the grid root itself is `.game-shell`) so it cannot collide with a
+   per-area stylesheet. No @apply, no @theme entries — every value reads a
+   design token from :root in globals.css.
+
+   Design authority (DESIGN.md):
+     §2.1 type scale: display / headline / body / label / data / caption
+     §3   4px spacing grid
+     §4.1 seams are a 1px hairline or exactly one tonal step — never a shadow
+     §4.2 radius 0 structural / 2px interactive / 4px ceiling
+     §4.3 structural regions run edge-to-edge
+     §4.5 align to the shared shell grid; never centre a panel in free space
+     §5   five interaction states on every interactive element
+     §6.3 tables: hairline rows, no zebra, sticky uppercase header, 36px rows
+     §6.4 40px strip, 6px square LEDs, mono signed deltas
+     §7   80/120/160ms on cubic-bezier(0.2, 0, 0, 1); nothing else
+     §9   responsive: rail stacks rather than disappearing
+   ========================================================================== */
+
+:root {
+  --game-shell-ease: cubic-bezier(0.2, 0, 0, 1);
+  --game-shell-sans: var(--font-geist-sans, "Inter", sans-serif);
+  --game-shell-mono: var(--font-mono, "IBM Plex Mono", monospace);
+  /*
+   * Measure for the report's own panels. Data-dense zones are exempt from the
+   * 65–75ch prose rule (§2.2), but a nine-column table stretched across a 4K
+   * monitor stops reading as dense and starts reading as empty. Every capped
+   * block stays flush to the body's left gutter, so it aligns with the title and
+   * copy above it rather than being re-centred in free space (§4.5).
+   */
+  --game-shell-measure: 1152px;
+}
+
+/* --------------------------------------------------------------------------
+   1. The match shell
+   --------------------------------------------------------------------------
+   One grid owns every structural region, so the HUD chrome, the board, the
+   rail and the action bar all resolve against the same row and column edges
+   (§4.5) instead of reserving space for each other with padding and offsets.
+
+   DOM order stays board -> action -> rail (the order a screen reader and the
+   keyboard should meet them in: look at the floor, act, then read telemetry);
+   named grid areas place the rail in the right column regardless.
+
+   Breakpoints are §9's, literally. The STACKED shape is the base case, and the
+   three-region shell is a >= 1024px override:
+     >= 1280px  full three-region shell, rail at its 320px `rail-width` measure
+     1024-1279  same shell, rail compressed to 272px
+     < 1024px   rail stacks BELOW the board ("tablet portrait" in §9), so the
+                board gets the full width instead of ~500px of it
+   This also makes 200% browser zoom fall out for free: at 200% a 1440-2048px
+   display reports 720-1024 CSS px, which lands in the stacked case rather than
+   squeezing a two-column shell.
+   -------------------------------------------------------------------------- */
+
+.game-shell {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  /*
+   * The board row floor is 0, not a fixed minimum. `.game-viewport` is
+   * `position: fixed; height: 100dvh; overflow: hidden`, so the shell can never
+   * scroll as a whole — anything it cannot fit is CLIPPED, and §8 forbids that at
+   * 200% zoom. A 160px board floor meant the rail got whatever was left, which at
+   * 720x450 (200% zoom on a 1440x900 display) was 89px: not enough for the seat
+   * list, which measured 0px tall and could not be scrolled to. The board is the
+   * region that already pans inside itself, so it is the one that yields.
+   */
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "hud"
+    "board"
+    "rail"
+    "action";
+}
+
+.game-shell-hud {
+  grid-area: hud;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/*
+ * A grid display so the board fills the cell on both axes without a flex
+ * `align-items: center` in the way — `.board-viewport` is `width/height: 100%`
+ * with `container-type: size`, so it needs a definite box to resolve against.
+ */
+.game-shell-board {
+  grid-area: board;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+}
+
+/*
+ * The action region is a STACK of structural rows, not one bar. In DOM order:
+ * the non-blocking card feed (cards.css), the playback catch-up strip
+ * (dice.css), then the action bar itself (dice.css). Each is full-bleed and owns
+ * its own 1px top seam, so the stack reads as one continuous surface (§4.1,
+ * §4.3) and the board row — `minmax(0, 1fr)` — yields the height rather than
+ * being covered by any of them.
+ *
+ * The one seam none of those sheets can resolve on its own is where two of them
+ * meet: the catch-up strip declares a bottom hairline (correct when it is the
+ * last row) which would double with the action bar's own top hairline into a 2px
+ * rule. Collapsed here, in the sheet that owns the region, rather than by
+ * editing either area's stylesheet.
+ */
+.game-shell-action {
+  grid-area: action;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.game-shell-action > [data-slot="dice-catchup"]:not(:last-child) {
+  border-bottom: 0;
+}
+
+/*
+ * A COLUMN. This region holds more than one block now — the seats-plus-activity
+ * rail and, below it, the events feed — and `display: flex` alone defaults to
+ * `row`, which laid them out side by side: the feed was squeezed to whatever
+ * width `.hud-rail`'s `flex: 1 1 auto` left over (111px), and a card notice then
+ * wrapped itself 472px tall inside it. Stacking them is what makes the rail read
+ * as seats / activity / events down the column.
+ */
+.game-shell-rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (min-width: 640px) {
+  .game-shell-board {
+    padding: 12px;
+  }
+}
+
+/*
+ * Stacked (< 1024px): the rail sits under the board rather than vanishing, so
+ * nothing available on desktop becomes desktop-only (§9). It is capped at a
+ * third of the viewport so the board keeps the clear majority of the screen;
+ * the rail's own seat list and log scroll internally, so nothing is lost to
+ * the cap.
+ */
+.game-shell-rail {
+  max-height: 33vh;
+  /*
+   * Floor, and it beats the cap when the two disagree (min-height is applied
+   * after max-height): the rail's two blocks need 108px + 56px to each show a
+   * header and one row, so below a ~500px-tall viewport the rail stops shrinking
+   * and the board takes the squeeze instead. See the note on `.game-shell`.
+   */
+  min-height: 168px;
+}
+
+/* >= 1024px: the documented three-region shell — board and rail side by side,
+   the action bar spanning both. */
+@media (min-width: 1024px) {
+  .game-shell {
+    /*
+     * A DEFINITE rail track, not `auto`. With `auto` the column sized itself to
+     * its widest content, so the moment the card feed moved into the rail a
+     * card's own width sized the whole column and starved the board to a narrow
+     * strip. 320px is `geometry.rail-width` and the measure hud.css already
+     * targets; the >=1800px block below widens it deliberately.
+     */
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hud hud"
+      "board rail"
+      "action action";
+  }
+
+  .game-shell-rail {
+    max-height: none;
+  }
+}
+
+/*
+ * Ultrawide: spend the leftover on the RAIL, not on board gutter.
+ *
+ * `.board-frame` caps its width at three times its height (board.css) so a cell
+ * never exceeds a 3:1 aspect. On a very wide — or a short — window that cap
+ * binds, and whatever it does not take used to become symmetric dead gutter
+ * either side of the board. The rail is the honest home for it: the activity log
+ * is the surface a player reads to follow the match, and it is the one region
+ * that gets strictly better with more width.
+ *
+ * Implementation note: the rail column becomes a definite 384px track, and
+ * `.hud-rail` is `flex: 1 1 auto` inside it, so it grows from its 320px measure
+ * to fill the track without hud.css needing a fourth breakpoint. 1800px is
+ * deliberately a floor rather than the exact point the board cap engages — that
+ * point depends on viewport HEIGHT (cap = height x 3), so no width breakpoint can
+ * name it precisely. Below this the documented 320px measure is unchanged.
+ */
+@media (min-width: 1800px) {
+  .game-shell {
+    grid-template-columns: minmax(0, 1fr) 384px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   2. Non-board modes — connecting, no match, feed dropped, match closed
+   --------------------------------------------------------------------------
+   These are the same terminal in a different mode, not a centred card on an
+   empty page (§4.5). Identical chrome grammar to the match shell: a 48px
+   header bar, a 40px telemetry strip, then one scrolling report region whose
+   content aligns to the shell's left gutter.
+   -------------------------------------------------------------------------- */
+
+.game-shell-report {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+/* 48px header — same height and grammar as the in-match room header (§6.4). */
+.game-shell-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding-inline: 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.game-shell-bar-title {
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.game-shell-bar-rule {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+.game-shell-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* 40px telemetry strip: label + mono value per readout, 1px vertical rules. */
+.game-shell-strip {
+  display: flex;
+  align-items: stretch;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.game-shell-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * The strip is a horizontally scrolling region with its scrollbar suppressed, so
+ * it needs to be a tab stop or its overflow is unreachable without a pointer
+ * (§8, keyboard operability). Same treatment as `.hud-strip`: the accent outline
+ * is inset because a full-bleed region's outside offset would be clipped by its
+ * own overflow.
+ */
+.game-shell-strip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.game-shell-cell {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
+.game-shell-cell + .game-shell-cell {
+  border-left: 1px solid var(--border);
+}
+
+.game-shell-cell dt,
+.game-shell-cell dd {
+  margin: 0;
+}
+
+.game-shell-cell dd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.game-shell-body {
+  min-height: 0;
+  padding: 24px 16px 32px;
+  overflow-y: auto;
+}
+
+@media (min-width: 768px) {
+  .game-shell-body {
+    padding: 32px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   3. Report typography and primitives
+   -------------------------------------------------------------------------- */
+
+.game-shell-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.game-shell-title {
+  margin: 8px 0 0;
+  font-family: var(--game-shell-sans);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+.game-shell-copy {
+  max-width: 72ch;
+  margin: 12px 0 0;
+  font-family: var(--game-shell-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.game-shell-label {
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.game-shell-value {
+  font-family: var(--game-shell-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.game-shell-caption {
+  font-family: var(--game-shell-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--taupe);
+}
+
+/* 6px SQUARE indicator, never a circle, never the only carrier of meaning. */
+.game-shell-led {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  background: var(--taupe);
+}
+
+.game-shell-led[data-tone="active"] {
+  background: var(--status-active);
+}
+
+.game-shell-led[data-tone="caution"] {
+  background: var(--status-caution);
+}
+
+.game-shell-led[data-tone="critical"] {
+  background: var(--status-critical);
+}
+
+.game-shell-led[data-tone="info"] {
+  background: var(--status-info);
+}
+
+/* --------------------------------------------------------------------------
+   4. Report sections
+   -------------------------------------------------------------------------- */
+
+.game-shell-section {
+  max-width: var(--game-shell-measure);
+  margin-top: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.game-shell-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 12px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.game-shell-section-heading {
+  margin: 0;
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   5. Standings table (§6.3): hairline rows, no zebra, sticky uppercase header
+   -------------------------------------------------------------------------- */
+
+.game-shell-table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 336px;
+}
+
+.game-shell-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--game-shell-sans);
+  font-size: 0.875rem;
+}
+
+.game-shell-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.game-shell-table th[data-align="end"],
+.game-shell-table td[data-align="end"] {
+  text-align: right;
+}
+
+.game-shell-table tbody tr {
+  position: relative;
+}
+
+.game-shell-table tbody tr + tr td {
+  border-top: 1px solid var(--border);
+}
+
+.game-shell-table td {
+  height: 36px;
+  padding: 0 12px;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.game-shell-table td[data-numeric="true"] {
+  font-family: var(--game-shell-mono);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The view's single accent spend: the row that reached Director. A 2px accent
+ * top rule plus a text tag in the RESULT column — never colour alone (§8),
+ * never a glow or a row scale-up (§6.4).
+ */
+.game-shell-table tbody tr[data-outcome="winner"] > td {
+  background: var(--surface-raised);
+  border-top: 2px solid var(--primary);
+}
+
+/*
+ * < 768px: stacked key/value rows per record (§9), NOT horizontal scroll. Nine
+ * nowrap columns in a scroll box means reading one seat's row requires panning
+ * sideways and losing the row you were on — the exact failure §9 calls out. Each
+ * record becomes a [label | value] pair grid, hairline-separated per §9's "still
+ * use hairline separators, not gaps", so it stays one continuous surface instead
+ * of nine floating blocks.
+ *
+ * The labels come from `::before` with `nth-child` rather than `attr()` because
+ * the markup carries no `data-label` (the roster in shell.css does, and uses
+ * `attr()`). That couples these labels to COLUMN ORDER — pos, seat, employee,
+ * rank, tile, money, rep, energy, result — which is asserted by
+ * game-client.test.tsx's standings test. Reorder the columns and these must move
+ * with them; adding `data-label` to each `<td>` in game-client.tsx would let
+ * this collapse to a single `attr(data-label)` rule.
+ */
+@media (max-width: 767px) {
+  /* The stacked rows are as tall as the record needs; the report body is already
+     the scroll container, so the table stops being one of its own. */
+  .game-shell-table-scroll {
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+
+  .game-shell-table,
+  .game-shell-table tbody,
+  .game-shell-table tbody tr {
+    display: block;
+    width: 100%;
+  }
+
+  .game-shell-table thead {
+    /* Visually hidden, still read by assistive tech as the table's header row. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .game-shell-table tbody tr {
+    padding-block: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .game-shell-table tbody tr:first-child {
+    border-top: 0;
+  }
+
+  /* The winner's accent top rule survives the restack; the row-level border
+     replaces the per-cell one the desktop layout uses. */
+  .game-shell-table tbody tr[data-outcome="winner"] {
+    background: var(--surface-raised);
+    border-top: 2px solid var(--primary);
+  }
+
+  .game-shell-table tbody tr + tr td,
+  .game-shell-table tbody tr[data-outcome="winner"] > td {
+    border-top: 0;
+    background: transparent;
+  }
+
+  /* Each cell is its own [key | value] pair. `::before` is the key grid item;
+     the cell's own content is the single anonymous item beside it. */
+  .game-shell-table tbody td {
+    display: grid;
+    grid-template-columns: 9ch minmax(0, 1fr);
+    align-items: center;
+    /* Without this a tag or swatch in the value column stretches the full row
+       width — it would read as a filled bar rather than a tag. */
+    justify-items: start;
+    gap: 8px;
+    height: auto;
+    min-height: 24px;
+    padding: 0 12px;
+    white-space: normal;
+  }
+
+  /* Text alignment is a wide-table concern; stacked rows all read left. */
+  .game-shell-table tbody td[data-align="end"] {
+    text-align: left;
+  }
+
+  .game-shell-table tbody td::before {
+    font-family: var(--game-shell-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    content: "";
+  }
+
+  .game-shell-table tbody td:nth-child(1)::before {
+    content: "Pos";
+  }
+
+  .game-shell-table tbody td:nth-child(2)::before {
+    content: "Seat";
+  }
+
+  .game-shell-table tbody td:nth-child(3)::before {
+    content: "Name";
+  }
+
+  .game-shell-table tbody td:nth-child(4)::before {
+    content: "Rank";
+  }
+
+  .game-shell-table tbody td:nth-child(5)::before {
+    content: "Tile";
+  }
+
+  .game-shell-table tbody td:nth-child(6)::before {
+    content: "Money";
+  }
+
+  .game-shell-table tbody td:nth-child(7)::before {
+    content: "Rep";
+  }
+
+  .game-shell-table tbody td:nth-child(8)::before {
+    content: "Energy";
+  }
+
+  .game-shell-table tbody td:nth-child(9)::before {
+    content: "Result";
+  }
+
+  /* A cell spanning the whole record (an empty-state message) needs no key. */
+  .game-shell-table tbody td[colspan] {
+    display: block;
+  }
+
+  .game-shell-table tbody td[colspan]::before {
+    display: none;
+  }
+}
+
+.game-shell-seat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-left: 2px solid var(--game-shell-seat, var(--sand));
+  background: color-mix(in oklch, var(--game-shell-seat, var(--sand)) 20%, transparent);
+  font-family: var(--game-shell-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+.game-shell-seat-1 {
+  --game-shell-seat: var(--player-1);
+}
+
+.game-shell-seat-2 {
+  --game-shell-seat: var(--player-2);
+}
+
+.game-shell-seat-3 {
+  --game-shell-seat: var(--player-3);
+}
+
+.game-shell-seat-4 {
+  --game-shell-seat: var(--player-4);
+}
+
+.game-shell-seat-5 {
+  --game-shell-seat: var(--player-5);
+}
+
+.game-shell-seat-6 {
+  --game-shell-seat: var(--player-6);
+}
+
+.game-shell-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  /* §3 — every inset is a 4px multiple; 6px was off the grid. Matches
+     `.shell-tag` and `.hud-tag`. */
+  padding-inline: 4px;
+  border: 1px solid var(--border-strong);
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.game-shell-tag[data-tone="accent"] {
+  border-color: var(--border-inverse);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   6. Skeleton rows while the projection is being fetched
+   --------------------------------------------------------------------------
+   Surface-sunken rows in the shape of the real content (§6.3) — deliberately
+   static. No spinner, and no pulse loop: §7 forbids an infinite animation, and
+   this state is measured in a few hundred milliseconds.
+   -------------------------------------------------------------------------- */
+
+.game-shell-skeleton {
+  display: flex;
+  max-width: var(--game-shell-measure);
+  flex-direction: column;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+}
+
+.game-shell-skeleton > li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding-inline: 12px;
+  background: var(--surface-sunken);
+}
+
+.game-shell-skeleton > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.game-shell-skeleton-bar {
+  display: block;
+  height: 8px;
+  background: var(--surface-raised);
+}
+
+/* --------------------------------------------------------------------------
+   7. Controls — all five states (§5), 2px radius, 28px pointer floor (§8)
+   -------------------------------------------------------------------------- */
+
+.game-shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.game-shell-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding-inline: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: transparent;
+  font-family: var(--game-shell-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 120ms var(--game-shell-ease),
+    border-color 120ms var(--game-shell-ease),
+    color 120ms var(--game-shell-ease);
+}
+
+.game-shell-btn:hover {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+.game-shell-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.game-shell-btn:active {
+  background: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+.game-shell-btn:disabled,
+.game-shell-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The single primary action, used only where the view has no other accent. */
+.game-shell-btn-primary {
+  border-color: var(--border-inverse);
+  border-radius: 4px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.game-shell-btn-primary:hover {
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+  border-color: var(--border-inverse);
+}
+
+.game-shell-btn-primary:active {
+  background: color-mix(in oklch, var(--primary) 82%, var(--background));
+}
+
+.game-shell-btn-glyph {
+  width: 16px;
+  height: 16px;
+}
+
+/* --------------------------------------------------------------------------
+   8. Error notice
+   -------------------------------------------------------------------------- */
+
+.game-shell-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 72ch;
+  margin-top: 16px;
+  padding: 8px 12px;
+  background: color-mix(in oklch, var(--status-critical) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--status-critical) 40%, transparent);
+  border-radius: 2px;
+  font-family: var(--game-shell-sans);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.game-shell-notice-led {
+  margin-top: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   9. Definition grid for the report's summary readouts
+   -------------------------------------------------------------------------- */
+
+.game-shell-readouts {
+  display: grid;
+  max-width: var(--game-shell-measure);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin: 0;
+  border: 1px solid var(--border);
+}
+
+.game-shell-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  margin: -1px 0 0 -1px;
+}
+
+.game-shell-readout dt,
+.game-shell-readout dd {
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------------
+   10. Reduced motion — collapse every transition to an instant change (§7)
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .game-shell-btn {
+    transition: none;
+  }
+}

@@ -1,0 +1,1009 @@
+/* ==========================================================================
+   Office Ladder — in-game telemetry: room header, HUD strip, turn rail, log.
+
+   Plain CSS only. Every class name and keyframe is prefixed `hud-` so this
+   sheet cannot collide with a sibling area's stylesheet. Tokens are read as
+   var(--token) from globals.css; no @apply, no @theme entries.
+
+   Design authority (DESIGN.md):
+     §3   4px spacing grid
+     §4.1 seams: 1px hairline border or one tonal step — never a shadow
+     §4.2 radius: 0 structural, 2px interactive, 4px ceiling
+     §4.3 edge-to-edge structural regions
+     §5   five interaction states on every interactive element
+     §6.3 data tables: hairline separators, no zebra, sticky uppercase header
+     §6.4 HUD strip 40px, 6px square status LEDs, sunken meters, ACTIVE tag
+     §7   80/120/160ms, cubic-bezier(0.2, 0, 0, 1), linear for meters only
+     §9   tablet portrait wraps the strip, mobile scrolls it as text
+   ========================================================================== */
+
+/* Declared on :root (not on the region roots) so the shared primitives below
+   still resolve when a piece such as `ActivityLog` is rendered on its own,
+   outside the rail. Every custom property here is `--hud-`-prefixed. */
+:root {
+  --hud-ease: cubic-bezier(0.2, 0, 0, 1);
+  /* DESIGN.md §7.2 `gameplay-tick`. The one budget this sheet is allowed to
+     exceed 200ms with, and only for a gameplay readout: the energy /
+     promotion meter fill, which tracks a number that is itself counting. Mirrors
+     GAMEPLAY_MOTION_MS.tick in src/lib/motion.ts — change both together. */
+  --hud-tick: 400ms;
+  --hud-sans: var(--font-geist-sans, "Inter", sans-serif);
+  --hud-mono: var(--font-mono, "IBM Plex Mono", monospace);
+  /* §1.3 text-low. Its ONLY sanctioned use left in this sheet is the log-row
+     timestamp, which §1.3 names explicitly; anything a player reads as a value
+     uses --muted-foreground so it clears the §1.8 contrast floor. */
+  --hud-text-low: var(--taupe, oklch(0.5 0.016 72));
+}
+
+/* --------------------------------------------------------------------------
+   Shared primitives
+   -------------------------------------------------------------------------- */
+
+/* 11px uppercase command voice (DESIGN.md §2.1 `label`). */
+.hud-label {
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* Mono tabular value (DESIGN.md §2.1 `data`). */
+.hud-value {
+  font-family: var(--hud-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+/* Mono caption for units, suffixes and secondary metadata (§2.1 `caption`).
+   Set at text-medium, NOT text-low/taupe: the strip uses this for the seat's
+   display name, the promotion shortfall ("$1,200/$2,000") and the "Low" energy
+   word, none of which are the "timestamp / unit suffix" metadata §1.3 lets drop
+   to text-low. taupe on surface measures ~3:1, under the §1.8 4.5:1 floor for
+   11px text; muted-foreground clears it at ~6:1. */
+.hud-sub {
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* 6px SQUARE indicator LED — never a circle (§6.4). Always beside a text
+   label; the class carries no meaning on its own. */
+.hud-led {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  background: var(--taupe);
+}
+
+.hud-led--online {
+  background: var(--status-active);
+}
+
+.hud-led--remote {
+  background: var(--status-info);
+}
+
+.hud-led--attention {
+  background: var(--status-caution);
+}
+
+.hud-led--away {
+  background: var(--status-critical);
+}
+
+.hud-led--idle {
+  background: var(--taupe);
+}
+
+/* Flat bordered stamp, 0 radius — reads as a stencilled tag, not a pill. */
+.hud-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  padding-inline: 4px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.hud-tag--accent {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* The single sanctioned motion on a turn change: one 160ms fade-in (§6.4). */
+.hud-fade-in {
+  animation: hud-fade-in 160ms var(--hud-ease) both;
+}
+
+/* 16px seat stamp: the seat NUMBER on a seat-coloured ground, so "waiting on
+   Ada" can be matched to a token on the board without relying on colour (§8).
+   Same construction as `.hud-seat-glyph`, one size down. */
+.hud-seat-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  border-left: 2px solid var(--hud-seat, var(--sand));
+  background: color-mix(in oklch, var(--hud-seat, var(--sand)) 20%, transparent);
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Resource-change deltas (§6.4 "explicit sign", §7.2 gameplay tick)
+   -------------------------------------------------------------------------- */
+
+/* A reserved lane beside a ticking readout. Kept in the layout even when empty:
+   the strip is 40px of fixed instrumentation, and letting a `+300` appear and
+   disappear would shove every readout to its right sideways twice per turn. */
+.hud-delta-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  /* Stated in px, not `ch`: an empty span inherits the cell's 16px sans metrics,
+     where `5ch` measured 44px — a third wider than the mono caption it is
+     actually holding. 32px fits `+1,200` at 11px mono and is on the 4px grid. */
+  min-width: 32px;
+}
+
+/* The sign is a character in the text, never carried by colour alone (§8). */
+.hud-delta {
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.hud-delta[data-sign="gain"] {
+  color: var(--status-active);
+}
+
+.hud-delta[data-sign="loss"] {
+  color: var(--status-critical);
+}
+
+/* Meter: surface-sunken track, 1px border, 0 radius, flat fill, no glow.
+   The numeric value is always echoed in mono beside it (§6.4). */
+.hud-meter {
+  display: block;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.hud-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--sand);
+  /* Literal progress meter — linear easing per DESIGN.md §5/§7 — retimed to
+     §7.2's `gameplay-tick` so the bar and the number beside it (which Motion
+     counts over the same budget) land together instead of the bar finishing
+     first and contradicting a still-counting readout. */
+  transition: width var(--hud-tick) linear;
+}
+
+.hud-meter--met .hud-meter-fill {
+  background: var(--status-active);
+}
+
+.hud-meter--low .hud-meter-fill {
+  background: var(--status-critical);
+}
+
+/* --------------------------------------------------------------------------
+   Room header — 48px, surface, bottom hairline, edge-to-edge (§4.3, §6.4)
+   -------------------------------------------------------------------------- */
+
+.hud-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding-inline: 8px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-header-back {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color 120ms var(--hud-ease),
+    border-color 120ms var(--hud-ease),
+    color 120ms var(--hud-ease);
+}
+
+.hud-header-back:hover {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+  color: var(--foreground);
+}
+
+.hud-header-back:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.hud-header-back:active {
+  background: var(--surface-sunken);
+  transition-duration: 80ms;
+}
+
+.hud-header-back[aria-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.hud-header-title {
+  font-family: var(--hud-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.hud-header-rule {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+.hud-header-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.hud-header-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding-inline: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-sunken);
+}
+
+.hud-header-state-text {
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+/* Mobile: header keeps identity + status only (§9). */
+.hud-header-optional {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .hud-header-optional {
+    display: inline-flex;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   HUD strip — fixed 40px, surface, bottom hairline, full width (§6.4)
+   -------------------------------------------------------------------------- */
+
+.hud-strip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  /* Mobile keeps values legible as text and scrolls (§9) — it never
+     collapses into icon-only chips. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+/*
+ * Measured in headless Chrome at the real 1184px shell width: the ten readouts
+ * came to 1508px, so `Next rank` sat entirely outside a container that hides its
+ * own scrollbar — content a mouse user had no way to know existed, which is the
+ * "overflowing silently" §8 forbids. It reads as a design decision rather than a
+ * bug, which is worse.
+ *
+ * The fix is two-part and both parts are in this file: the readouts below give
+ * back the width they were wasting (8px cell padding on the 4px grid, 4px inner
+ * gaps, a fixed 32px delta lane, a shorter name clamp), and from 768px up the
+ * strip is allowed to WRAP — §9's own tablet-portrait behaviour and the
+ * degradation §8 demands at 200% zoom, applied at every width where a wrapped
+ * second row is readable. At the shell's real width it now fits one row, so
+ * §6.4's "fixed 40px" still holds literally; when it cannot fit, a second
+ * hairline-separated row appears instead of a readout vanishing.
+ */
+@media (min-width: 768px) {
+  .hud-strip {
+    height: auto;
+    min-height: 40px;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    /* Both axes, deliberately: a single `visible` beside a non-`visible`
+       computes back to `auto` and would re-create the scroll container this is
+       removing. */
+    overflow: visible;
+    /* The seam moves onto the cells so a WRAPPED row is separated from the row
+       above it. Kept on the strip below 768px, where it never wraps. */
+    border-bottom: 0;
+  }
+
+  .hud-cell {
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Carries the strip's bottom hairline across whatever width the readouts do
+     not use, so the region below never butts against `surface` with no seam
+     (§4.1) — including the spectator strip, which is only three cells wide. */
+  .hud-strip::after {
+    content: "";
+    flex: 1 1 0;
+    min-width: 0;
+    align-self: stretch;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.hud-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.hud-strip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* 4px gaps and 8px padding, both on §3's grid. Measured: at 8px/12px the ten
+   readouts wanted 1508px inside an 1184px shell. The vertical rule between
+   readouts is what separates them; the label and its value belong tight
+   together. */
+.hud-cell {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+
+/* Separation is a 1px VERTICAL border rule between readouts — not pills. */
+.hud-cell + .hud-cell {
+  border-left: 1px solid var(--border);
+}
+
+.hud-cell dt {
+  margin: 0;
+}
+
+.hud-cell dd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+
+/* A long display name must not be able to widen a readout without bound. */
+.hud-cell .hud-sub {
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+  background: var(--hud-seat, var(--sand));
+}
+
+/* Tablet portrait used to be the only band that wrapped (§9). It is now the
+   general behaviour from 768px up — see the block above — because the readouts
+   overflowed 1184px too, and a strip that hides its own scrollbar hides the
+   readout with it. No height cap: the rail is a real grid column (see
+   `.hud-rail`), so nothing downstream depends on the strip being any particular
+   number of rows tall, and the shell's `auto` hud row follows it. */
+
+/* --------------------------------------------------------------------------
+   Turn rail — flush to the right edge and to the HUD strip's bottom seam.
+   Not a floating card: 0 radius, no shadow, 1px left hairline (§4.1–§4.3).
+
+   IN FLOW, not absolutely positioned. The rail is placed by the shell's own
+   grid (`.game-shell` in styles/game-shell.css, area `rail`), so it no longer
+   has to hard-code the chrome above it or the action bar below it. That coupling
+   is what previously left a 20px dead gap under the rail and let a two-line
+   action bar overlap its last log row. Width is stated here because the rail
+   owns its own measure; placement is the shell's business.
+
+   Below 1024px the shell restacks the rail under the board instead of hiding
+   it, so capability parity holds at every breakpoint (§9) — see game-shell.css
+   for the breakpoint table. This measure and that grid have to agree: a 272px
+   `.hud-rail` inside a full-width stacked row renders as a floating island,
+   which is exactly the look §4.3 rejects.
+   -------------------------------------------------------------------------- */
+
+/* Base case is STACKED (< 1024px): full width, seam on top rather than side. */
+.hud-rail {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+
+/* 1024–1279px: §9's "compressed rail" band — the documented minimum measure the
+   rail may shrink to before the layout stacks instead. */
+@media (min-width: 1024px) {
+  .hud-rail {
+    width: 272px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+}
+
+/* Wide desktop gets the spec measure. `geometry.rail-width` is 320px; §9 only
+   licenses compressing "toward a documented minimum" on the 1024–1279px band, so
+   272px was never right at full width — and it truncated the cash value out of
+   the seat row's own metadata line. */
+@media (min-width: 1280px) {
+  .hud-rail {
+    width: 320px;
+  }
+}
+
+.hud-rail-block {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hud-rail-block + .hud-rail-block {
+  border-top: 1px solid var(--border);
+}
+
+.hud-rail-block--log {
+  flex: 1 1 auto;
+}
+
+/*
+ * The seats block must never be squeezed away, at ANY width. `.hud-rail-block`
+ * sets `min-height: 0` (needed so the log can scroll rather than push the rail
+ * taller), which also removes the seats' natural floor — and with the log on
+ * `flex: 1 1 auto` the seats lose every fight for vertical space. On a long
+ * match the log's content grew until the roster was clipped to nothing: the
+ * header still read "SEATS 3/6" above zero visible rows, so there was no way to
+ * see who you were playing against.
+ *
+ * `flex-shrink: 0` plus a floor of "header + turn-state line + one row" keeps
+ * the roster present, and `.hud-seat-list` already scrolls internally, so a full
+ * six-seat room stays reachable instead of overflowing silently (§8). The
+ * stacked-layout block below still caps it so the seats cannot eat the log
+ * either — both directions of this fight have now been lost once.
+ */
+.hud-rail-block:not(.hud-rail-block--log) {
+  flex: 0 0 auto;
+  min-height: 108px;
+}
+
+/*
+ * Stacked (< 1024px), the rail has roughly a third of the viewport to divide
+ * between the seats and the log, and BOTH have to survive. This block sits AFTER
+ * the two base rules on purpose: `.hud-rail-block--log` here has the same
+ * specificity as the base declaration above, so it only wins by source order.
+ *
+ * Three sizings were measured in headless Chrome; two of them clip content:
+ *  - seats `flex: 0 0 auto` with no cap: at 200% zoom (a 1440x900 display
+ *    reports 720x450 CSS px) the seats took the whole rail and the log measured
+ *    0px tall. A focusable, scrollable region with no height cannot be reached
+ *    at all — exactly what §8 forbids at 200% zoom.
+ *  - log `flex-basis: 0`: the log then contributes nothing to the rail's
+ *    max-content height, so the rail's `auto` grid row collapsed to the seats
+ *    plus the log's floor and the log showed one row at every stacked width.
+ *  - what ships: the log keeps an `auto` basis (its content is what makes the
+ *    rail want its full 33vh) plus a floor, and the seats are capped instead of
+ *    shrunk, so both blocks always keep a real measure.
+ *
+ * Each floor is "header + one row"; together they equal the 168px `min-height`
+ * on `.game-shell-rail`. Change one and change the other.
+ */
+@media (max-width: 1023px) {
+  .hud-rail-block--log {
+    /* 28px sticky header + one 28px log row. */
+    min-height: 56px;
+  }
+
+  .hud-rail-block:not(.hud-rail-block--log) {
+    /* Floor: 28px header + 28px turn-state notice + one 44px seat row (rounded
+       to the 4px grid). Cap: the same plus two more seat rows, and it scales
+       with the viewport so a short screen splits the rail instead of letting the
+       seats eat it. */
+    flex: 0 0 auto;
+    min-height: 108px;
+    max-height: min(188px, 24vh);
+  }
+}
+
+/* Sticky uppercase header on surface-raised with a strong bottom rule (§6.3). */
+.hud-rail-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 28px;
+  padding-inline: 12px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.hud-rail-heading {
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* Turn-state notice: LED + text label, calm, no pulse-loop (§6.4). */
+.hud-wait {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 12px;
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Wraps rather than truncates: "WAITING ON CONTRACT AUDITOR · BOT STANDARD" is a
+   sustained state a human sits through, and clipping the bot's name to
+   "…AUDITOR · BOT ST…" hides exactly the thing the notice exists to say. */
+.hud-wait-text {
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* --------------------------------------------------------------------------
+   Player dossier rows
+   -------------------------------------------------------------------------- */
+
+.hud-seat-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.hud-seat-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 12px;
+  transition: background-color 120ms var(--hud-ease);
+}
+
+/* Hairline separators between rows, no zebra striping (§6.3). */
+.hud-seat-row + .hud-seat-row {
+  border-top: 1px solid var(--border);
+}
+
+.hud-seat-row:hover {
+  background: var(--surface-raised);
+}
+
+/* Active player: one tonal step + a 2px accent TOP RULE. Drawn as an inset
+   pseudo-element so the row never reflows, and never a glow/pulse/scale (§6.4). */
+.hud-seat-row--active {
+  background: var(--surface-raised);
+}
+
+.hud-seat-row--active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--primary);
+  pointer-events: none;
+}
+
+.hud-seat-row--away {
+  color: var(--muted-foreground);
+}
+
+/* Identity = seat color + a seat-number glyph, never color alone (§8). */
+.hud-seat-glyph {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 0;
+  border-left: 2px solid var(--hud-seat, var(--sand));
+  background: color-mix(in oklch, var(--hud-seat, var(--sand)) 20%, transparent);
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+.hud-seat-row--away .hud-seat-glyph {
+  opacity: 0.5;
+}
+
+.hud-seat-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Wraps, like the log rows: the status column ("BOT · RUTHLESS") is ~135px of a
+   320px rail, and with an ellipsis here a six-seat table read "Regional M…" —
+   the name is the one thing a dossier row exists to state. `min-height: 44px`
+   still holds, so a row only grows when the content genuinely does not fit. */
+.hud-seat-name {
+  font-family: var(--hud-sans);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+/* Rank / tile / cash for the seat. This is a §1.3 "table sub-row", which is
+   text-medium's own listed use — not text-low metadata. It also has to clear the
+   §1.8 4.5:1 floor, which taupe at 11px does not. */
+.hud-seat-meta {
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  overflow-wrap: break-word;
+}
+
+/* One fact — a rank, a tile, a cash figure — that must not be split by a wrap. */
+.hud-seat-fact {
+  white-space: nowrap;
+}
+
+.hud-seat-status {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.hud-seat-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--hud-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Activity log — 28px compact rows, hairline separators, no zebra (§6.3)
+   -------------------------------------------------------------------------- */
+
+.hud-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.hud-log:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.hud-log-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * Two columns, not three: [ timestamp + origin + sentence ] [ delta ].
+ *
+ * The sentence used to be a third fixed grid cell with `white-space: nowrap` and
+ * an ellipsis, which is why every line in a 320px rail truncated ("Contract
+ * Auditor had resource…"). It is now inline content inside `.hud-log-body`, so
+ * the timestamp and origin stamp sit at the head of the first line and the prose
+ * wraps under them. Rows stay at §6.3's compact 28px density when a line fits
+ * and grow by one line when it does not — nothing is ever clipped.
+ *
+ * `align-items: baseline` on the grid aligns the delta to the FIRST baseline of
+ * a wrapped sentence, so it always reads as belonging to the line it heads.
+ */
+.hud-log-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 28px;
+  /* 14px on the left = 12px gutter + the 2px identity rule drawn by ::before. */
+  padding: 4px 12px 4px 14px;
+}
+
+.hud-log-row + .hud-log-row {
+  border-top: 1px solid var(--border);
+}
+
+/* Identity rule: 2px of the actor's own seat colour down the leading edge, the
+   same colour their board token and dossier glyph carry. Drawn as an inset
+   pseudo-element so the row never reflows, and paired with the textual origin
+   stamp below — colour is never the only carrier (§8). */
+.hud-log-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--hud-seat, var(--border-strong));
+  pointer-events: none;
+}
+
+/* MINE vs THEIRS, carrier 2 of 3: one tonal step. The viewer's own rows sit on
+   surface-raised so a run of their own activity groups visually; opponents' rows
+   stay on the rail's own `card` ground. Carrier 1 is the `You` / `S2` stamp,
+   carrier 3 is the seat-coloured rule. */
+.hud-log-row[data-origin="local"] {
+  background: var(--surface-raised);
+}
+
+/* The office acting on its own has no seat, so it gets the neutral rule. */
+.hud-log-row[data-origin="system"],
+.hud-log-row[data-origin="unknown"] {
+  --hud-seat: var(--border-strong);
+}
+
+/* A turn boundary is the one structural break in the stream: strengthen the
+   hairline above it so a round can be scanned in blocks. */
+.hud-log-row[data-event="TurnStarted"] + .hud-log-row,
+.hud-log-row[data-event="GameStarted"] + .hud-log-row {
+  border-top-color: var(--border-strong);
+}
+
+.hud-log-body {
+  display: block;
+  min-width: 0;
+}
+
+.hud-log-time {
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-text-low);
+  white-space: nowrap;
+  /* Inline head-of-line metadata: JSX emits no whitespace between these spans,
+     so the gap is stated here rather than relying on a text node. */
+  margin-right: 8px;
+}
+
+/* MINE vs THEIRS, carrier 1 of 3: a text stamp. `You` on the viewer's own rows,
+   `S2` on another seat's, `Ops` when the office acted with no actor. */
+.hud-log-origin {
+  font-family: var(--hud-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+.hud-log-row[data-origin="local"] .hud-log-origin {
+  color: var(--foreground);
+}
+
+/* Sentence-case prose (§2.2, §6.4). Wraps — never truncates. */
+.hud-log-text {
+  font-family: var(--hud-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+/* Signed mono delta. The sign is part of the text — never color alone (§8). */
+.hud-log-delta {
+  font-family: var(--hud-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.hud-log-delta--gain {
+  color: var(--status-active);
+}
+
+.hud-log-delta--loss {
+  color: var(--status-critical);
+}
+
+.hud-log-empty {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--hud-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Seat identity colors — color is always paired with the numeric glyph
+   -------------------------------------------------------------------------- */
+
+.hud-seat-1 {
+  --hud-seat: var(--player-1);
+}
+
+.hud-seat-2 {
+  --hud-seat: var(--player-2);
+}
+
+.hud-seat-3 {
+  --hud-seat: var(--player-3);
+}
+
+.hud-seat-4 {
+  --hud-seat: var(--player-4);
+}
+
+.hud-seat-5 {
+  --hud-seat: var(--player-5);
+}
+
+.hud-seat-6 {
+  --hud-seat: var(--player-6);
+}
+
+/* --------------------------------------------------------------------------
+   Motion
+   -------------------------------------------------------------------------- */
+
+@keyframes hud-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/*
+ * Row insertion is no longer a CSS keyframe. A stylesheet animation runs once per
+ * element attach, which meant every row faded on first paint and told a player
+ * nothing about which line was new; Motion now animates ARRIVALS only (rows
+ * committed after the log mounted — see `useArrivalBaseline`), which also keeps
+ * the reduced-motion decision in one place rather than split across a media
+ * query and a component.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .hud-fade-in {
+    animation: none;
+  }
+
+  .hud-header-back,
+  .hud-log,
+  .hud-meter-fill,
+  .hud-seat-row {
+    transition: none;
+  }
+}

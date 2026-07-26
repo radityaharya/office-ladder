@@ -1,0 +1,973 @@
+/*
+ * Board — facilities floor plan for the Deadline Dash ring.
+ * Every class and keyframe in this file is prefixed `board-`.
+ *
+ * GEOMETRY
+ *   A 12x12 grid. The 44 spaces occupy the perimeter (4 corners + 10 per side);
+ *   the interior (cols 2-11, rows 2-11) is the schematic plate. Seams are a
+ *   single 1px `--border` hairline: every grid child draws border-top/left and
+ *   the grid is pulled 1px up/left so its outer lines land exactly on the
+ *   frame's own border — one uniform hairline weight on all four edges, no
+ *   doubled outer rule. Tiles are radius 0 (DESIGN.md §4.2 / §6.1: board tiles
+ *   are the one place fully square is explicitly correct).
+ *
+ *   CELLS ARE NOT SQUARE, AND THE FRAME IS NOT SQUARE. It used to be:
+ *   `width/height: min(100cqw, 100cqh)` forced the frame to the SHORTER axis, so
+ *   in a 1184x607 region the board rendered 607x607 and stranded 577px of width
+ *   as two ~288px gutters. Every cell was then 50.5px wide, which is why room
+ *   names hyphenated mid-word ("Operati/on", "Best em-…"). The ring's topology is
+ *   fixed at 12x12 (four corners + ten tiles a side = 44) but nothing about it
+ *   requires square cells, so the frame now fills its region and cells go
+ *   landscape: 1184/12 = 98.67 wide x 607/12 = 50.58 tall, which roughly doubles
+ *   the room a label has.
+ *
+ *   Two caps keep that honest rather than unbounded:
+ *     - `--board-frame-height`, floored at 576px (12 x the 48px legibility
+ *       floor). Below that the board pans inside its region instead of shrinking
+ *       tiles, exactly as before.
+ *     - `max-width: height * 3`, i.e. a cell never exceeds a 3:1 aspect. Past
+ *       that a tile stops reading as a room and starts reading as a bar. The cap
+ *       only binds on a very wide, very short region (a 21:9 display, or a short
+ *       window): at 607px of height it allows 1821px of board, so every ordinary
+ *       desktop fills completely. When it *does* bind the leftover returns to the
+ *       shell as symmetric gutter — the board region cannot spend it, and the
+ *       better home for it (a wider rail) belongs to `game-shell.css`.
+ *
+ * MOTION — token travel (DESIGN.md §7.2)
+ *   There is no transition on a token in this file, on purpose. Travel is a
+ *   discrete state machine in `board/use-board-travel.ts` and the movement itself
+ *   is Motion's, so pacing, wrap, interruption and reduced motion all live in one
+ *   place instead of being split across CSS delays. What CSS still owns is the
+ *   token's CANONICAL position: `.board-token` is parked on the cell the
+ *   projection says it is on via `--board-token-col/row`, and Motion animates
+ *   only the offset back to wherever the token is currently drawn. A delta of
+ *   zero is a token at truth, so the first paint (and `renderToStaticMarkup`) is
+ *   a correct resting board, and a torn-down animation converges on the server
+ *   rather than stranding a piece mid-track.
+ *   Everything else in this file stays inside the chrome budget: 160ms for
+ *   tile/plate state changes, 120ms for smaller control-scale changes.
+ */
+
+/* ---------------------------------------------------------------- viewport */
+
+/*
+ * Centring is done with `margin: auto` on `.board-frame`, NOT with
+ * `align-items`/`justify-content: center` here. That distinction is load-bearing
+ * once the board hits its 576px floor and starts to pan: a centred flex item
+ * that is larger than its scroll container overflows equally on both sides, and
+ * the start-side overflow is unreachable by scrolling — below ~1024px that
+ * silently cut off the left column of tiles (and on a phone the top row too)
+ * with no way to reach them. Auto margins resolve to 0 when the item overflows,
+ * so the frame anchors at the scroll origin and the whole board is reachable,
+ * while still centring exactly as before whenever there is free space.
+ */
+.board-viewport {
+  position: relative;
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow: auto;
+  outline: none;
+  container-type: size;
+  scrollbar-gutter: stable;
+}
+
+.board-viewport:focus-visible {
+  /* A full-bleed scroll region cannot afford an outside offset — it would be
+     clipped by its own overflow. Inset by 2px instead, same 2px accent rule. */
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.board-frame {
+  /* The frame's own height, floored at the 12 x 48px legibility minimum. Used
+     for the aspect cap below, so the cap is expressed in cell terms. */
+  --board-frame-height: max(100cqh, 576px);
+
+  position: relative;
+  flex: none;
+  /* See the note on `.board-viewport`. */
+  margin: auto;
+  width: 100%;
+  min-width: 576px;
+  max-width: calc(var(--board-frame-height) * 3);
+  height: 100%;
+  min-height: 576px;
+  border: 1px solid var(--border);
+  background-color: var(--background);
+}
+
+.board-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: repeat(12, 1fr);
+  width: calc(100% + 1px);
+  height: calc(100% + 1px);
+  margin: -1px 0 0 -1px;
+}
+
+.board-track {
+  display: contents;
+  list-style: none;
+}
+
+/* ------------------------------------------------------------------- tiles */
+
+/*
+ * `padding-bottom: 17px` is the occupancy dock's reserved band. It is the fix
+ * for tokens printing on top of a tile's own name: the label's line box can no
+ * longer reach the bottom 17px of the cell, so a rack of plates and a room name
+ * cannot occupy the same pixels no matter how many seats are standing here.
+ * Every tile reserves it, occupied or not, so a token arriving never reflows a
+ * neighbouring label.
+ *
+ * Each tile is its own inline-size container so the label can pick a form that
+ * fits ITS cell, which is what removes mid-word hyphenation for good.
+ */
+.board-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  min-height: 0;
+  padding: 4px 6px 17px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  background-color: var(--surface);
+  color: var(--foreground);
+  container: board-tile / inline-size;
+  transition:
+    background-color 160ms cubic-bezier(0.2, 0, 0, 1),
+    outline-color 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Zone fills: neutral tonal steps only — no zone is identified by hue, and
+   every tile also carries its uppercase facility code and its room name. */
+.board-tile[data-board-zone="workfloor"],
+.board-tile[data-board-zone="break"] {
+  background-color: var(--surface-sunken);
+}
+
+.board-tile[data-board-zone="landmark"] {
+  background-color: var(--surface-raised);
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+.board-tile[data-board-inactive="true"] {
+  opacity: 0.5;
+}
+
+/* Zone rule: the 2px strip on the tile's leading edge. Pattern, not hue. */
+.board-tile-rule {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background-color: transparent;
+}
+
+.board-tile[data-board-zone="service"] .board-tile-rule {
+  background-color: var(--taupe);
+}
+
+.board-tile[data-board-zone="social"] .board-tile-rule {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--taupe) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.board-tile[data-board-zone="break"] .board-tile-rule {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--sand) 0 1px,
+    transparent 1px 4px
+  );
+}
+
+.board-tile[data-board-zone="landmark"] .board-tile-rule {
+  background-color: var(--sand);
+}
+
+.board-tile[data-board-zone="hazard"] .board-tile-rule {
+  height: 3px;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--taupe) 0 5px,
+    transparent 5px 10px
+  );
+}
+
+/* Marked tiles. Accent is spent on exactly one thing in this view: the space
+   the active player is standing on. The previous landing gets a neutral
+   border-strong frame, never a second saturated colour. */
+.board-tile[data-board-landed="true"] {
+  z-index: 1;
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+.board-tile[data-board-active="true"] {
+  z-index: 1;
+  background-color: var(--surface-raised);
+  outline: 1px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.board-tile[data-board-active="true"] .board-tile-rule {
+  height: 2px;
+  background-color: var(--primary);
+  background-image: none;
+}
+
+.board-tile-head {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+.board-tile-code {
+  flex: none;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-tile[data-board-active="true"] .board-tile-code {
+  color: var(--foreground);
+}
+
+.board-tile-index {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The state word sits in the head row, beside the facility code — the tile's
+   foot belongs to the occupancy dock. It is the label, not the colour, that
+   carries the state; the accent rule and outline only reinforce it. */
+.board-tile-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.board-tile-tag[data-board-tag="active"] {
+  color: var(--primary);
+}
+
+/*
+ * Room names never break inside a word: no hyphenation, no wrapping, no
+ * mid-word ellipsis. Instead both an authored full form and an authored shorter
+ * whole-word form ship in the markup and the tile's own container query picks
+ * the one that fits. `text-overflow: clip` rather than `ellipsis` is deliberate —
+ * with the tiers below there is nothing left to truncate at any width the board
+ * actually renders at, and a stray "…" would be a lie about there being more
+ * text to read.
+ */
+.board-tile-name {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--foreground);
+  white-space: nowrap;
+  text-overflow: clip;
+  hyphens: none;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.board-tile-name-short {
+  display: none;
+}
+
+/* Tier 2 — a cell too narrow for the full name swaps to the short form. */
+@container board-tile (max-width: 95px) {
+  .board-tile-name-full {
+    display: none;
+  }
+
+  .board-tile-name-short {
+    display: inline;
+  }
+}
+
+/* Tier 3 — a cell at or near the 48px pan floor drops the name entirely rather
+   than clipping it. The facility code and index still identify the space, and
+   the full name stays in the tile's accessible name and its title. */
+@container board-tile (max-width: 63px) {
+  .board-tile {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .board-tile-name,
+  .board-tile-tag {
+    display: none;
+  }
+}
+
+@container board-tile (max-width: 55px) {
+  .board-tile-index {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------- interior plate */
+
+/*
+ * A wide frame makes this a wide panel, not a 506px box holding one paragraph.
+ * It is laid out as a real three-row grid — head bar, body, readout rail — with
+ * the body splitting into status + zone key once the panel is wide enough. The
+ * split is a container query on the panel itself rather than a viewport
+ * breakpoint, because what matters here is how much room the ring's interior
+ * has, not how big the window is.
+ */
+.board-plate {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  grid-row: 2 / 12;
+  grid-column: 2 / 12;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  background-color: var(--background);
+  container: board-plate / inline-size;
+}
+
+.board-plate-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
+.board-plate-kicker {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-plate-ref {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Scrolls rather than clips. The plate is a fixed-size box inside a board that
+ * pans, so anything it hides is genuinely unreachable — and §8 forbids a panel
+ * clipping its content at 200% zoom. At any ordinary size there is far more room
+ * than content here and no scrollbar appears.
+ */
+.board-plate-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.board-plate-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px 12px;
+}
+
+.board-plate-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-plate-led {
+  display: block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background-color: var(--taupe);
+}
+
+.board-plate-marker[data-board-tone="active"] .board-plate-led {
+  background-color: var(--status-active);
+}
+
+.board-plate-marker[data-board-tone="caution"] .board-plate-led {
+  background-color: var(--status-caution);
+}
+
+.board-plate-marker[data-board-tone="info"] .board-plate-led {
+  background-color: var(--status-info);
+}
+
+.board-plate-title {
+  font-family: var(--font-geist-sans);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+.board-plate-copy {
+  max-width: 70ch;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/*
+ * Movement reach — six columns, one per die face, showing what a roll lands on
+ * from where the active player stands. Table grammar (§6.3): a mono die value, a
+ * facility code, a room name, 1px hairlines between columns, no chips. It is the
+ * ring interior's own content and it is the reason the wide panel is not empty
+ * space with a paragraph in it.
+ */
+.board-reach {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.board-reach-head {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-reach-list {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  list-style: none;
+}
+
+.board-reach-item {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 88px;
+  padding: 0 8px;
+  border-left: 1px solid var(--border);
+}
+
+.board-reach-item:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.board-reach-roll {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-reach-code {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-reach-name {
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--foreground);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.board-plate-detail {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Readout rail — the HUD's own grammar (label + mono value, separated by 1px
+   vertical rules), spanning the panel's full width so its cells align to the
+   panel's own edges (§4.5) instead of to their own content. Not pills. */
+.board-plate-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
+.board-plate-readout {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 96px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--border);
+}
+
+.board-plate-readout:first-child {
+  border-left: 0;
+}
+
+.board-plate-readout-label {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-plate-readout-value {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------- legend */
+
+.board-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
+.board-legend-head {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+/* A zone key is tabular data, so it is a table: one row per zone, name left,
+   count right in mono (§6.3). It used to be a wrapping row of chips squeezed
+   into the bottom of a square plate. */
+.board-legend-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.board-legend-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+
+.board-legend-item:first-child {
+  border-top: 0;
+}
+
+.board-legend-term {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.board-legend-swatch {
+  position: relative;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
+.board-legend-swatch[data-board-zone="workfloor"],
+.board-legend-swatch[data-board-zone="break"] {
+  background-color: var(--surface-sunken);
+}
+
+.board-legend-swatch[data-board-zone="landmark"] {
+  background-color: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+.board-legend-swatch::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background-color: transparent;
+}
+
+.board-legend-swatch[data-board-zone="service"]::before {
+  background-color: var(--taupe);
+}
+
+.board-legend-swatch[data-board-zone="social"]::before {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--taupe) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.board-legend-swatch[data-board-zone="break"]::before {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--sand) 0 1px,
+    transparent 1px 4px
+  );
+}
+
+.board-legend-swatch[data-board-zone="landmark"]::before {
+  background-color: var(--sand);
+}
+
+.board-legend-swatch[data-board-zone="hazard"]::before {
+  height: 3px;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--taupe) 0 5px,
+    transparent 5px 10px
+  );
+}
+
+.board-legend-name {
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.board-legend-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Wide panel: status on the left, zone key as its own column on the right,
+   separated by the seam the rest of the system uses. */
+@container board-plate (min-width: 560px) {
+  .board-plate-main {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 24%);
+  }
+
+  .board-legend {
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    background-color: var(--background);
+  }
+}
+
+/* -------------------------------------------------------------- tokens */
+
+.board-token-layer {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+/*
+ * Three nested boxes, each with exactly one job.
+ *
+ *  .board-token         canonical cell, plain CSS, never animated.
+ *  .board-token-travel  Motion's travel offset — percentages of one cell, so a
+ *                       hop is exactly `100%` and the resting value is `0%`
+ *                       (which Motion renders as `transform: none`).
+ *  .board-token-plate   the plate itself, offset along the dock by Motion.
+ */
+.board-token {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  list-style: none;
+  width: calc(100% / 12);
+  height: calc(100% / 12);
+  transform: translate(
+    calc(var(--board-token-col) * 100%),
+    calc(var(--board-token-row) * 100%)
+  );
+}
+
+/* A piece in motion crosses over pieces at rest, never under them. */
+.board-token[data-board-token-travelling="true"] {
+  z-index: 1;
+}
+
+.board-token-travel {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Occupancy dock: plates run left to right in seat order along the band the
+   tile reserves at its bottom edge, so N tokens on one space read as a rack of
+   tags and none of them can land on the tile's own label. */
+.board-token-plate {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  display: flex;
+  align-items: stretch;
+  height: 14px;
+  /* The layer itself stays transparent to the pointer so it never eats a drag
+     on the scroll region; the plate takes hover so its title tooltip works.
+     Nothing here is a control — the seat, its state and its space are all in
+     the tile's and the token's accessible names. */
+  pointer-events: auto;
+  border: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+  color: var(--background);
+}
+
+.board-token-plate[data-board-seat="1"] {
+  background-color: var(--player-1);
+  background-image: repeating-linear-gradient(
+    45deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.board-token-plate[data-board-seat="2"] {
+  background-color: var(--player-2);
+  background-image: radial-gradient(oklch(0 0 0 / 26%) 1px, transparent 1px);
+  background-size: 4px 4px;
+}
+
+.board-token-plate[data-board-seat="3"] {
+  background-color: var(--player-3);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.board-token-plate[data-board-seat="4"] {
+  background-color: var(--player-4);
+  background-image: repeating-linear-gradient(
+    0deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.board-token-plate[data-board-seat="5"] {
+  background-color: var(--player-5);
+  background-image: repeating-linear-gradient(
+    90deg,
+    oklch(0 0 0 / 22%) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.board-token-plate[data-board-seat="6"] {
+  background-color: var(--player-6);
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      oklch(0 0 0 / 20%) 0 2px,
+      transparent 2px 4px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      oklch(0 0 0 / 20%) 0 2px,
+      transparent 2px 4px
+    );
+}
+
+.board-token-seat {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--background);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-token-bot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  overflow: hidden;
+  border-left: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--background);
+  text-transform: uppercase;
+}
+
+/*
+ * One-shot landing acknowledgement: a single hairline frame that fades up and
+ * out over ~320ms on the plate that just arrived. No glow, no halo, no scale,
+ * no confetti — a landing is acknowledged, not congratulated (§4.1/§4.4). The
+ * durable record of the move is the token's new space and the tile's own "Last"
+ * mark, so a reduced-motion player loses nothing by never seeing this.
+ */
+.board-token-landing {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid var(--foreground);
+  pointer-events: none;
+}
+
+/* Active seat: the same 2px accent rule the dossier row uses. No glow, no
+   pulse loop, no scale-up. */
+.board-token[data-board-token-state="current"] .board-token-plate {
+  border-top: 2px solid var(--primary);
+}
+
+/* Link state is never colour-only: the plate switches to a dashed hairline
+   as well as desaturating, and the state is in the accessible name. */
+.board-token[data-board-token-state="disconnected"] .board-token-plate,
+.board-token[data-board-token-state="eliminated"] .board-token-plate {
+  border-style: dashed;
+  filter: saturate(0.15);
+}
+
+.board-token[data-board-token-state="eliminated"] .board-token-plate {
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------- responsive + motion */
+
+/* < 768px: the board keeps its 48px tile floor and pans inside the region
+   rather than shrinking tiles below legibility (§9 — capability parity, the
+   plate keeps every readout as text). */
+@media (max-width: 767px) {
+  .board-plate-body {
+    padding: 12px;
+  }
+
+  .board-plate-title {
+    font-size: 1rem;
+    letter-spacing: 0.02em;
+  }
+}
+
+/*
+ * Token travel is not a CSS transition, so there is nothing to switch off here —
+ * `useBoardTravel` reads `useReducedMotion` and collapses to instant state
+ * changes at the source. Only the tile's own chrome transition is neutralised.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .board-tile {
+    transition: none;
+  }
+}

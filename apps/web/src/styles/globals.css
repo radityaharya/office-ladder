@@ -7,6 +7,23 @@
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
 
+/* Per-area stylesheets. Plain CSS, design tokens only, each with its own class
+   prefix so two areas can never collide. Deliberately UNLAYERED (they are not
+   inside `@layer`), which puts them above every Tailwind layer in the cascade —
+   that is what lets `.hud-strip`, `.board-tile`, `.overlay-dialog` etc. own
+   their own geometry without an `!important` anywhere. Order below is
+   alphabetical, not significance-ordered: no two of these sheets style the same
+   selector, so import order carries no meaning.
+   CSS `@import` is only legal before other rules — these must stay in this
+   block, never appended at the end of the file. */
+@import "./board.css";
+@import "./cards.css";
+@import "./dice.css";
+@import "./game-shell.css";
+@import "./hud.css";
+@import "./overlays.css";
+@import "./shell.css";
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -41,6 +58,8 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-border-inverse: var(--border-inverse);
+  --color-surface: var(--surface);
   --color-destructive: var(--destructive);
   --color-warning: var(--warning);
   --color-info: var(--info);
@@ -101,6 +120,10 @@
   --info: oklch(0.615 0.045 235);
   --sand: oklch(0.62 0.021 75);
   --taupe: oklch(0.5 0.016 72);
+  /* DESIGN.md §1.1. `--card` is shadcn's alias for the same plane; `--surface`
+     is the name the design system uses, and area stylesheets reference it
+     directly, so it has to exist here or those fills fall back to transparent. */
+  --surface: oklch(0.205 0.007 78);
   --surface-raised: oklch(0.245 0.008 76);
   --surface-sunken: oklch(0.175 0.006 79);
   --status-active: oklch(0.615 0.075 145);
@@ -115,6 +138,9 @@
   --player-6: oklch(0.58 0.08 290);
   --border: oklch(1 0 0 / 9%);
   --border-strong: oklch(1 0 0 / 16%);
+  /* DESIGN.md §1.4 — the seam inside a light fill (accent/sand), where a
+     light-on-light hairline would vanish. */
+  --border-inverse: oklch(0 0 0 / 22%);
   --input: oklch(1 0 0 / 16%);
   --ring: oklch(0.735 0.085 78);
   --chart-1: oklch(0.871 0.006 286.286);
@@ -209,8 +235,11 @@
     @apply border-destructive/40 bg-destructive/10 text-destructive;
   }
 
+  /* The §4.4 shadow, stated in the same oklch form as every other colour in the
+     system — the previous `rgba(0,0,0,0.4)` was the one non-oklch colour value
+     left in apps/web. `.overlay-toast` restates it for sonner's own cascade. */
   .cn-toast {
-    @apply rounded-sm border-border bg-popover text-popover-foreground shadow-[0_2px_8px_rgba(0,0,0,0.4)];
+    @apply rounded-sm border-border bg-popover text-popover-foreground shadow-[0_2px_8px_oklch(0_0_0_/_40%)];
   }
 
   /* Blueprint/schematic backdrop: fine 32px grid + coarse 128px grid. */
@@ -310,108 +339,28 @@
     background-repeat: no-repeat;
   }
 
-  /* Boot-sequence reveal: direct children fade/rise in on mount, staggered. */
-  .stagger-reveal > * {
-    animation: reveal-up 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .stagger-reveal > *:nth-child(1) {
-    animation-delay: 0ms;
-  }
-
-  .stagger-reveal > *:nth-child(2) {
-    animation-delay: 60ms;
-  }
-
-  .stagger-reveal > *:nth-child(3) {
-    animation-delay: 120ms;
-  }
-
-  .stagger-reveal > *:nth-child(4) {
-    animation-delay: 180ms;
-  }
-
-  .stagger-reveal > *:nth-child(5) {
-    animation-delay: 240ms;
-  }
-
-  .stagger-reveal > *:nth-child(6) {
-    animation-delay: 300ms;
-  }
-
-  /* One-time scan sweep on load — a system-initializing cue, not ambient decoration. */
-  .scan-sweep {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  .scan-sweep::before {
-    content: "";
-    position: absolute;
-    right: 0;
-    left: 0;
-    height: 140px;
-    background: linear-gradient(
-      180deg,
-      transparent,
-      oklch(1 0 0 / 6%),
-      transparent
-    );
-    animation: scan-down 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .blink-caret {
-    animation: caret-blink 1.1s steps(1) infinite;
-  }
-
+  /*
+   * Indicator LED: a 6px SQUARE, never a circle, and never the only carrier of
+   * meaning — every use pairs it with a text label (DESIGN.md §6.4, §8). It is
+   * deliberately STATIC: the earlier `led-pulse … infinite` animation on this
+   * class violated §7's no-pulse-loop rule.
+   */
   .status-led {
     display: inline-block;
     width: 6px;
     height: 6px;
-    animation: led-pulse 2.4s ease-in-out infinite;
   }
 }
 
-@keyframes reveal-up {
-  from {
-    transform: translateY(10px);
-    opacity: 0;
-  }
-
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-@keyframes scan-down {
-  from {
-    transform: translateY(-140px);
-  }
-
-  to {
-    transform: translateY(100vh);
-  }
-}
-
-@keyframes caret-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-@keyframes led-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.35;
-  }
-}
+/*
+ * Removed with the design-system pass: `.stagger-reveal` (420ms on
+ * cubic-bezier(0.16, 1, 0.3, 1)), `.scan-sweep` (900ms), `.blink-caret`
+ * (infinite) and the `reveal-up` / `scan-down` / `caret-blink` / `led-pulse`
+ * keyframes. All four broke §7 (>200ms outside the board's token-travel
+ * exception, a non-standard easing curve, or an infinite loop) and none had a
+ * remaining consumer in apps/web. Re-adding any of them needs a §7 amendment,
+ * not a re-import.
+ */
 
 @media (prefers-reduced-motion: reduce) {
   *,
