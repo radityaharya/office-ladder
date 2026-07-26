@@ -40,6 +40,7 @@ export type {
 } from "./resolve";
 
 export {
+  CHOOSE_ONE_PROMPT_KIND,
   CHOOSE_OPPONENT_PROMPT_KIND,
   IMMUNITY_STATUS_ID,
   PENDING_EFFECT_PAYLOAD_KIND,
@@ -58,6 +59,21 @@ export { leaderPlayerId, livePlayerIds, resolveEffectTargets } from "./targeting
 export type { TargetInput, TargetResolution } from "./targeting";
 
 export { evaluateEffectCondition } from "./conditions";
+
+export { isScalable, scaledAmount, withScaledAmount } from "./scaling";
+
+export {
+  IMMUNITY_SCOPE_KEY,
+  STATUS_POLARITY_KEY,
+  STATUS_SOURCE_DECK_KEY,
+  immunityCovers,
+  immunityScope,
+  removeMatchingStatuses,
+  statusData,
+  statusMatchesFilter,
+  statusPolarity,
+  statusSourceDeckId,
+} from "./statuses";
 
 export {
   isCardPlayableUnderRules,
@@ -81,9 +97,15 @@ export {
   parseEffectCondition,
 } from "./vocabulary";
 export type {
+  EffectChoiceOption,
   EffectCondition,
   EffectConditionSubject,
   EffectEnvelope,
+  EffectImmunityScope,
+  EffectPolarity,
+  EffectScale,
+  EffectScaleMetric,
+  EffectStatusFilter,
   EffectTarget,
   EffectTiming,
   EffectV2,

@@ -1,5 +1,19 @@
 import { GAME_STATE_SCHEMA_VERSION } from "../model";
-import type { GameState, GameStatus, JsonObject, JsonValue } from "../model";
+import type {
+  CardZone,
+  DeckKind,
+  FrameKind,
+  GameState,
+  GameStatus,
+  JsonObject,
+  JsonValue,
+  MatchEndReason,
+  RankKind,
+  ResourceKind,
+  RoleKind,
+  TokenKind,
+  TurnPhase,
+} from "../model";
 
 const GAME_STATUSES: readonly GameStatus[] = [
   "setup",
@@ -88,7 +102,61 @@ const MATCH_END_REASONS = [
   "clock-deck-exhausted",
   "marathon-scored",
   "terminated-no-contest",
+  "quarters-elapsed",
+  "objectives-complete",
+  "last-standing",
 ] as const;
+
+/**
+ * Compile-time proof that each allow-list above covers its whole model union.
+ *
+ * These lists guard an UNTRUSTED persisted snapshot, so they cannot simply be
+ * derived from the type at runtime — the point is to reject a string the model
+ * does not name. But a hand-kept list silently drifts the other way too: a value
+ * ADDED to the model and forgotten here makes the engine refuse to serialize its
+ * own legal state.
+ *
+ * That is not hypothetical. `MatchEndReason` gained `quarters-elapsed`,
+ * `objectives-complete` and `last-standing` when fixed-length and objective win
+ * shapes landed, this list kept the original four, and every match ending for one
+ * of the new reasons failed to persist — the same shape of failure as the
+ * `stateSchemaVersion` bump that made `game.start` unstorable.
+ *
+ * `Missing<Union, Tuple>` resolves to `true` only when the tuple covers the union;
+ * otherwise it resolves to the unlisted members, and the assignment below fails to
+ * compile naming them. Note that `GAME_STATUSES` never drifted precisely because
+ * it carries an explicit `readonly GameStatus[]` annotation — these assertions give
+ * the bare `as const` lists the same protection in the direction an annotation
+ * cannot catch.
+ */
+type Missing<Union extends string, Listed extends string> = [
+  Exclude<Union, Listed>,
+] extends [never]
+  ? true
+  : Exclude<Union, Listed>;
+
+const _ALLOW_LISTS_COVER_EVERY_VARIANT: {
+  readonly turnPhase: Missing<TurnPhase, (typeof TURN_PHASES)[number]>;
+  readonly resourceKind: Missing<ResourceKind, (typeof RESOURCE_KINDS)[number]>;
+  readonly tokenKind: Missing<TokenKind, (typeof TOKEN_KINDS)[number]>;
+  readonly rankKind: Missing<RankKind, (typeof RANK_KINDS)[number]>;
+  readonly roleKind: Missing<RoleKind, (typeof ROLE_KINDS)[number]>;
+  readonly deckKind: Missing<DeckKind, (typeof DECK_KINDS)[number]>;
+  readonly cardZone: Missing<CardZone, (typeof CARD_ZONES)[number]>;
+  readonly frameKind: Missing<FrameKind, (typeof FRAME_KINDS)[number]>;
+  readonly matchEndReason: Missing<MatchEndReason, (typeof MATCH_END_REASONS)[number]>;
+} = {
+  turnPhase: true,
+  resourceKind: true,
+  tokenKind: true,
+  rankKind: true,
+  roleKind: true,
+  deckKind: true,
+  cardZone: true,
+  frameKind: true,
+  matchEndReason: true,
+};
+void _ALLOW_LISTS_COVER_EVERY_VARIANT;
 
 function describeValue(value: unknown): string {
   if (value === null) {

@@ -484,10 +484,15 @@ export function applyCommand(
       message: "Only the authorized starter can start the game",
     });
   }
-  if (
-    (command.type === "turn.roll" || command.type === "prompt.respond") &&
-    state.turn.activePlayerId !== command.actorId
-  ) {
+  // `prompt.respond` used to be checked here alongside `turn.roll`, and that was
+  // wrong for the same reason the copy inside `respond-to-prompt.ts` was:
+  // `PromptState.audience` is a list, so a prompt raised on somebody who is not
+  // the active player — every reaction, vote, trade offer and chosen-opponent
+  // prompt, plus the heat investigation a round boundary raises on a saboteur —
+  // was unanswerable by construction. Who may answer is the prompt's audience,
+  // and that is the transition's call; whether a *particular kind* additionally
+  // needs the turn is a rule about that kind, and lives with it.
+  if (command.type === "turn.roll" && state.turn.activePlayerId !== command.actorId) {
     return rejectCommand(state, command, {
       code: "NOT_ACTOR_TURN",
       message: "Only the active player can act",
@@ -565,7 +570,28 @@ export function applyCommand(
     case "audit.pay-fine":
       return payAuditFine(state, command, context);
     case "promotion.attempt":
-      return attemptPromotion(state, command, context);
+      // `management.block-promotion` is routed, authorised and tested, but until
+      // this line nothing in `src` ever opened a window for it to answer — the
+      // option was passed only from a test, so the Management role's one real
+      // power was dead in every actual match.
+      //
+      // Passed unconditionally on purpose. The three conditions that decide
+      // whether a window is appropriate — `interaction.reactionWindows`,
+      // `hidden.rolesEnabled`, and there being a Management opponent at all —
+      // are re-checked inside `attemptPromotion`, which is where that mechanic's
+      // gate lives; restating any of them here would be the second copy this
+      // router exists to avoid. What the router is saying is only "yes, open it
+      // if you can", and it can now say that because a closer exists: every
+      // eligible seat is offered `reaction.pass` (legal-actions.ts), and the
+      // last one to pass settles the promotion through `closingThrough` above.
+      //
+      // The *clock* is not that closer yet. `promotion-choice.ts` writes
+      // `deadlineAt: null` on the window it opens, and the server's expiry
+      // scheduler deliberately skips a resolvable with no deadline rather than
+      // inventing one — so a seat that simply never answers still parks this
+      // window. Giving it a deadline belongs to whoever owns that file; until
+      // then the all-eligible-passed path is what drains it.
+      return attemptPromotion(state, command, context, { openBlockWindow: true });
     case "promotion.decline":
       return declinePromotion(state, command, context);
     case "management.shuffle-deck":

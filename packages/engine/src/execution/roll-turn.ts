@@ -23,7 +23,7 @@ import {
 } from "../model";
 import { rollDie } from "../random";
 import { moveAroundBoard } from "../rules";
-import { applyRollAgency } from "./agency";
+import { applyRollAgency, findResourceEntry } from "./agency";
 import { expireAgreements } from "./agreements";
 import {
   clockDeckExhaustionOutcome,
@@ -58,7 +58,7 @@ import {
 } from "./roll-random";
 import { resolveSalary } from "./roll-salary";
 import { evaluateMatchEnd, resolveScoringConfig, scoreMatch } from "./scoring";
-import type { TransitionContext, TransitionResult } from "./types";
+import type { TransitionContent, TransitionContext, TransitionResult } from "./types";
 import { refreshUpkeepForRank, settleRound } from "./upkeep";
 
 function assertNeverTraceEntry(value: never): never {
@@ -83,6 +83,58 @@ function affordsAfterPromotion(
     decision.accept.cost.resource === promotion.moneyKey ? promotion.cost : 0;
 
   return resource.value - spentOnPromotion >= decision.accept.cost.amount;
+}
+
+/**
+ * Apply the newly-reached rank's `increaseMaximumEnergy` benefits.
+ *
+ * The benefit has existed in the schema, the content pack (`rank.supervisor`,
+ * `+2`) and the validator's mirror since the pack was first authored, and had
+ * **no consumer anywhere in the engine** — a grep found it in exactly those
+ * three places and nowhere that reads game state. This is that consumer.
+ *
+ * A promotion **widens the tank, it does not fill it**: `maximum` goes up and
+ * `value` is left exactly where the player earned it. That is the whole point —
+ * a Supervisor who has been grinding gets somewhere to put the energy that the
+ * pack's `+energy` cards and `restoreResourceToMaximum` grant, rather than
+ * having them silently discarded at a ceiling equal to their starting value.
+ *
+ * A null `maximum` means uncapped, so there is nothing to widen; the resource is
+ * returned untouched rather than being given a finite ceiling it never had.
+ *
+ * No event is emitted. Every resource event in this engine reports a *value*
+ * change (`previousValue`/`newValue`), and no value changes here — the same
+ * "no value changed, no event" rule the tile-effect walk follows. A read model
+ * rebuilding from `game_events` re-derives the ceiling from `PlayerPromoted`'s
+ * `toRankId` plus the rank's own benefits, which is where it is authored.
+ */
+function widenEnergyMaximumForRank(
+  player: PlayerState,
+  content: TransitionContent,
+  toRankId: string,
+): PlayerState {
+  const rank = content.ranks.find((candidate) => candidate.id === toRankId);
+  if (rank === undefined) return player;
+
+  const increase = rank.benefits.reduce(
+    (total, benefit) => (benefit.type === "increaseMaximumEnergy" ? total + benefit.amount : total),
+    0,
+  );
+  if (increase === 0) return player;
+
+  const energy = findResourceEntry(player, "resource.energy");
+  if (energy === null) return player;
+
+  const [energyKey, energyResource] = energy;
+  if (energyResource.maximum === null) return player;
+
+  return {
+    ...player,
+    resources: {
+      ...player.resources,
+      [energyKey]: { ...energyResource, maximum: energyResource.maximum + increase },
+    },
+  };
 }
 
 type PromptIds = {
@@ -700,6 +752,12 @@ export function rollTurn(
       // written onto the player here. A no-op when the flag — or upkeep itself —
       // is off.
       updatedPlayer = refreshUpkeepForRank(updatedPlayer, state.rules);
+
+      // The other half of the new rank's benefits: `increaseMaximumEnergy`
+      // widens the tank without filling it. Applied after the money deduction
+      // and the upkeep refresh so it composes with whatever they left on the
+      // record, and before the events below so `updatedPlayer` is final.
+      updatedPlayer = widenEnergyMaximumForRank(updatedPlayer, context.content, promotion.toRankId);
 
       const promotedEvent: PlayerPromotedEvent = {
         ...eventMetadata(),

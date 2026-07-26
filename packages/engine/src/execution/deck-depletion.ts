@@ -198,6 +198,50 @@ function deckKindOf(deckId: string): DeckKind | null {
 }
 
 /**
+ * Defensive ceiling on `DeckCard.copies`.
+ *
+ * A deck's physical size is otherwise a content-authored loop bound, and a typo
+ * of `1e9` would allocate a card instance per iteration before anything could
+ * reject it. The content validator owns the real sanity rule; this only stops a
+ * bad number from being fatal.
+ */
+const MAX_CARD_COPIES = 99;
+
+function copiesOf(card: DeckCard): number {
+  const authored = card.copies;
+  if (typeof authored !== "number" || !Number.isSafeInteger(authored) || authored < 1) {
+    return 1;
+  }
+
+  return Math.min(authored, MAX_CARD_COPIES);
+}
+
+/**
+ * A deck's **physical** pool: every playable design repeated `DeckCard.copies`
+ * times (spec §10.5, re-cut plan §3.2).
+ *
+ * The design workbook encodes rarity *as multiplicity* — nothing tagged Uncommon
+ * or rarer is ever duplicated — so one instance per design makes the Legendary
+ * card exactly as likely as the Common one, which inverts the entire rarity
+ * curve. Twelve extra copies exist across the shipped pack (eight in
+ * `deck.work`, four in `deck.meeting`) and every one of them was being thrown
+ * away here.
+ *
+ * Defines **composition, not order**: `buildDecks` shuffles the pool before
+ * cutting it, so the author order this returns is never observable.
+ */
+export function expandCardCopies(cards: readonly DeckCard[]): readonly DeckCard[] {
+  const pool: DeckCard[] = [];
+  for (const card of cards) {
+    for (let copy = 0; copy < copiesOf(card); copy += 1) {
+      pool.push(card);
+    }
+  }
+
+  return pool;
+}
+
+/**
  * Builds every deck and every card instance for a new game.
  *
  * Three things this fixes, all of which the engine got wrong by simply never
@@ -206,8 +250,24 @@ function deckKindOf(deckId: string): DeckKind | null {
  * - **Decks have a size.** `deckQuantities` is honoured by repeating the authored
  *   pool up to the mode's card count, so a 6-card authored pool becomes the 25
  *   physical cards `mode.quick` asks for. Without a size, nothing can deplete.
+ * - **`copies` is expanded.** The pool a deck is cut from is the *physical* one
+ *   (`expandCardCopies`), not one instance per design, because the pack encodes
+ *   rarity as multiplicity.
+ * - **The pool is shuffled before the mode's cap is applied**, which is the one
+ *   behavioural consequence worth stating plainly. `deckQuantities` is still the
+ *   cap and still decides the deck's exact size; what changed is *which* cards
+ *   fill it. Cutting a shuffled physical pool makes a card's chance of being in
+ *   play proportional to its `copies` — which is the whole point of authoring
+ *   them — and it retires a quieter defect: taking the pool's leading slice (the
+ *   old `index % playable.length`) meant `mode.quick`, which asks for 25 of
+ *   `deck.work`'s 55 physical cards, could only ever deal the first 25 authored
+ *   designs. Everything after them was unreachable in that mode no matter how
+ *   the deck was shuffled afterwards. A mode asking for *more* than the pool
+ *   holds still cycles it, repeating it at its authored ratio.
  * - **Timing is filtered here.** A stored card in a mode with no hand, or a
  *   reaction card in a mode with no windows, never enters the deck (spec §10.2).
+ *   Filtering happens before expansion, so a copies-4 card the mode disallows
+ *   costs the deck nothing rather than four slots.
  * - **Clock decks do not reshuffle.** `reshufflesWhenEmpty` is false for every
  *   deck named by `clockDeckIds`, which is the entire mechanism behind the
  *   `clock-deck-exhausted` end condition.
@@ -221,17 +281,18 @@ export function buildDecks(input: BuildDecksInput): DeckPiles {
 
   for (const deck of input.decks) {
     const playable = deck.cards.filter((card) => timingAllowed(cardTiming(card), input.rules));
+    const pool = shuffle(expandCardCopies(playable), input.random);
     const requested = input.quantities[deck.id];
     const quantity =
-      playable.length === 0
+      pool.length === 0
         ? 0
         : typeof requested === "number" && Number.isSafeInteger(requested) && requested > 0
           ? requested
-          : playable.length;
+          : pool.length;
 
     const instanceIds: CardInstanceId[] = [];
     for (let index = 0; index < quantity; index += 1) {
-      const definition = playable[index % playable.length];
+      const definition = pool[index % pool.length];
       if (definition === undefined) continue;
 
       const cardId = createStableId(

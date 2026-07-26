@@ -1,51 +1,62 @@
-import type { EffectDescriptor } from "@office-ladder/content";
+import type { PlayerId } from "../../model";
 
-import type { JsonObject } from "../../model";
-import type { PlacementKind, PlayerId, TileId } from "../../model";
-import type { ResourceKey } from "../resolve-tile-effects";
-
-/**
- * Gameplay v2's effect vocabulary — plans/24-gameplay-v2-spec.md §10.
- *
- * ## Why this lives in the engine rather than in `@office-ladder/content`
- *
- * §10 grows the *authored* vocabulary, and the authored vocabulary's home is
- * `packages/content/src/schema/effects.ts`. That file is owned by the content
- * wave and is not this agent's to edit, so the types are declared here as a
- * strict **superset** of the content union: `EffectV2` is
- * `EffectDescriptor | EffectV2Descriptor`, each member widened with the shared
- * envelope. Every card and tile authored today is already an `EffectV2` with no
- * change at all — `target` defaults to `"self"`, `timing` to `"immediate"`,
- * `preventable` to `false` and `condition` to absent, which is exactly the
- * behaviour the v1 resolver has.
- *
- * When content adopts §10 natively it should move these declarations across and
- * re-export them; nothing else in this directory has to change, because the
- * resolver consumes the structural shape rather than the nominal type.
- */
+import type {
+  AdvancedEffectDescriptor,
+  CoreEffectDescriptor,
+  EffectChoiceOption,
+  EffectCondition as ContentEffectCondition,
+  EffectConditionSubject as ContentEffectConditionSubject,
+  EffectEnvelope as ContentEffectEnvelope,
+  EffectImmunityScope,
+  EffectPolarity,
+  EffectScale,
+  EffectScaleMetric,
+  EffectStatusFilter,
+  EffectTarget as ContentEffectTarget,
+  EffectTiming as ContentEffectTiming,
+} from "@office-ladder/content";
 
 /**
- * Who an effect lands on. §10.1.
+ * Gameplay v2's effect vocabulary — plans/24-gameplay-v2-spec.md §10, plus the
+ * re-cut plan's §3 amendments.
  *
- * Every derived target (`highest-rank`, `richest`, …) breaks ties by
- * `GameState.playerOrder` and **never** by object-key iteration over
- * `GameState.players`: key order is not a stable contract across the
- * repository's `JSON.parse(JSON.stringify(…))` boundary, so a tie-break that
- * read it would silently change which player an effect hit after a reload.
+ * ## This file used to *declare* the vocabulary. It no longer does.
+ *
+ * The original version carried a hand-written superset of the content union,
+ * with a note saying: *"When content adopts §10 natively it should move these
+ * declarations across and re-export them; nothing else in this directory has to
+ * change, because the resolver consumes the structural shape rather than the
+ * nominal type."*
+ *
+ * Content has now adopted §10 natively — `packages/content/src/schema/effects.ts`
+ * declares `target` / `preventable` / `condition` / `scale` on every effect and
+ * all twenty §10.3+§3+§11 types. Keeping a second declaration here stopped being
+ * belt-and-braces and became a *divergence*: `grantImmunity` was `{charges,
+ * rounds}` here and `{count, duration, scope}` there, `transferResource` had no
+ * `direction`, and `EffectCondition.resource` was `string` here against
+ * `ResourceId | "work-counter"` there. The intersection of the two envelopes made
+ * an authored condition literal fail to typecheck at all.
+ *
+ * So this module is now a **thin alias layer** over the content declarations. It
+ * exists for three reasons that a bare re-export would not serve:
+ *
+ * 1. `timing` — §10.5 moved timing onto `DeckCard`, but the resolver still has to
+ *    honour one when a caller attaches it to a single effect (the hand mechanic
+ *    resolves a stored effect list, not a card). That one field is added here and
+ *    nowhere else.
+ * 2. The runtime tables (`EFFECT_V2_TYPES`, `EFFECT_TARGETS`, …) that content
+ *    validation and the resolver's own dispatch read.
+ * 3. The predicates (`isNewEffect`, `isAggressiveEffectShape`, …) that decide
+ *    which half of the resolver an effect goes to.
+ *
+ * Adding an effect type to content is still a **compile error** here and in
+ * `resolve.ts` — the `satisfies never` in both switches is what makes a new
+ * authored verb impossible to ship as a silent no-op, and that is deliberately
+ * load-bearing.
  */
-export type EffectTarget =
-  | "self"
-  | "active-player"
-  /** The actor picks. Opens a `PromptState`; never resolved silently. */
-  | "chosen-opponent"
-  | "all-opponents"
-  | "all-players"
-  | "left-neighbour"
-  | "right-neighbour"
-  | "highest-rank"
-  | "lowest-rank"
-  | "richest"
-  | "poorest";
+
+/** §10.1. Re-exported from content; the engine adds nothing. */
+export type EffectTarget = ContentEffectTarget;
 
 export const EFFECT_TARGETS: readonly EffectTarget[] = [
   "self",
@@ -61,227 +72,58 @@ export const EFFECT_TARGETS: readonly EffectTarget[] = [
   "poorest",
 ];
 
-/** §10.2. */
-export type EffectTiming =
-  /** Resolves on draw or on play — v1's only behaviour, and the default. */
-  | "immediate"
-  /** Enters the hand and is played later on your own turn. Needs `agency.handEnabled`. */
-  | "stored"
-  /** Playable out of turn into an open window. Needs `interaction.reactionWindows`. */
-  | "reaction";
+/** §10.2. Attached to `DeckCard` by content; attachable per-effect here. */
+export type EffectTiming = ContentEffectTiming;
 
 export const EFFECT_TIMINGS: readonly EffectTiming[] = ["immediate", "stored", "reaction"];
 
-/** Whose state a condition clause reads. */
-export type EffectConditionSubject = "actor" | "target";
+/** Whose state a condition clause or a `scale` metric reads. */
+export type EffectConditionSubject = ContentEffectConditionSubject;
+
+/** §10.3's guard, as the closed grammar `conditions.ts` evaluates. */
+export type EffectCondition = ContentEffectCondition;
+
+export type { EffectChoiceOption, EffectImmunityScope, EffectPolarity, EffectScale, EffectScaleMetric, EffectStatusFilter };
 
 /**
- * The `condition` guard of §10.3, given a concrete grammar.
+ * The envelope, plus the one field the engine adds.
  *
- * The spec types it as a bare `JsonObject`, which is unusable as written: a
- * guard nothing can evaluate is a guard that does not guard. This is that
- * `JsonObject`, narrowed — every member is JSON-shaped, so an authored condition
- * round-trips through the repository unchanged and `parseEffectCondition`
- * accepts it back.
- *
- * Unparseable conditions **fail closed** (the effect does not apply). An
- * effect whose guard cannot be understood must not fire; the alternative is a
- * typo in content silently arming an unconditional effect.
+ * `timing` is not in content's envelope on purpose (§10.5 puts it on the card).
+ * The resolver still reads it, because a *stored* effect list handed back by the
+ * hand mechanic has no card around it any more, and because the deck-construction
+ * filter (`isCardPlayableUnderRules`) is stated in terms of effects.
  */
-export type EffectCondition =
-  | { readonly kind: "always" }
-  | { readonly kind: "never" }
-  | {
-      readonly kind: "resourceAtLeast";
-      readonly who: EffectConditionSubject;
-      readonly resource: string;
-      readonly amount: number;
-    }
-  | {
-      readonly kind: "resourceAtMost";
-      readonly who: EffectConditionSubject;
-      readonly resource: string;
-      readonly amount: number;
-    }
-  | {
-      readonly kind: "rankIndexAtLeast";
-      readonly who: EffectConditionSubject;
-      readonly index: number;
-    }
-  | {
-      readonly kind: "rankIndexAtMost";
-      readonly who: EffectConditionSubject;
-      readonly index: number;
-    }
-  | {
-      readonly kind: "heatAtLeast";
-      readonly who: EffectConditionSubject;
-      readonly value: number;
-    }
-  | {
-      readonly kind: "hasStatus";
-      readonly who: EffectConditionSubject;
-      readonly statusId: string;
-    }
-  | {
-      readonly kind: "ownsTile";
-      readonly who: EffectConditionSubject;
-      /** `null` = the tile the subject is standing on. */
-      readonly tileId: string | null;
-    }
-  | { readonly kind: "roundAtLeast"; readonly round: number }
-  | { readonly kind: "quarterIndex"; readonly index: number }
-  | { readonly kind: "not"; readonly of: EffectCondition }
-  | { readonly kind: "all"; readonly of: readonly EffectCondition[] }
-  | { readonly kind: "any"; readonly of: readonly EffectCondition[] };
-
-/**
- * The four fields §10.1/§10.2/§10.3 add to *every* effect. All optional, and
- * every default reproduces v1 behaviour exactly.
- */
-export type EffectEnvelope = {
-  readonly target?: EffectTarget;
+export type EffectEnvelope = ContentEffectEnvelope & {
   readonly timing?: EffectTiming;
-  /**
-   * May a reaction cancel this? Default false.
-   *
-   * `true` is the *only* thing that makes an effect eligible to raise a
-   * `ReactionWindowState` carrying a `pendingEffectId` — see `pending.ts`.
-   */
-  readonly preventable?: boolean;
-  readonly condition?: EffectCondition | null;
 };
-
-/** Where a placed object lands. `null` = the tile the actor is standing on. */
-type TileRef = TileId | null;
-
-/**
- * The thirteen rows of §10.3's table, as sixteen discriminated members (the
- * table groups `claimTile`/`releaseTile`, the three project verbs, and
- * `swapBoardPositions`/`teleport` onto one row each).
- */
-export type EffectV2Descriptor =
-  /** Move a resource from the target to the actor. The steal primitive. */
-  | {
-      readonly type: "transferResource";
-      readonly resource: ResourceKey;
-      readonly amount: number;
-      /** Default: transfer whatever the target actually has. */
-      readonly insufficientFunds?: "transfer-up-to-available" | "all-or-nothing";
-    }
-  /** Raise or lower suspicion. Every aggressive effect must carry one (§10.4). */
-  | {
-      readonly type: "modifyHeat";
-      readonly amount: number;
-    }
-  | {
-      readonly type: "placeObject";
-      readonly placementKind: PlacementKind;
-      readonly tileId?: TileRef;
-      readonly charges?: number;
-      readonly visibility?: "public" | "owner-only";
-      readonly data?: JsonObject;
-    }
-  | {
-      readonly type: "claimTile";
-      readonly tileId?: TileRef;
-      /** Multiplied by `rules.board.claimCostMultiplier` to get the real price. */
-      readonly baseCost: number;
-    }
-  | {
-      readonly type: "releaseTile";
-      readonly tileId?: TileRef;
-    }
-  | {
-      readonly type: "startProject";
-      readonly definitionId: string;
-      readonly requiredMoney: number;
-      readonly requiredWork: number;
-      readonly payout: {
-        readonly money: number;
-        readonly reputation: number;
-        readonly objectiveProgress: number;
-      };
-      readonly tileId?: TileRef;
-      readonly openToJoin?: boolean;
-      readonly leadBonusBasisPoints?: number;
-      /** Default: `rules.projects.deadlineRounds`. */
-      readonly deadlineRounds?: number;
-    }
-  | {
-      readonly type: "contributeToProject";
-      /** `null` = the contributor's own open project, else the one on their tile. */
-      readonly projectId?: string | null;
-      readonly money: number;
-      readonly work: number;
-    }
-  | {
-      readonly type: "sabotageProject";
-      /** `null` = the first open project the actor does not lead. */
-      readonly projectId?: string | null;
-      readonly amount: number;
-      readonly hidden?: boolean;
-    }
-  | {
-      readonly type: "openBallot";
-      readonly ballotKind: "vote" | "auction";
-      readonly subjectId: string;
-      readonly subject?: JsonObject;
-      readonly closesInRounds?: number;
-      readonly visibility?: "open" | "sealed";
-    }
-  /** Blocks the next N *preventable* effects targeting this player. */
-  | {
-      readonly type: "grantImmunity";
-      readonly charges?: number;
-      readonly rounds?: number;
-    }
-  | {
-      readonly type: "forceDiscard";
-      readonly count: number;
-    }
-  | {
-      readonly type: "swapBoardPositions";
-    }
-  | {
-      readonly type: "teleport";
-      readonly destination:
-        | { readonly kind: "tileIndex"; readonly index: number }
-        | { readonly kind: "tileId"; readonly tileId: TileId };
-    }
-  | {
-      readonly type: "modifyUpkeep";
-      readonly amount: number;
-    }
-  /** Explicitly raise a window. Pairs with `preventable` (§10.3). */
-  | {
-      readonly type: "openReactionWindow";
-      readonly windowKind: "prevention" | "end-turn" | "promotion-block";
-    }
-  | {
-      readonly type: "grantIncomeStream";
-      readonly streamKind: "asset" | "rent" | "project" | "side-gig";
-      readonly perRound: number;
-      readonly remainingRounds: number | null;
-      readonly sourceId?: string | null;
-    };
 
 /** Distributes the envelope across a union so `.type` still narrows. */
 type WithEnvelope<T> = T extends unknown ? T & EffectEnvelope : never;
 
-/** A v1 authored effect, read through the v2 envelope. */
-export type LegacyEffectV2 = WithEnvelope<EffectDescriptor>;
+/** Everything §10.3, §3 and §11 add, read through the envelope. */
+export type EffectV2Descriptor = AdvancedEffectDescriptor;
 
-/** Everything §10.3 adds, read through the v2 envelope. */
-export type NewEffectV2 = WithEnvelope<EffectV2Descriptor>;
+/** A v1 authored effect, read through the v2 envelope. */
+export type LegacyEffectV2 = WithEnvelope<CoreEffectDescriptor>;
+
+/** Everything beyond v1, read through the v2 envelope. */
+export type NewEffectV2 = WithEnvelope<AdvancedEffectDescriptor>;
 
 /**
- * The full v2 vocabulary: every v1 effect plus every v2 effect, each carrying
- * the shared envelope.
+ * The full v2 vocabulary. Structurally identical to content's
+ * `EffectDescriptor`, widened only by the optional engine-side `timing`, so an
+ * authored `EffectDescriptor` is assignable here without a cast and vice versa.
  */
 export type EffectV2 = LegacyEffectV2 | NewEffectV2;
 
-const NEW_EFFECT_TYPES: ReadonlySet<string> = new Set<EffectV2Descriptor["type"]>([
+/**
+ * Every non-v1 type, in declaration order. Exported for content validation.
+ *
+ * The `satisfies` clause is the enforcement: adding a member to
+ * `AdvancedEffectDescriptor` without listing it here fails to compile, and
+ * listing one that is not in the union fails too.
+ */
+export const EFFECT_V2_TYPES = [
   "transferResource",
   "modifyHeat",
   "placeObject",
@@ -298,29 +140,27 @@ const NEW_EFFECT_TYPES: ReadonlySet<string> = new Set<EffectV2Descriptor["type"]
   "modifyUpkeep",
   "openReactionWindow",
   "grantIncomeStream",
-]);
+  "removeStatuses",
+  "chooseOne",
+  "noEffect",
+  "opposedRoll",
+] as const satisfies readonly AdvancedEffectDescriptor["type"][];
 
-/** Every §10.3 type, in declaration order. Exported for content validation. */
-export const EFFECT_V2_TYPES: readonly EffectV2Descriptor["type"][] = [
-  "transferResource",
-  "modifyHeat",
-  "placeObject",
-  "claimTile",
-  "releaseTile",
-  "startProject",
-  "contributeToProject",
-  "sabotageProject",
-  "openBallot",
-  "grantImmunity",
-  "forceDiscard",
-  "swapBoardPositions",
-  "teleport",
-  "modifyUpkeep",
-  "openReactionWindow",
-  "grantIncomeStream",
-];
+const NEW_EFFECT_TYPES: ReadonlySet<string> = new Set<string>(EFFECT_V2_TYPES);
 
-/** True when the effect is one of §10.3's new types rather than a v1 effect. */
+/**
+ * Exhaustiveness in the other direction. `satisfies` above proves every listed
+ * name is a real type; this proves every real type is listed. Without it a new
+ * content verb would be classified as *legacy* and routed into the v1 resolver,
+ * which is exactly the silent no-op the `satisfies never` guards exist to
+ * prevent.
+ */
+type AssertEmpty<T extends never> = T;
+export type EveryAdvancedTypeIsListed = AssertEmpty<
+  Exclude<AdvancedEffectDescriptor["type"], (typeof EFFECT_V2_TYPES)[number]>
+>;
+
+/** True when the effect is one of the new types rather than a v1 effect. */
 export function isNewEffect(effect: EffectV2): effect is NewEffectV2 {
   return NEW_EFFECT_TYPES.has(effect.type);
 }
@@ -355,8 +195,8 @@ export function isPreventable(effect: EffectV2): boolean {
  *    mode with attacks switched off cannot be attacked through by an authored
  *    card.
  * 2. It is the predicate §10.4's authoring rule is stated in terms of — every
- *    aggressive effect must carry a `modifyHeat` on the actor — so a content
- *    test can enforce that rule mechanically rather than by review.
+ *    aimed aggressive effect must carry a `modifyHeat` on the actor — so a
+ *    content test can enforce that rule mechanically rather than by review.
  *
  * Self-directed effects are never aggressive, however negative: paying your own
  * upkeep is not an attack.
@@ -379,6 +219,11 @@ export function isAggressiveEffect(
 export function isAggressiveEffectShape(effect: EffectV2): boolean {
   switch (effect.type) {
     case "transferResource":
+      // §3.8: `actor-to-target` is the *gift* direction — `card.event.coffee-treat`
+      // buys the table a round. Charging heat for it would be charging heat for
+      // generosity, and §5.1 is explicit that over-charging is as much a defect
+      // as under-charging.
+      return (effect.direction ?? "target-to-actor") === "target-to-actor";
     case "forceDiscard":
     case "sabotageProject":
     case "swapBoardPositions":
@@ -392,9 +237,22 @@ export function isAggressiveEffectShape(effect: EffectV2): boolean {
       return effect.amount > 0;
     case "modifyHeat":
       return effect.amount > 0;
+    case "applyStatus":
+      // Provenance makes this answerable instead of assumed. A status with no
+      // authored polarity keeps the old, conservative answer.
+      return effect.polarity !== "positive";
     case "skipTurns":
     case "auditConfinement":
-    case "applyStatus":
+      return true;
+    case "chooseOne":
+      // A branch is only ever offered, never forced — but if *every* branch is
+      // hostile the choice is between two attacks, and the card should pay for
+      // it. An escape hatch branch (one benign option) makes it benign.
+      return (
+        effect.options.length > 0 &&
+        effect.options.every((option) => option.effects.some(isAggressiveEffectShape))
+      );
+    case "opposedRoll":
       return true;
     default:
       return false;
@@ -418,13 +276,11 @@ export function carriesHeatForAggression(effects: readonly EffectV2[]): boolean 
 
   return effects.some(
     (effect) =>
-      effect.type === "modifyHeat" &&
-      effect.amount > 0 &&
-      effectTarget(effect) === "self",
+      effect.type === "modifyHeat" && effect.amount > 0 && effectTarget(effect) === "self",
   );
 }
 
-function isJsonObject(value: unknown): value is JsonObject {
+function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -436,11 +292,48 @@ function parseNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+type ConditionOf<Kind extends EffectCondition["kind"]> = Extract<EffectCondition, { kind: Kind }>;
+
+const CONDITION_RESOURCES: readonly ConditionOf<"resourceAtLeast">["resource"][] = [
+  "money",
+  "reputation",
+  "energy",
+  "work-counter",
+];
+
+function parseConditionResource(
+  value: unknown,
+): ConditionOf<"resourceAtLeast">["resource"] | null {
+  return CONDITION_RESOURCES.find((candidate) => candidate === value) ?? null;
+}
+
 /**
- * Reads a `condition` back out of the loose `JsonObject` the spec stores it as.
+ * `StatusId` and `TileId` are closed/templated unions in content, so there is no
+ * runtime list to check against without importing the content pack. Prefix
+ * checks are what is actually available, and they are enough: an id that passes
+ * the prefix but names nothing simply finds no status / no tile, which is the
+ * same fail-closed outcome as rejecting it.
+ */
+function parseStatusId(value: unknown): ConditionOf<"hasStatus">["statusId"] | null {
+  return typeof value === "string" && value.startsWith("status.")
+    ? (value as ConditionOf<"hasStatus">["statusId"])
+    : null;
+}
+
+function parseTileId(value: unknown): ConditionOf<"ownsTile">["tileId"] | null | "invalid" {
+  if (value === null) return null;
+
+  return typeof value === "string" && value.startsWith("tile.")
+    ? (value as ConditionOf<"ownsTile">["tileId"])
+    : "invalid";
+}
+
+/**
+ * Reads a `condition` back out of the loose JSON the repository stores it as.
  *
  * Returns `null` for anything it does not recognise, which the resolver treats
- * as "do not apply" — see `EffectCondition`'s fail-closed note.
+ * as "do not apply" — a typo in content must never silently arm an
+ * unconditional effect.
  */
 export function parseEffectCondition(value: unknown): EffectCondition | null {
   if (!isJsonObject(value)) return null;
@@ -453,9 +346,9 @@ export function parseEffectCondition(value: unknown): EffectCondition | null {
     case "resourceAtLeast":
     case "resourceAtMost": {
       const who = parseSubject(value["who"]);
-      const resource = value["resource"];
+      const resource = parseConditionResource(value["resource"]);
       const amount = parseNumber(value["amount"]);
-      if (who === null || typeof resource !== "string" || amount === null) return null;
+      if (who === null || resource === null || amount === null) return null;
 
       return { kind, who, resource, amount };
     }
@@ -476,15 +369,15 @@ export function parseEffectCondition(value: unknown): EffectCondition | null {
     }
     case "hasStatus": {
       const who = parseSubject(value["who"]);
-      const statusId = value["statusId"];
-      if (who === null || typeof statusId !== "string") return null;
+      const statusId = parseStatusId(value["statusId"]);
+      if (who === null || statusId === null) return null;
 
       return { kind, who, statusId };
     }
     case "ownsTile": {
       const who = parseSubject(value["who"]);
-      const tileId = value["tileId"];
-      if (who === null || (tileId !== null && typeof tileId !== "string")) return null;
+      const tileId = parseTileId(value["tileId"]);
+      if (who === null || tileId === "invalid") return null;
 
       return { kind, who, tileId };
     }

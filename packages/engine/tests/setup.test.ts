@@ -116,7 +116,10 @@ describe("Deadline Dash deterministic game setup", () => {
       expect(player.resources).toMatchObject({
         money: { kind: "resource.money", value: 1000, minimum: 0 },
         reputation: { kind: "resource.reputation", value: 0, minimum: 0 },
-        energy: { kind: "resource.energy", value: 5, minimum: 0, maximum: 5 },
+        // 8/8, not 5/5: `startingResources` now carries an explicit
+        // `energyMaximum` so the ceiling stops being pinned to the starting
+        // value. A promotion to `rank.supervisor` widens it to 10.
+        energy: { kind: "resource.energy", value: 8, minimum: 0, maximum: 8 },
         "work-counter": { kind: "resource.work-counter", value: 0, minimum: 0 },
       });
       expect(player.tokens.move).toMatchObject({

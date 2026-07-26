@@ -282,14 +282,25 @@ describe("turns-duration statuses", () => {
       ),
     );
 
-    // Same board crossing without the status, for the undoubled baseline. The
-    // salary is read off the events rather than off the money delta because the
-    // destination tile (finance) also charges the player.
-    const control = handTurnBackToOwner(stateWithOwnerStatuses(42, []));
+    // The undoubled baseline: the exact same *two* turns, with the status list
+    // as the only difference.
+    //
+    // It has to replay the dry turn rather than start parked on 42, because 42
+    // is a Work tile — it draws a card, and a drawn card moves money. Starting
+    // the control on 42 skips that draw, so the two arms would differ by the
+    // card as well as by the multiplier, and the money delta below would be
+    // measuring both. That is exactly what happened when the card pack grew and
+    // the drawn card stopped being money-neutral: the assertion broke without
+    // anything about salary multipliers changing. Replaying the turn also keeps
+    // the two arms on the same revision and event sequence, which is what the
+    // tile-effect random source is seeded from, so both draw the same card.
+    const control = stateWithOwnerStatuses(41, []);
+    const controlDry = accepted(applyCommand(control, rollCommand(control), context([0])));
+    const controlHandedBack = handTurnBackToOwner(controlDry.state);
     const baseline = accepted(
       applyCommand(
-        control,
-        rollCommand(control, { commandId: brand<CommandId>("roll-pass") }),
+        controlHandedBack,
+        rollCommand(controlHandedBack, { commandId: brand<CommandId>("roll-pass") }),
         context([0.4]),
       ),
     );

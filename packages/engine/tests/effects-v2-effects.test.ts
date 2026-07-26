@@ -8,6 +8,7 @@ import type {
 } from "../src/execution/effects-v2";
 import type { GameState, PlayerId } from "../src";
 import {
+  contentTileId,
   effectsRandom,
   effectsV2Ids,
   effectsV2State,
@@ -197,7 +198,7 @@ describe("claimTile / releaseTile — ownership", () => {
   it("claims an unowned tile and charges the multiplied cost", () => {
     const before = effectsV2State();
     const { state } = run(before, [
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 250 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 250 },
     ]);
 
     expect(state.tileOwnership[effectsV2Ids.freeTile]?.ownerId).toBe(actor);
@@ -208,7 +209,7 @@ describe("claimTile / releaseTile — ownership", () => {
   it("reads its price from rules.board.claimCostMultiplier, not a constant", () => {
     const before = withRules(effectsV2State(), { board: { claimCostMultiplier: 2 } });
     const { state } = run(before, [
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 250 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 250 },
     ]);
 
     expect(moneyOf(state, actor)).toBe(moneyOf(before, actor) - 500);
@@ -217,7 +218,7 @@ describe("claimTile / releaseTile — ownership", () => {
   it("refuses a claim the actor cannot afford, and charges nothing", () => {
     const before = effectsV2State();
     const outcome = run(before, [
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 9_000 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 9_000 },
     ]);
 
     expect(outcome.state.tileOwnership[effectsV2Ids.freeTile]).toBeUndefined();
@@ -228,7 +229,7 @@ describe("claimTile / releaseTile — ownership", () => {
   it("refuses to claim a tile somebody else already owns", () => {
     const before = effectsV2State();
     const outcome = run(before, [
-      { type: "claimTile", tileId: effectsV2Ids.takenTile, baseCost: 10 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.takenTile), baseCost: 10 },
     ]);
 
     expect(outcome.state.tileOwnership[effectsV2Ids.takenTile]?.ownerId).toBe(leader);
@@ -238,22 +239,22 @@ describe("claimTile / releaseTile — ownership", () => {
 
   it("releases only a tile the target actually owns", () => {
     const owned = run(effectsV2State(), [
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 100 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 100 },
     ]).state;
 
     const released = run(owned, [
-      { type: "releaseTile", tileId: effectsV2Ids.freeTile },
+      { type: "releaseTile", tileId: contentTileId(effectsV2Ids.freeTile) },
     ]).state;
     expect(released.tileOwnership[effectsV2Ids.freeTile]).toBeUndefined();
 
-    const foreign = run(owned, [{ type: "releaseTile", tileId: effectsV2Ids.takenTile }]);
+    const foreign = run(owned, [{ type: "releaseTile", tileId: contentTileId(effectsV2Ids.takenTile) }]);
     expect(foreign.state.tileOwnership[effectsV2Ids.takenTile]?.ownerId).toBe(leader);
     expect(skips(foreign)).toContainEqual({ reason: "tile-not-owned", rule: null });
   });
 
   it("is switched off by board.ownershipEnabled", () => {
     const outcome = run(withRules(effectsV2State(), { board: { ownershipEnabled: false } }), [
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 10 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 10 },
     ]);
 
     expect(outcome.state.tileOwnership[effectsV2Ids.freeTile]).toBeUndefined();
@@ -416,8 +417,8 @@ describe("openBallot", () => {
 describe("grantImmunity", () => {
   it("stacks charges rather than replacing them", () => {
     const outcome = run(effectsV2State(), [
-      { type: "grantImmunity", charges: 1 },
-      { type: "grantImmunity", charges: 2 },
+      { type: "grantImmunity", count: 1, scope: {} },
+      { type: "grantImmunity", count: 2, scope: {} },
     ]);
     const immunity = outcome.state.players[actor]?.statuses.find(
       (status) => status.id === "status.immunity",
@@ -428,7 +429,7 @@ describe("grantImmunity", () => {
 
   it("is switched off by conflict.defenceEnabled", () => {
     const outcome = run(withRules(effectsV2State(), { conflict: { defenceEnabled: false } }), [
-      { type: "grantImmunity", charges: 1 },
+      { type: "grantImmunity", count: 1, scope: {} },
     ]);
 
     expect(outcome.state.players[actor]?.statuses).toEqual([]);
@@ -500,7 +501,7 @@ describe("swapBoardPositions / teleport", () => {
     const before = effectsV2State();
     const target = before.tileIds[7];
     const { state } = run(before, [
-      { type: "teleport", destination: { kind: "tileId", tileId: target } },
+      { type: "teleport", destination: { kind: "tileId", tileId: contentTileId(target) } },
     ]);
 
     expect(state.players[actor]?.position).toBe(7);
@@ -651,8 +652,8 @@ describe("the whole batch stays JSON-clean", () => {
       },
       { type: "openBallot", ballotKind: "auction", subjectId: "auction.corner-office" },
       { type: "grantIncomeStream", streamKind: "asset", perRound: 10, remainingRounds: 3 },
-      { type: "claimTile", tileId: effectsV2Ids.freeTile, baseCost: 100 },
-      { type: "grantImmunity", charges: 2 },
+      { type: "claimTile", tileId: contentTileId(effectsV2Ids.freeTile), baseCost: 100 },
+      { type: "grantImmunity", count: 2, scope: {} },
       { type: "modifyHeat", amount: 1 },
     ]);
 

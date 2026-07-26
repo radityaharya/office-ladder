@@ -185,5 +185,15 @@ export function effectWindowId(state: GameState, scope: string, path: string): D
 /** The prompt kind an effect targeting `chosen-opponent` opens. */
 export const CHOOSE_OPPONENT_PROMPT_KIND = "effects-v2.choose-opponent";
 
+/**
+ * The prompt kind a `chooseOne` opens.
+ *
+ * Distinct from `CHOOSE_OPPONENT_PROMPT_KIND` because the *answer* means
+ * something different: there the response value is a `PlayerId`, here it is an
+ * authored option id. A single kind would leave the resuming side guessing which
+ * of the two it was holding.
+ */
+export const CHOOSE_ONE_PROMPT_KIND = "effects-v2.choose-one";
+
 /** The status id `grantImmunity` writes and the resolver consumes. */
 export const IMMUNITY_STATUS_ID = "status.immunity";

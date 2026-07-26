@@ -19,6 +19,7 @@ import {
 import type { EffectCondition, EffectV2 } from "../src/execution/effects-v2";
 import type { GameState } from "../src";
 import {
+  contentTileId,
   effectsRandom,
   effectsV2Ids,
   effectsV2State,
@@ -48,7 +49,16 @@ describe("the envelope's defaults reproduce v1 exactly", () => {
   });
 
   it("classifies every v2 type as new and every v1 type as legacy", () => {
-    expect(EFFECT_V2_TYPES).toHaveLength(16);
+    // Sixteen from spec §10.3, plus the four the re-cut plan's §3 and §11 add:
+    // `removeStatuses`, `chooseOne`, `noEffect`, `opposedRoll`. All four were
+    // classified as *legacy* until this table grew, which routed them into the v1
+    // applier — the exact silent-no-op failure the exhaustive switch exists to
+    // make impossible.
+    expect(EFFECT_V2_TYPES).toHaveLength(20);
+    expect(EFFECT_V2_TYPES).toContain("removeStatuses");
+    expect(EFFECT_V2_TYPES).toContain("chooseOne");
+    expect(EFFECT_V2_TYPES).toContain("noEffect");
+    expect(EFFECT_V2_TYPES).toContain("opposedRoll");
     for (const type of EFFECT_V2_TYPES) {
       const effect = { type } as unknown as EffectV2;
       expect(isNewEffect(effect)).toBe(true);
@@ -168,11 +178,18 @@ describe("condition (spec §10.3)", () => {
     expect(holds({ kind: "rankIndexAtLeast", who: "actor", index: 1 })).toBe(true);
     expect(holds({ kind: "rankIndexAtMost", who: "target", index: 0 })).toBe(true);
     expect(holds({ kind: "heatAtLeast", who: "actor", value: 1 })).toBe(false);
-    expect(holds({ kind: "hasStatus", who: "actor", statusId: "status.immunity" })).toBe(false);
-    expect(holds({ kind: "ownsTile", who: "target", tileId: effectsV2Ids.takenTile })).toBe(false);
-    expect(holds({ kind: "ownsTile", who: "target", tileId: effectsV2Ids.takenTile }, leader)).toBe(
-      true,
+    expect(holds({ kind: "hasStatus", who: "actor", statusId: "status.burnout-tile" })).toBe(
+      false,
     );
+    expect(
+      holds({ kind: "ownsTile", who: "target", tileId: contentTileId(effectsV2Ids.takenTile) }),
+    ).toBe(false);
+    expect(
+      holds(
+        { kind: "ownsTile", who: "target", tileId: contentTileId(effectsV2Ids.takenTile) },
+        leader,
+      ),
+    ).toBe(true);
     expect(holds({ kind: "roundAtLeast", round: 2 })).toBe(true);
     expect(holds({ kind: "roundAtLeast", round: 3 })).toBe(false);
     expect(holds({ kind: "quarterIndex", index: 0 })).toBe(true);

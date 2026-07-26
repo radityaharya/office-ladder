@@ -81,7 +81,11 @@ function createResources(
       "energy",
       "resource.energy",
       mode.startingResources.energy,
-      mode.startingResources.energy,
+      // The ceiling is its own number, not the starting value. Passing `energy`
+      // twice pinned maximum to start, so every `+energy` grant and every
+      // `restoreResourceToMaximum` was a guaranteed no-op for a rested player
+      // and `rank.supervisor`'s `increaseMaximumEnergy` had nothing to widen.
+      mode.startingResources.energyMaximum,
     ),
     "work-counter": resource(
       "work-counter",

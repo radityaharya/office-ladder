@@ -767,4 +767,150 @@ describe("promotion and win condition", () => {
     expect(nextState.status).toBe("active");
     expect(nextState.outcome).toBeNull();
   });
+
+  /**
+   * The reputation gate is a real gate at the top of the ladder.
+   *
+   * Director's `reputationRequired` used to be 17 against a 10,000-money cost —
+   * linear reputation against geometric money, which made reputation slack from
+   * `rank.supervisor` upward and left money the only thing that ever bound. It
+   * is 58 now. This is the case that would silently pass under the old ladder,
+   * so it is the one that pins the change.
+   */
+  it("Given a General Manager with unlimited money but the old ladder's reputation, when they roll, then Director is refused", () => {
+    const state = automaticPromotion(rollState(0));
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const richButUnknownState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          rank: { ...owner.rank, kind: "rank.general-manager" },
+          resources: {
+            ...owner.resources,
+            money: { ...owner.resources.money, value: 999_999 },
+            reputation: {
+              id: owner.resources.money.id,
+              kind: "resource.reputation",
+              value: 17,
+              minimum: 0,
+              maximum: null,
+            },
+          },
+        },
+      },
+    };
+
+    // die = 1 lands on tile.board.01.training, which has no effects, so nothing
+    // between the roll and the promotion check can move reputation.
+    const result = applyCommand(
+      richButUnknownState,
+      rollCommand(richButUnknownState),
+      context([0]),
+    );
+    const { state: nextState } = accepted(result);
+
+    expect(nextState.status).toBe("active");
+    expect(nextState.outcome).toBeNull();
+    expect(nextState.players[fixtureIds.owner]?.rank.kind).toBe("rank.general-manager");
+  });
+
+  /**
+   * `rank.supervisor`'s `increaseMaximumEnergy: +2` benefit sat in the schema,
+   * the content pack and the validator with no engine consumer at all. This is
+   * the test for the consumer, and the assertion that matters is the pair: the
+   * ceiling moves 8 -> 10 and the *value* does not budge. A promotion widens the
+   * tank; it does not fill it.
+   */
+  it("Given a Senior Staff who can afford Supervisor, when they roll, then the energy ceiling widens by 2 and the value is left alone", () => {
+    const state = automaticPromotion(rollState(0));
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    const promotableState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          rank: { ...owner.rank, kind: "rank.senior-staff", index: 2 },
+          resources: {
+            ...owner.resources,
+            money: { ...owner.resources.money, value: 999_999 },
+            reputation: {
+              id: owner.resources.money.id,
+              kind: "resource.reputation",
+              value: 999,
+              minimum: 0,
+              maximum: null,
+            },
+            energy: {
+              id: owner.resources.money.id,
+              kind: "resource.energy",
+              value: 3,
+              minimum: 0,
+              maximum: 8,
+            },
+          },
+        },
+      },
+    };
+
+    // die = 1 lands on tile.board.01.training, which has no effects — so the
+    // only thing that can touch energy on this turn is the promotion.
+    const result = applyCommand(promotableState, rollCommand(promotableState), context([0]));
+    const { state: nextState } = accepted(result);
+
+    const promoted = nextState.players[fixtureIds.owner];
+    expect(promoted?.rank.kind).toBe("rank.supervisor");
+    expect(promoted?.resources.energy?.maximum).toBe(10);
+    expect(promoted?.resources.energy?.value).toBe(3);
+  });
+
+  it("Given a rank whose benefits do not include increaseMaximumEnergy, when a player climbs to it, then the energy ceiling is untouched", () => {
+    const state = automaticPromotion(rollState(0));
+    const owner = state.players[fixtureIds.owner];
+    if (owner === undefined) throw new Error("fixture missing owner player");
+
+    // The fixture owner sits one rung below `rank.senior-staff`, whose only
+    // benefit is an extra work-milestone reward.
+    const promotableState: typeof state = {
+      ...state,
+      players: {
+        ...state.players,
+        [fixtureIds.owner]: {
+          ...owner,
+          resources: {
+            ...owner.resources,
+            money: { ...owner.resources.money, value: 999_999 },
+            reputation: {
+              id: owner.resources.money.id,
+              kind: "resource.reputation",
+              value: 999,
+              minimum: 0,
+              maximum: null,
+            },
+            energy: {
+              id: owner.resources.money.id,
+              kind: "resource.energy",
+              value: 3,
+              minimum: 0,
+              maximum: 8,
+            },
+          },
+        },
+      },
+    };
+
+    const result = applyCommand(promotableState, rollCommand(promotableState), context([0]));
+    const { state: nextState } = accepted(result);
+
+    const promoted = nextState.players[fixtureIds.owner];
+    expect(promoted?.rank.kind).toBe("rank.senior-staff");
+    expect(promoted?.resources.energy?.maximum).toBe(8);
+    expect(promoted?.resources.energy?.value).toBe(3);
+  });
 });

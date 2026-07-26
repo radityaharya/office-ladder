@@ -4,19 +4,28 @@ import type { RespondToPromptCommand } from "../commands";
 import { createEventMetadata } from "./events";
 import type {
   DiceRolledEvent,
+  EffectProposedEvent,
   GameEvent,
   ResourceChangedEvent,
   TurnStartedEvent,
 } from "../events";
-import type { GameState, PlayerState, PromptState } from "../model";
+import type { GameState, PlayerState, PromptResponse, PromptState } from "../model";
+import { createStableId } from "../model";
 import { rollDie } from "../random";
 import { createEphemeralRandom, ephemeralRandomStreamName } from "./ephemeral-random";
 import { rejectCommand } from "./errors";
+import {
+  HEAT_INVESTIGATION_PROMPT_KIND,
+  resolveInvestigationResponse,
+} from "./heat";
 import { resolveNextTurn, withBurnoutRecoveries } from "./next-turn";
 import { applyEffectDescriptors, matchRollOutcome } from "./resolve-tile-effects";
 import type { TransitionContext, TransitionResult } from "./types";
 
 const AUDIT_FINE = 500;
+
+/** The confinement-release choice opened by the board's audit corner tile. */
+const AUDIT_RELEASE_PROMPT_KIND = "audit-release";
 
 type EventMetadata = () => Omit<GameEvent, "type" | "payload">;
 
@@ -28,6 +37,17 @@ type Resolution = {
    * player actually answered.
    */
   readonly keepPromptOpen: boolean;
+  /**
+   * Answering this prompt is what the responder's turn was *for*, so the turn
+   * hands off once they have answered.
+   *
+   * Only ever acted on when the responder actually holds the turn: a prompt
+   * addressed to somebody who is not the active player (spec §7.3 — reactions,
+   * ballots, trades and the chosen-opponent prompt all land on other seats) has
+   * no turn of its own to end, and ending the *active* player's turn on their
+   * behalf would let any audience member burn a turn that is not theirs.
+   */
+  readonly endsTurn: boolean;
 };
 
 type ResolutionResult =
@@ -94,6 +114,7 @@ function resolveAuditRelease(
     value: {
       player: { ...updatedPlayer, inAudit: !released },
       keepPromptOpen: !released,
+      endsTurn: true,
     },
   };
 }
@@ -154,7 +175,10 @@ function resolveTileDecision(
       context.content.decks,
     );
     emitResourceEvents(declined.player, declined.changes, "tile-decision", events, eventMetadata);
-    return { ok: true, value: { player: declined.player, keepPromptOpen: false } };
+    return {
+      ok: true,
+      value: { player: declined.player, keepPromptOpen: false, endsTurn: true },
+    };
   }
   if (optionId !== decision.accept.optionId) {
     return {
@@ -241,7 +265,62 @@ function resolveTileDecision(
   );
   emitResourceEvents(applied.player, applied.changes, "tile-decision", events, eventMetadata);
 
-  return { ok: true, value: { player: applied.player, keepPromptOpen: false } };
+  return {
+    ok: true,
+    value: { player: applied.player, keepPromptOpen: false, endsTurn: true },
+  };
+}
+
+/**
+ * The `heat-investigation` prompt raised when an aggressor crosses
+ * `conflict.heatThreshold` (see heat.ts, which owns both branches).
+ *
+ * The first prompt kind wired here that is **not** turn-bound. Its producers are
+ * `attack.target`, `project.sabotage` and — the case that matters — the
+ * round-boundary project resolution inside `roll-turn.ts`, which raises it on
+ * whoever authored a sabotage that just came due. That author is almost never
+ * the player whose turn it is, so under the old active-player check the prompt
+ * was unanswerable and, because `applyCommand`'s pending-work guard blocks every
+ * non-exempt command while a prompt is addressed to you, it sat on that seat.
+ */
+function resolveHeatInvestigation(
+  state: GameState,
+  player: PlayerState,
+  optionId: string,
+  events: GameEvent[],
+  eventMetadata: EventMetadata,
+): ResolutionResult {
+  const resolved = resolveInvestigationResponse(state, player, optionId);
+  if (resolved === null) {
+    return {
+      ok: false,
+      error: {
+        code: "ILLEGAL_ACTION",
+        message: "Option is not one of this investigation's branches",
+      },
+    };
+  }
+
+  emitResourceEvents(
+    resolved.player,
+    resolved.changes,
+    "heat-investigation",
+    events,
+    eventMetadata,
+  );
+
+  return {
+    ok: true,
+    value: {
+      player: resolved.player,
+      keepPromptOpen: resolved.keepPromptOpen,
+      // Answering still costs the attacker the turn they are holding when they
+      // hold one; raised on a seat that is not active, both branches already
+      // carry their own price (a skipped turn, or the reputation the reprimand
+      // docks) and no turn of anybody else's is spent.
+      endsTurn: true,
+    },
+  };
 }
 
 /** The authored decision on the tile the player is standing on, if any. */
@@ -259,6 +338,30 @@ function findTileDecision(
   return tile?.decision ?? null;
 }
 
+/**
+ * Whether a prompt kind may only be answered by the player holding the turn.
+ *
+ * This is **not** the authorisation check — `prompt.audience` is (see
+ * `respondToPrompt`). It is a rules check about two specific kinds whose whole
+ * cost is the turn they consume:
+ *
+ * - `audit-release`. The prompt outlives the turn it opened on (the roll that
+ *   landed on the audit tile hands off while the prompt stays open), so without
+ *   this a confined player could pay the fine — or, far worse, re-roll
+ *   `attempt-roll` over and over, since a failed attempt deliberately leaves the
+ *   prompt open — during somebody else's turn and buy their way out for free.
+ * - an authored tile decision. `roll-turn.ts` holds the roller's turn open at
+ *   phase `"prompt"` precisely so answering *is* that turn.
+ *
+ * Every other kind — reactions, ballots, trades, the chosen-opponent prompt, the
+ * heat investigation raised at a round boundary — is by design something a
+ * player answers while it is not their turn, which is what `PromptState.audience`
+ * being a list has always meant.
+ */
+function promptIsTurnBound(promptKind: string, tileDecision: TileDecisionConfig | null): boolean {
+  return promptKind === AUDIT_RELEASE_PROMPT_KIND || tileDecision?.kind === promptKind;
+}
+
 export function respondToPrompt(
   state: GameState,
   command: RespondToPromptCommand,
@@ -271,16 +374,23 @@ export function respondToPrompt(
       message: "No matching open prompt for this decisionPointId",
     });
   }
+  // **The authorisation check.** `PromptState.audience` is a list because a
+  // prompt is not a single-audience thing (spec §7.3): every reaction window,
+  // vote, trade offer and chosen-opponent prompt is raised on somebody who is
+  // not the active player, and an active-player check forbade all of them.
   if (!prompt.audience.includes(command.actorId)) {
     return rejectCommand(state, command, {
       code: "ACTOR_NOT_AUTHORIZED",
       message: "Actor is not part of this prompt's audience",
     });
   }
-  if (state.turn.activePlayerId !== command.actorId) {
+  // One answer each. Without this a multi-audience prompt could be carried by
+  // one player answering N times, which is the ballot-stuffing shape of the
+  // same attack §6.3 names.
+  if (Object.hasOwn(prompt.responses, command.actorId)) {
     return rejectCommand(state, command, {
-      code: "NOT_ACTOR_TURN",
-      message: "Only the active player can respond to their own prompt",
+      code: "DECISION_POINT_STALE",
+      message: "The actor has already answered this prompt",
     });
   }
   const option = prompt.legalResponses.find((candidate) => candidate.id === command.payload.optionId);
@@ -298,6 +408,15 @@ export function respondToPrompt(
     });
   }
 
+  const decision = findTileDecision(state, context, player);
+  const holdsTurn = state.turn.activePlayerId === command.actorId;
+  if (!holdsTurn && promptIsTurnBound(prompt.kind, decision)) {
+    return rejectCommand(state, command, {
+      code: "NOT_ACTOR_TURN",
+      message: "This prompt is answered on the actor's own turn",
+    });
+  }
+
   const allEvents: GameEvent[] = [];
   const eventMetadata: EventMetadata = () =>
     createEventMetadata(
@@ -307,29 +426,103 @@ export function respondToPrompt(
       state.eventSequence + allEvents.length + 1,
     );
 
-  const decision = findTileDecision(state, context, player);
   const resolution: ResolutionResult =
-    prompt.kind === "audit-release"
+    prompt.kind === AUDIT_RELEASE_PROMPT_KIND
       ? resolveAuditRelease(state, player, String(option.id), allEvents, eventMetadata)
-      : decision !== null && decision.kind === prompt.kind
-        ? resolveTileDecision(
-            state,
-            player,
-            decision,
-            context,
-            String(option.id),
-            allEvents,
-            eventMetadata,
-          )
-        : {
-            ok: false,
-            error: { code: "ILLEGAL_ACTION", message: "Unsupported prompt kind" },
-          };
+      : prompt.kind === HEAT_INVESTIGATION_PROMPT_KIND
+        ? resolveHeatInvestigation(state, player, String(option.id), allEvents, eventMetadata)
+        : decision !== null && decision.kind === prompt.kind
+          ? resolveTileDecision(
+              state,
+              player,
+              decision,
+              context,
+              String(option.id),
+              allEvents,
+              eventMetadata,
+            )
+          : {
+              ok: false,
+              error: { code: "ILLEGAL_ACTION", message: "Unsupported prompt kind" },
+            };
 
   if (!resolution.ok) {
     return rejectCommand(state, command, resolution.error);
   }
 
+  // A response only ever hands the turn on when the responder is the one holding
+  // it. Answering from the audience of somebody else's prompt must not move the
+  // active player, reset the turn counter, or spend a turn that is not the
+  // responder's to spend.
+  const handsOff = resolution.value.endsTurn && holdsTurn;
+  const turnPatch = handsOff
+    ? endTurn(state, command, context, resolution.value.player, allEvents, eventMetadata)
+    : answerInPlace(state, command, resolution.value.player, allEvents, eventMetadata, option.id);
+
+  const lastEvent = allEvents[allEvents.length - 1];
+  if (lastEvent === undefined) {
+    return rejectCommand(state, command, {
+      code: "INVARIANT_VIOLATION",
+      message: "Prompt response did not emit an event",
+    });
+  }
+
+  return {
+    ok: true,
+    value: {
+      state: {
+        ...state,
+        ...turnPatch,
+        revision: state.revision + 1,
+        eventSequence: lastEvent.sequence,
+        prompts: settlePrompt(state, prompt, command, option.id, resolution.value.keepPromptOpen),
+        lastCommandId: command.commandId,
+        stateHash: null,
+      },
+      events: allEvents,
+    },
+  };
+}
+
+/**
+ * The prompt list after this answer.
+ *
+ * Three cases, and the first is why the responses map is not written
+ * unconditionally: a failed `attempt-roll` deliberately leaves the *same*
+ * question open, so recording it as answered would lock the player in
+ * confinement permanently against the duplicate-response guard above. A prompt
+ * with more than one audience member survives until every one of them has
+ * answered, which is what makes `responses` a map rather than a flag.
+ */
+function settlePrompt(
+  state: GameState,
+  prompt: PromptState,
+  command: RespondToPromptCommand,
+  optionId: PromptState["legalResponses"][number]["id"],
+  keepPromptOpen: boolean,
+): readonly PromptState[] {
+  if (keepPromptOpen) return state.prompts;
+
+  const response: PromptResponse = { optionId, value: command.payload.value };
+  const responses = { ...prompt.responses, [command.actorId]: response };
+  if (prompt.audience.every((playerId) => Object.hasOwn(responses, playerId))) {
+    return state.prompts.filter((candidate) => candidate.id !== prompt.id);
+  }
+
+  return state.prompts.map((candidate) =>
+    candidate.id === prompt.id ? { ...candidate, responses } : candidate,
+  );
+}
+
+/** The hand-off half of a response that was the responder's turn. */
+function endTurn(
+  state: GameState,
+  command: RespondToPromptCommand,
+  context: TransitionContext,
+  resolved: PlayerState,
+  allEvents: GameEvent[],
+  eventMetadata: EventMetadata,
+): Partial<GameState> {
   const currentOrderIndex = state.playerOrder.indexOf(command.actorId);
   // As in roll-turn.ts, the walk gets the actor's record as this response leaves
   // it — an answer can move money and can release confinement, and the walk is
@@ -339,9 +532,9 @@ export function respondToPrompt(
     currentOrderIndex,
     false,
     command.actorId,
-    resolution.value.player,
+    resolved,
   );
-  const updatedPlayer = nextTurn.players[command.actorId] ?? resolution.value.player;
+  const updatedPlayer = nextTurn.players[command.actorId] ?? resolved;
 
   // Answering a prompt ends a turn too, so the same start-of-turn burnout check
   // runs here and is reported the same way — see next-turn.ts.
@@ -373,42 +566,53 @@ export function respondToPrompt(
   };
   allEvents.push(turnStarted);
 
-  const lastEvent = allEvents[allEvents.length - 1];
-  if (lastEvent === undefined) {
-    return rejectCommand(state, command, {
-      code: "INVARIANT_VIOLATION",
-      message: "Prompt response did not emit an event",
-    });
-  }
-
-  const remainingPrompts: readonly PromptState[] = resolution.value.keepPromptOpen
-    ? state.prompts
-    : state.prompts.filter((candidate) => candidate.id !== prompt.id);
-
   return {
-    ok: true,
-    value: {
-      state: {
-        ...state,
-        revision: state.revision + 1,
-        eventSequence: lastEvent.sequence,
-        players: withBurnoutRecoveries(
-          { ...nextTurn.players, [player.id]: updatedPlayer },
-          nextTurn.burnoutRecoveries,
-        ),
-        prompts: remainingPrompts,
-        turn: {
-          number: nextTurn.turnNumber,
-          round: nextTurn.round,
-          activePlayerId: nextTurn.nextPlayerId,
-          phase: "pre-roll",
-          startedAt: context.logicalTimestamp,
-          deadlineAt: null,
-        },
-        lastCommandId: command.commandId,
-        stateHash: null,
-      },
-      events: allEvents,
+    players: withBurnoutRecoveries(
+      { ...nextTurn.players, [command.actorId]: updatedPlayer },
+      nextTurn.burnoutRecoveries,
+    ),
+    turn: {
+      number: nextTurn.turnNumber,
+      round: nextTurn.round,
+      activePlayerId: nextTurn.nextPlayerId,
+      phase: "pre-roll",
+      startedAt: context.logicalTimestamp,
+      deadlineAt: null,
     },
   };
+}
+
+/**
+ * An answer from somebody who is not holding the turn.
+ *
+ * The turn is left exactly as it was, and a marker event carries the answer so
+ * the response is on the wire even when it moved no resource — every transition
+ * has to emit at least one event, and silently succeeding would leave the feed
+ * unable to say the prompt was answered at all.
+ */
+function answerInPlace(
+  state: GameState,
+  command: RespondToPromptCommand,
+  resolved: PlayerState,
+  allEvents: GameEvent[],
+  eventMetadata: EventMetadata,
+  optionId: PromptState["legalResponses"][number]["id"],
+): Partial<GameState> {
+  const sequence = state.eventSequence + allEvents.length + 1;
+  const answered: EffectProposedEvent = {
+    ...eventMetadata(),
+    type: "EffectProposed",
+    payload: {
+      effectId: createStableId("EffectId", `${state.gameId}:effect:${sequence}`),
+      affectedPlayerIds: [command.actorId],
+      effect: {
+        kind: "prompt.respond",
+        decisionPointId: command.decisionPointId as string,
+        optionId: optionId as string,
+      },
+    },
+  };
+  allEvents.push(answered);
+
+  return { players: { ...state.players, [command.actorId]: resolved } };
 }

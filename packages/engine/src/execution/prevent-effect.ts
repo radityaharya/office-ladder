@@ -54,27 +54,59 @@ export type PendingEffectApplication = {
    * Whether the stored effect was one this engine build knows how to apply.
    *
    * `false` is not an error: the window still resolved correctly and the effect
-   * was still removed. It means the descriptor is outside the vocabulary
-   * `applyEffectDescriptors` interprets (a gameplay-v2 `transferResource`, say,
-   * before its resolver is wired), so the caller can log it rather than
-   * silently believe something happened.
+   * was still removed. It means the descriptor is one this path cannot settle —
+   * either outside the authored vocabulary entirely, or one of the twenty
+   * state-scoped v2 verbs, which `effects-v2`'s `resumePendingEffect` settles
+   * instead. Either way the caller can log a real gap rather than silently
+   * believe something happened. See `APPLICABLE_EFFECT_TYPES`.
    */
   readonly applied: boolean;
 };
 
 /**
- * The v1 effect vocabulary, as a total map so a new authored effect type is a
- * **compile error here** rather than a silent no-op.
+ * Which authored effect types **this** settlement path can actually apply, as a
+ * total map so a new authored effect type is a **compile error here** rather
+ * than a silent no-op.
  *
  * This exists because `PendingEffectState.effect` is a bare `JsonObject` (it has
  * to be: canonical state is JSON, and the effect may outlive the command that
  * raised it across a repository round trip). Handing an unrecognised object to
- * `applyEffectDescriptors` would fall through its exhaustive switch's
- * `satisfies never` default and return a non-`Accumulated` value, corrupting the
- * player record. So the object is checked back into the union before it is used,
- * and anything unrecognised is declined.
+ * `applyEffectDescriptors` would let it fall out of the v1 walk into the v2
+ * routing seam, which has no `GameState` to route into on this path — so it
+ * would resolve to nothing while `applied: true` claimed otherwise. The object
+ * is therefore checked back into the union before it is used, and anything this
+ * path cannot honour is declined.
+ *
+ * ## The split, and why it is a design decision rather than bookkeeping
+ *
+ * `false` here is *not* "unimplemented". It is: **an effect of this type is not
+ * settled by the legacy prevention path**, because settling it needs the whole
+ * game — a second player to steal from, a `heat` track, a tile to claim, a
+ * prompt to open. `applyPendingEffect` has a single `PlayerState` per affected
+ * id and nothing else, and inventing a partial reading of a targeted effect
+ * from inside it would be worse than declining: an un-prevented steal that
+ * silently moved nothing is a rule the table cannot see.
+ *
+ * So the line is drawn by *scope*, not by hostility or by taste:
+ *
+ * - `true` — the twelve v1 verbs, every one of which is a mutation of one
+ *   player's own record, plus `noEffect`, whose correct settlement genuinely is
+ *   to do nothing. These land when their window closes un-prevented.
+ * - `false` — all twenty of the v2 verbs. They are settled by
+ *   `effects-v2/resolve.ts`'s `resumePendingEffect`, which is state-scoped and
+ *   is the *only* correct consumer of a v2 pending effect. A window guarding one
+ *   must be resumed through there; closing it through this path reports
+ *   `applied: false` so the caller can log a real gap instead of believing
+ *   something happened. `reaction-window.ts` still routes every close through
+ *   here — see the note on `PendingEffectApplication.applied`.
+ *
+ * Note what this map does *not* decide: whether a reaction may cancel an effect.
+ * That is `preventionEligible`, set from the authored `preventable` flag when
+ * the effect is proposed, and it is orthogonal — a v2 effect is fully
+ * preventable, it is only its *un-prevented* settlement that this path declines.
  */
-const APPLICABLE_EFFECT_TYPES: Readonly<Record<EffectDescriptor["type"], true>> = {
+const APPLICABLE_EFFECT_TYPES: Readonly<Record<EffectDescriptor["type"], boolean>> = {
+  // v1 — one player's own record, which is exactly what this path holds.
   drawCards: true,
   modifyResource: true,
   restoreResourceToMaximum: true,
@@ -87,11 +119,35 @@ const APPLICABLE_EFFECT_TYPES: Readonly<Record<EffectDescriptor["type"], true>> 
   grantExtraRoll: true,
   attemptPromotion: true,
   auditConfinement: true,
+  // Settles correctly here because settling it is doing nothing.
+  noEffect: true,
+
+  // v2 — state-scoped. `resumePendingEffect` settles these, not this path.
+  transferResource: false,
+  modifyHeat: false,
+  placeObject: false,
+  claimTile: false,
+  releaseTile: false,
+  startProject: false,
+  contributeToProject: false,
+  sabotageProject: false,
+  openBallot: false,
+  grantImmunity: false,
+  forceDiscard: false,
+  swapBoardPositions: false,
+  teleport: false,
+  modifyUpkeep: false,
+  openReactionWindow: false,
+  grantIncomeStream: false,
+  removeStatuses: false,
+  // Both open a `PromptState`, which is a whole-game mutation by definition.
+  chooseOne: false,
+  opposedRoll: false,
 };
 
 /**
  * The descriptor a pending effect carries, or `null` when it is not one this
- * build can apply.
+ * path can apply.
  *
  * Deliberately structural rather than a full validator: the object was written
  * by `createPendingEffect` from a real `EffectDescriptor` and has only been
@@ -102,7 +158,13 @@ export function pendingEffectDescriptor(
 ): EffectDescriptor | null {
   const type = pending.effect["type"];
   if (typeof type !== "string") return null;
-  if (!Object.hasOwn(APPLICABLE_EFFECT_TYPES, type)) return null;
+
+  // One lookup covers both refusals: a type outside the authored vocabulary
+  // reads `undefined`, one this path does not settle reads `false`.
+  const applicable: boolean | undefined = (
+    APPLICABLE_EFFECT_TYPES as Readonly<Record<string, boolean | undefined>>
+  )[type];
+  if (applicable !== true) return null;
 
   return pending.effect as unknown as EffectDescriptor;
 }

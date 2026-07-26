@@ -324,7 +324,7 @@ describe("grantImmunity blocks preventable effects and is really consumed", () =
     const granted = resolveEffectsV2({
       state: base,
       actorId: rival,
-      effects: [{ type: "grantImmunity", charges: 1 }],
+      effects: [{ type: "grantImmunity", count: 1, scope: {} }],
       random: effectsRandom(),
       options: {},
     });

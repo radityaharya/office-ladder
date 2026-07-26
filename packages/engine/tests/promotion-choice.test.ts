@@ -167,7 +167,11 @@ describe("promotion.attempt", () => {
         rankKind: "rank.general-manager",
         rankIndex: 7,
         money: 5000,
-        reputation: 17,
+        // Director's `reputationRequired` is 58, not 17: the ladder was raised
+        // from linear (3/5/7/9/11/13/15/17) to geometric (3/5/8/12/18/27/40/58)
+        // so reputation stays a real gate at the top instead of going slack
+        // above Supervisor.
+        reputation: 58,
       },
     });
 

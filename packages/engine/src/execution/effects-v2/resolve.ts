@@ -11,6 +11,7 @@ import {
   type GameState,
   type IncomeStreamState,
   type JsonObject,
+  type JsonValue,
   type LogicalTimestamp,
   type PendingEffectState,
   type PlacementState,
@@ -22,10 +23,11 @@ import {
   type ResourceState,
   type TileId,
 } from "../../model";
-import type { RandomSource } from "../../random";
+import { rollDie, type RandomSource } from "../../random";
 import { findActiveStatus } from "../player-status";
 import {
   applySelfEffects,
+  matchRollOutcome,
   negativeEffectShieldFor,
   type EffectOrigin,
   type IgnoredNegativeEffect,
@@ -36,6 +38,7 @@ import {
 import { evaluateEffectCondition } from "./conditions";
 import { isEffectEnabled, isEffectTimingEnabled } from "./gating";
 import {
+  CHOOSE_ONE_PROMPT_KIND,
   CHOOSE_OPPONENT_PROMPT_KIND,
   IMMUNITY_STATUS_ID,
   decodePendingEffect,
@@ -46,6 +49,15 @@ import {
   pendingEffectId,
   type PendingEffectPayload,
 } from "./pending";
+import { withScaledAmount } from "./scaling";
+import {
+  IMMUNITY_SCOPE_KEY,
+  immunityCovers,
+  immunityScope,
+  removeMatchingStatuses,
+  statusData,
+  statusId as brandStatusId,
+} from "./statuses";
 import { livePlayerIds, resolveEffectTargets } from "./targeting";
 import {
   effectTarget,
@@ -77,7 +89,11 @@ export type EffectsV2SkipReason =
   | "tile-already-owned"
   | "tile-not-owned"
   | "tile-unknown"
-  | "no-cards-to-discard";
+  | "no-cards-to-discard"
+  /** `removeStatuses` found nothing its filter matched. */
+  | "no-status-to-remove"
+  /** A `chooseOne` reached the per-target applier without an answered branch. */
+  | "choice-not-decided";
 
 export type EffectsV2TraceEntry =
   | {
@@ -135,6 +151,47 @@ export type EffectsV2TraceEntry =
       readonly playerId: PlayerId;
       readonly charges: number;
       readonly rounds: number | null;
+      /** True when the grant named a scope, false for a blanket shield. */
+      readonly scoped: boolean;
+    }
+  | {
+      readonly type: "statuses-removed";
+      readonly playerId: PlayerId;
+      readonly statusIds: readonly string[];
+    }
+  | {
+      readonly type: "immunity-consumed";
+      readonly playerId: PlayerId;
+      readonly effectType: string;
+      /** False when the charge is duration-based and therefore not spent. */
+      readonly chargeSpent: boolean;
+    }
+  | {
+      readonly type: "opposed-roll";
+      readonly actorId: PlayerId;
+      readonly opponentId: PlayerId;
+      readonly actorTotal: number;
+      readonly opponentTotal: number;
+      readonly path: string;
+    }
+  | {
+      readonly type: "roll-check";
+      readonly total: number;
+      readonly doubles: boolean;
+      readonly resolution: "shared" | "per-target";
+      readonly playerIds: readonly PlayerId[];
+      readonly path: string;
+    }
+  | {
+      readonly type: "choice-opened";
+      readonly playerIds: readonly PlayerId[];
+      readonly optionIds: readonly string[];
+      readonly path: string;
+    }
+  | {
+      readonly type: "choice-resolved";
+      readonly optionId: string;
+      readonly path: string;
     }
   | {
       readonly type: "cards-discarded";
@@ -167,7 +224,7 @@ export type EffectsV2TraceEntry =
   | { readonly type: "audit-opened"; readonly playerId: PlayerId }
   | {
       readonly type: "effect-parked";
-      readonly reason: "reaction-window" | "chosen-opponent";
+      readonly reason: "reaction-window" | "chosen-opponent" | "choose-one";
       readonly pendingEffectId: EffectId;
       readonly path: string;
     }
@@ -245,6 +302,17 @@ export type EffectsV2Options = {
   readonly deadlineAt?: LogicalTimestamp | null;
   /** Prefix for the deterministic effect path, for nested resolution. */
   readonly pathPrefix?: string;
+  /**
+   * The deck the card that authored these effects came from.
+   *
+   * Provenance for `applyStatus` (§3.5) and for `grantImmunity`'s
+   * `scope.sourceDeckId` (§3.4): "ignore one negative Networking card" needs to
+   * know which deck the incoming card was drawn from, and that is knowledge only
+   * the caller has. Falls back to the effect's own authored `sourceDeckId`.
+   */
+  readonly sourceDeckId?: string | null;
+  /** How deep inside nested outcome/branch/option lists this batch is. */
+  readonly nestingDepth?: number;
 };
 
 /* ----------------------------------------------------------------- helpers */
@@ -343,6 +411,17 @@ function recordChange(draft: Draft, playerId: PlayerId, change: TileEffectChange
   draft.trace.push({ type: "resource-changed", playerId, change });
 }
 
+/**
+ * Content's `TileId` is the template literal `` `tile.board.${string}` ``;
+ * the engine's is a *branded* string minted by `createStableId`. They name the
+ * same thing and are the same bytes at runtime, but neither is assignable to the
+ * other, so the crossing is made once, here, rather than at each of the five call
+ * sites that would otherwise each need their own cast.
+ */
+function asEngineTileId(raw: string | null | undefined): TileId | null {
+  return raw === null || raw === undefined ? null : (raw as TileId);
+}
+
 /** The tile an effect means when it says `tileId: null`. */
 function contextualTileId(
   state: GameState,
@@ -371,6 +450,36 @@ function isTableScoped(effect: EffectV2): boolean {
   return effect.type === "openBallot" || effect.type === "openReactionWindow";
 }
 
+/**
+ * Where an effect lands within its resolved target set.
+ *
+ * Only `transferResource` with `perTarget: false` needs it — that is the reading
+ * where the authored `amount` is a *pot* split across the table rather than a
+ * price each seat pays — but it has to be threaded through the applier because
+ * nothing downstream can see how many siblings a target had.
+ */
+type TargetSlot = { readonly index: number; readonly count: number };
+
+const SOLE_TARGET: TargetSlot = { index: 0, count: 1 };
+
+/**
+ * The share of `total` that the `index`-th of `count` targets carries.
+ *
+ * Integer and exact: the remainder goes to the earliest seats in `playerOrder`
+ * rather than being rounded away, so a 100 pot across three players moves
+ * 34/33/33 and not 33/33/33 with one unit quietly deleted.
+ */
+function shareOf(total: number, slot: TargetSlot): number {
+  if (slot.count <= 1) return total;
+
+  const sign = total < 0 ? -1 : 1;
+  const magnitude = Math.abs(total);
+  const base = Math.floor(magnitude / slot.count);
+  const remainder = magnitude % slot.count;
+
+  return sign * (base + (slot.index < remainder ? 1 : 0));
+}
+
 /* -------------------------------------------------------- the v2 appliers */
 
 function applyNewEffect(
@@ -379,7 +488,9 @@ function applyNewEffect(
   actorId: PlayerId,
   targetId: PlayerId,
   path: string,
+  random: RandomSource,
   options: EffectsV2Options,
+  slot: TargetSlot = SOLE_TARGET,
 ): void {
   const state = draft.state;
   const rules = state.rules;
@@ -394,30 +505,50 @@ function applyNewEffect(
   switch (effect.type) {
     case "transferResource": {
       if (targetId === actorId) {
-        // Stealing from yourself is a no-op, not an error: an `all-players`
-        // steal legitimately includes the actor.
+        // Moving a resource from yourself to yourself is a no-op, not an error:
+        // an `all-players` transfer legitimately includes the actor.
         return;
       }
-      const available = target.resources[effect.resource]?.value ?? 0;
-      const wanted = Math.max(0, effect.amount);
+
+      // §3.8. `perTarget` defaults to true — the authored amount is what *each*
+      // resolved target moves, which is what makes an `@all-opponents` transfer
+      // correct at three players and at six. `false` reads the amount as one pot
+      // shared across the table.
+      const perTarget = effect.perTarget ?? true;
+      const wanted = Math.max(0, perTarget ? effect.amount : shareOf(effect.amount, slot));
+      if (wanted === 0) return;
+
+      // §3.8 again: `target-to-actor` is the steal, `actor-to-target` the gift.
+      // The payer is whoever the resource leaves, and the shortfall rule is
+      // stated on the payer for both directions.
+      const toActor = (effect.direction ?? "target-to-actor") === "target-to-actor";
+      const payer = toActor ? target : actor;
+      const payee = toActor ? actor : target;
+      const payerId = toActor ? targetId : actorId;
+      const payeeId = toActor ? actorId : targetId;
+
+      const available = payer.resources[effect.resource]?.value ?? 0;
       if (effect.insufficientFunds === "all-or-nothing" && available < wanted) {
-        skip(draft, "insufficient-resources", path, targetId);
+        skip(draft, "insufficient-resources", path, payerId);
 
         return;
       }
+      // Default is `transfer-up-to-available`, matching `payResource`'s
+      // `pay-up-to-available`: a transfer that cannot be paid in full moves what
+      // is there rather than failing outright.
       const moved = Math.min(wanted, available);
       if (moved === 0) {
-        skip(draft, "insufficient-resources", path, targetId);
+        skip(draft, "insufficient-resources", path, payerId);
 
         return;
       }
 
-      const taken = moveResource(target, effect.resource, -moved);
-      const given = moveResource(actor, effect.resource, moved, false);
+      const taken = moveResource(payer, effect.resource, -moved);
+      const given = moveResource(payee, effect.resource, moved, false);
       writePlayer(draft, taken.player);
       writePlayer(draft, given.player);
-      recordChange(draft, targetId, taken.change);
-      recordChange(draft, actorId, given.change);
+      recordChange(draft, payerId, taken.change);
+      recordChange(draft, payeeId, given.change);
 
       return;
     }
@@ -453,7 +584,7 @@ function applyNewEffect(
       return;
     }
     case "placeObject": {
-      const tileId = contextualTileId(state, target, effect.tileId ?? options.tileId ?? null);
+      const tileId = contextualTileId(state, target, asEngineTileId(effect.tileId) ?? options.tileId ?? null);
       if (tileId === null) {
         skip(draft, "tile-unknown", path, targetId);
 
@@ -485,7 +616,7 @@ function applyNewEffect(
       return;
     }
     case "claimTile": {
-      const tileId = contextualTileId(state, target, effect.tileId ?? options.tileId ?? null);
+      const tileId = contextualTileId(state, target, asEngineTileId(effect.tileId) ?? options.tileId ?? null);
       if (tileId === null) {
         skip(draft, "tile-unknown", path, targetId);
 
@@ -525,7 +656,7 @@ function applyNewEffect(
       return;
     }
     case "releaseTile": {
-      const tileId = contextualTileId(state, target, effect.tileId ?? options.tileId ?? null);
+      const tileId = contextualTileId(state, target, asEngineTileId(effect.tileId) ?? options.tileId ?? null);
       const ownership = tileId === null ? undefined : state.tileOwnership[tileId];
       if (tileId === null || ownership === undefined || ownership.ownerId !== targetId) {
         skip(draft, "tile-not-owned", path, targetId);
@@ -568,7 +699,7 @@ function applyNewEffect(
         ),
         definitionId: effect.definitionId,
         leadPlayerId: targetId,
-        tileId: contextualTileId(state, target, effect.tileId ?? options.tileId ?? null),
+        tileId: contextualTileId(state, target, asEngineTileId(effect.tileId) ?? options.tileId ?? null),
         status: "open",
         requiredMoney: Math.max(0, effect.requiredMoney),
         requiredWork: Math.max(0, effect.requiredWork),
@@ -695,28 +826,126 @@ function applyNewEffect(
       return;
     }
     case "grantImmunity": {
-      const charges = Math.max(1, effect.charges ?? 1);
-      const rounds = effect.rounds ?? null;
-      const existing = findActiveStatus(target, IMMUNITY_STATUS_ID);
+      // Re-cut plan §3.4's declared shape. Exactly one of `count` / `duration`
+      // is set: "ignore one negative Networking card" is a count, "ignore all
+      // Energy loss this turn" is a duration and cannot be written as a count
+      // without inventing a number.
+      const rounds = effect.duration?.count ?? null;
+      const charges = rounds === null ? Math.max(1, effect.count ?? 1) : 1;
+      const scope = effect.scope;
+      const scoped = Object.keys(scope).length > 0;
+
+      // Two immunities with *different* scopes are two different protections, so
+      // they get their own status rows rather than merging into one stack — a
+      // reputation shield must not be spent absorbing an energy loss. Same-scope
+      // grants still stack, or a second defensive card would silently do nothing.
+      const encodedScope = toStableScope(scope);
+      const key = JSON.stringify(encodedScope);
+      const existing = target.statuses.find(
+        (status) =>
+          status.id === IMMUNITY_STATUS_ID &&
+          JSON.stringify(status.data[IMMUNITY_SCOPE_KEY] ?? {}) === key,
+      );
       const statuses = [
-        ...target.statuses.filter((status) => status.id !== IMMUNITY_STATUS_ID),
+        ...target.statuses.filter((status) => status !== existing),
         {
-          id: createStableId("StatusId", IMMUNITY_STATUS_ID),
+          id: brandStatusId(IMMUNITY_STATUS_ID),
           sourceId: options.sourceId ?? null,
-          // Stacked, not replaced: two defensive cards must give two blocks, or
-          // the second one silently does nothing.
           stacks: (existing?.stacks ?? 0) + charges,
           remainingTurns: rounds,
           expiresAtRound: rounds === null ? null : state.turn.round + rounds,
           visibility: "public" as const,
-          data: {} as JsonObject,
+          data: { [IMMUNITY_SCOPE_KEY]: encodedScope } as JsonObject,
         },
       ];
       writePlayer(draft, { ...target, statuses });
-      draft.trace.push({ type: "immunity-granted", playerId: targetId, charges, rounds });
+      draft.trace.push({
+        type: "immunity-granted",
+        playerId: targetId,
+        charges,
+        rounds,
+        scoped,
+      });
 
       return;
     }
+    case "removeStatuses": {
+      // The only verb that *removes* state, and the one that made provenance
+      // necessary — see `statuses.ts`. Removal is fail-closed: a filter naming a
+      // polarity never strips a status that did not declare one.
+      const { statuses, removed } = removeMatchingStatuses(
+        target.statuses,
+        effect.filter,
+        effect.limit,
+      );
+      if (removed.length === 0) {
+        skip(draft, "no-status-to-remove", path, targetId);
+
+        return;
+      }
+
+      writePlayer(draft, { ...target, statuses });
+      draft.trace.push({ type: "statuses-removed", playerId: targetId, statusIds: removed });
+
+      return;
+    }
+    case "opposedRoll": {
+      if (targetId === actorId) {
+        // Rolling against yourself has no defined winner. `chosen-opponent` is
+        // the default opponent for exactly this reason.
+        skip(draft, "no-target", path, targetId);
+
+        return;
+      }
+
+      const dice = effect.dice ?? { count: 2, sides: 6 };
+      const rollTotal = (): number => {
+        let total = 0;
+        for (let die = 0; die < dice.count; die += 1) total += rollDie(random, dice.sides);
+
+        return total;
+      };
+      // The actor rolls first, always. Both totals come from the caller's
+      // deterministic source, so a replay re-derives the same contest.
+      const actorTotal = rollTotal();
+      const opponentTotal = rollTotal();
+
+      draft.trace.push({
+        type: "opposed-roll",
+        actorId,
+        opponentId: targetId,
+        actorTotal,
+        opponentTotal,
+        path,
+      });
+
+      const branch =
+        actorTotal > opponentTotal
+          ? effect.onWin
+          : actorTotal < opponentTotal
+            ? effect.onLose
+            : (effect.onTie ?? []);
+
+      // §3.9 rule 2: the branch inherits the opponent as its target, not the
+      // actor. A bet whose payout landed on the person who proposed it would pay
+      // the winner and the loser alike.
+      resolveNested(draft, branch, actorId, [targetId], `${path}:opposed`, random, options);
+
+      return;
+    }
+    case "noEffect":
+      // Declared, on purpose. Two Clock Deck cards exist precisely to burn a
+      // draw, and an empty `effects` array is indistinguishable from an
+      // authoring mistake. Doing nothing here is the implementation.
+      return;
+    case "chooseOne":
+      // Resolved in `resolveOne`, which opens the prompt, and in
+      // `resumePendingEffect`, which applies the answered branch. Reaching this
+      // applier means an already-decided choice was routed per target, which
+      // would re-ask the question once per recipient.
+      skip(draft, "choice-not-decided", path, targetId);
+
+      return;
     case "forceDiscard": {
       const count = Math.max(0, effect.count);
       // From the front of the hand: oldest first, deterministic, and identical
@@ -772,7 +1001,7 @@ function applyNewEffect(
       const destination =
         effect.destination.kind === "tileIndex"
           ? effect.destination.index
-          : state.tileIds.indexOf(effect.destination.tileId);
+          : state.tileIds.indexOf(effect.destination.tileId as TileId);
       if (destination < 0 || destination >= state.boardSize) {
         skip(draft, "tile-unknown", path, targetId);
 
@@ -963,6 +1192,49 @@ function applyLegacyToTarget(
   }
 }
 
+/**
+ * Writes an `applyStatus` **with provenance**, instead of letting the v1 applier
+ * drop it.
+ *
+ * `polarity` and `sourceDeckId` are authored on the effect and are the only
+ * thing that makes `removeStatuses`' filter evaluable (§3.5). The v1 path's
+ * `applyStatusEffect` predates both fields and writes neither, so a status
+ * applied through it is untagged — which the filter reads as "unknown", and
+ * fails closed on. Routing through here is what gives a card-applied status the
+ * provenance a later card can act on.
+ */
+function applyStatusWithProvenance(
+  draft: Draft,
+  effect: Extract<EffectV2, { type: "applyStatus" }>,
+  targetId: PlayerId,
+  options: EffectsV2Options,
+): void {
+  const target = draft.state.players[targetId];
+  if (target === undefined) return;
+
+  const status = {
+    id: brandStatusId(effect.statusId),
+    sourceId: options.sourceId ?? null,
+    stacks: effect.duration.kind === "uses" ? effect.duration.count : 1,
+    remainingTurns: effect.duration.kind === "turns" ? effect.duration.count : null,
+    expiresAtRound: null,
+    visibility: "private" as const,
+    data: statusData(
+      effect.parameters,
+      effect.polarity,
+      effect.sourceDeckId ?? options.sourceDeckId ?? null,
+    ),
+  };
+
+  writePlayer(draft, {
+    ...target,
+    statuses: [
+      ...target.statuses.filter((existing) => existing.id !== status.id),
+      status,
+    ],
+  });
+}
+
 function applyToTarget(
   draft: Draft,
   effect: EffectV2,
@@ -971,14 +1243,100 @@ function applyToTarget(
   path: string,
   random: RandomSource,
   options: EffectsV2Options,
+  slot: TargetSlot = SOLE_TARGET,
 ): void {
-  if (isLegacyEffect(effect)) {
-    applyLegacyToTarget(draft, effect, targetId, random, options);
+  // §3.7. Scaling happens at the moment the effect *lands*, not when it is
+  // resolved, so a parked effect that resumes several commands later scales off
+  // the state it actually lands in — and, on an `@all-players` effect, off each
+  // recipient's own metric rather than the drawer's once.
+  const scaled = withScaledAmount(draft.state, effect, actorId, targetId);
+
+  if (scaled.type === "applyStatus") {
+    applyStatusWithProvenance(draft, scaled, targetId, options);
 
     return;
   }
 
-  applyNewEffect(draft, effect, actorId, targetId, path, options);
+  if (isLegacyEffect(scaled)) {
+    applyLegacyToTarget(draft, scaled, targetId, random, options);
+
+    return;
+  }
+
+  applyNewEffect(draft, scaled, actorId, targetId, path, random, options, slot);
+}
+
+/**
+ * Resolves a nested effect list — a `rollCheck` outcome, an `opposedRoll`
+ * branch, a `chooseOne` option.
+ *
+ * Re-cut plan §3.9 rule 2: **an un-targeted nested effect inherits the target of
+ * the effect it is nested inside, never the actor.** Without that,
+ * `card.annual-event.sports-day-champion` pays one player six times, and so do
+ * the already-shipped `globalEvent.reorg` and `globalEvent.merger-rumour`. A
+ * nested effect that *does* carry its own `target` re-targets from scratch,
+ * which is what makes `@highest-rank` inside a roll outcome mean what it says.
+ *
+ * `depth` mirrors the v1 resolver's recursion cap for the same reason: authored
+ * content that nests without bound would otherwise be a stack overflow rather
+ * than a validation failure.
+ */
+const MAX_NESTED_DEPTH = 3;
+
+function resolveNested(
+  draft: Draft,
+  effects: readonly EffectDescriptor[],
+  actorId: PlayerId,
+  inheritedTargetIds: readonly PlayerId[],
+  path: string,
+  random: RandomSource,
+  options: EffectsV2Options,
+): void {
+  const depth = options.nestingDepth ?? 0;
+  if (depth >= MAX_NESTED_DEPTH) return;
+
+  const nestedOptions: EffectsV2Options = { ...options, nestingDepth: depth + 1 };
+
+  effects.forEach((authored, index) => {
+    const nested = authored as EffectV2;
+    const nestedPath = `${path}:${index}`;
+
+    if (nested.target !== undefined) {
+      resolveOne(draft, nested, actorId, nestedPath, random, nestedOptions);
+
+      return;
+    }
+
+    for (const [slotIndex, targetId] of inheritedTargetIds.entries()) {
+      applyToTarget(draft, nested, actorId, targetId, nestedPath, random, nestedOptions, {
+        index: slotIndex,
+        count: inheritedTargetIds.length,
+      });
+    }
+  });
+}
+
+/**
+ * A scope, normalised to a JSON object with its keys in a fixed order.
+ *
+ * Two immunities are "the same protection" when their scopes are equal, and that
+ * comparison is done on the serialised form — so key order has to be the
+ * resolver's, not the author's. Otherwise `{resource, direction}` and
+ * `{direction, resource}` would stack as two separate shields.
+ */
+function toStableScope(scope: {
+  readonly resource?: string;
+  readonly direction?: string;
+  readonly effectTypes?: readonly string[];
+  readonly sourceDeckId?: string;
+}): JsonObject {
+  const stable: Record<string, JsonValue> = {};
+  if (scope.resource !== undefined) stable["resource"] = scope.resource;
+  if (scope.direction !== undefined) stable["direction"] = scope.direction;
+  if (scope.effectTypes !== undefined) stable["effectTypes"] = [...scope.effectTypes].sort();
+  if (scope.sourceDeckId !== undefined) stable["sourceDeckId"] = scope.sourceDeckId;
+
+  return stable;
 }
 
 /**
@@ -991,7 +1349,7 @@ function park(
   actorId: PlayerId,
   targetPlayerIds: readonly PlayerId[],
   path: string,
-  reason: "reaction-window" | "chosen-opponent",
+  reason: "reaction-window" | "chosen-opponent" | "choose-one",
   options: EffectsV2Options,
 ): PendingEffectState {
   const state = draft.state;
@@ -1023,6 +1381,74 @@ function park(
   draft.trace.push({ type: "effect-parked", reason, pendingEffectId: pending.id, path });
 
   return pending;
+}
+
+/**
+ * Spends a `grantImmunity` charge if one covers this effect. Returns true when
+ * the effect was absorbed and must not land.
+ *
+ * There are two readings of "immune", and the declared scope of §3.4 is what
+ * tells them apart:
+ *
+ * - **A scoped immunity** — every authored one — blocks any effect its scope
+ *   matches, whoever caused it and whether or not it is `preventable`. "Ignore
+ *   all Energy loss this turn" has to absorb the energy line of a card the
+ *   holder drew themselves, or it protects against nothing a player would
+ *   notice.
+ * - **An unscoped immunity** (`scope: {}`) is the blanket shield this resolver
+ *   had before the shape was declared, and keeps exactly its old semantics: it
+ *   absorbs a `preventable` effect aimed at the holder by somebody else.
+ *
+ * Consumption is real in both cases. A count-based charge is spent and the
+ * status disappears once exhausted; a duration-based one is *not* spent, because
+ * "all Energy loss this turn" is a window, not a quantity — it expires when
+ * `remainingTurns` runs out.
+ */
+function consumeImmunity(
+  draft: Draft,
+  effect: EffectV2,
+  actorId: PlayerId,
+  targetId: PlayerId,
+  path: string,
+  options: EffectsV2Options,
+): boolean {
+  const target = draft.state.players[targetId];
+  if (target === undefined) return false;
+  if (findActiveStatus(target, IMMUNITY_STATUS_ID) === null) return false;
+
+  const sourceDeckId =
+    (effect.type === "applyStatus" ? effect.sourceDeckId : undefined) ??
+    options.sourceDeckId ??
+    null;
+
+  const match = target.statuses.find((status) => {
+    if (status.id !== IMMUNITY_STATUS_ID || status.stacks <= 0) return false;
+
+    const scope = immunityScope(status);
+    const unscoped = scope === null || Object.keys(scope).length === 0;
+    if (unscoped) return isPreventable(effect) && targetId !== actorId;
+
+    return immunityCovers(scope, effect, sourceDeckId);
+  });
+  if (match === undefined) return false;
+
+  const durationBased = match.remainingTurns !== null;
+  if (!durationBased) {
+    const statuses = target.statuses
+      .map((status) => (status === match ? { ...status, stacks: status.stacks - 1 } : status))
+      .filter((status) => status.stacks > 0);
+    writePlayer(draft, { ...target, statuses });
+  }
+
+  draft.trace.push({
+    type: "immunity-consumed",
+    playerId: targetId,
+    effectType: effect.type,
+    chargeSpent: !durationBased,
+  });
+  skip(draft, "immune", path, targetId);
+
+  return true;
 }
 
 function resolveOne(
@@ -1072,16 +1498,37 @@ function resolveOne(
   // exactly what the pool is about to decide, so the id-free predicate is the
   // right one here. The id-aware `isAggressiveEffect` runs later, per target,
   // inside the mode gate.
-  const hostile = effectTarget(effect) !== "self" && isAggressiveEffectShape(effect);
+  //    `opposedRoll` aims through `opponent` rather than `target`: `target` on a
+  //    contest would mean "who does the whole bet happen to", which is not a
+  //    question the card asks. Its default is `chosen-opponent`, so an
+  //    un-annotated bet asks who it is against instead of rolling against the
+  //    proposer.
+  const aimedAt =
+    effect.type === "opposedRoll" ? (effect.opponent ?? "chosen-opponent") : effectTarget(effect);
+  const hostile = aimedAt !== "self" && isAggressiveEffectShape(effect);
   const targeting = isTableScoped(effect)
     ? ({ kind: "resolved", playerIds: [actorId] } as const)
-    : resolveEffectTargets({ state: draft.state, actorId, target: effectTarget(effect), hostile });
+    : resolveEffectTargets({ state: draft.state, actorId, target: aimedAt, hostile });
 
   if (targeting.kind === "choice-required") {
     if (targeting.candidateIds.length === 0) {
       skip(draft, "no-target", path, null);
 
       return;
+    }
+
+    // The mode gate runs *before* the question is asked. Hostility is a property
+    // of the effect and of aiming away from the actor, both of which are already
+    // known — so a mode with `targetedAttacks` off refuses the attack outright
+    // rather than opening a prompt whose every answer would then be refused.
+    const representative = targeting.candidateIds[0];
+    if (representative !== undefined) {
+      const gate = isEffectEnabled(rules, effect, actorId, representative);
+      if (!gate.enabled) {
+        skip(draft, "mode-disabled", path, null, gate.rule);
+
+        return;
+      }
     }
 
     const scope = options.idScope ?? "effects";
@@ -1141,22 +1588,7 @@ function resolveOne(
       }
     }
 
-    if (isPreventable(effect) && targetId !== actorId) {
-      const target = draft.state.players[targetId];
-      const immunity = target === undefined ? null : findActiveStatus(target, IMMUNITY_STATUS_ID);
-      if (target !== undefined && immunity !== null) {
-        // Real consumption: one charge is spent and the status disappears once
-        // exhausted, so an immunity that blocked something cannot block again.
-        const statuses = target.statuses
-          .map((status) =>
-            status.id === IMMUNITY_STATUS_ID ? { ...status, stacks: status.stacks - 1 } : status,
-          )
-          .filter((status) => status.stacks > 0);
-        writePlayer(draft, { ...target, statuses });
-        skip(draft, "immune", path, targetId);
-        continue;
-      }
-    }
+    if (consumeImmunity(draft, effect, actorId, targetId, path, options)) continue;
 
     survivors.push(targetId);
   }
@@ -1197,10 +1629,148 @@ function resolveOne(
     }
   }
 
-  // 7. Land it.
-  for (const targetId of survivors) {
-    applyToTarget(draft, effect, actorId, targetId, path, random, options);
+  // 7. A `chooseOne` is not applied to anybody — it *asks*, exactly as
+  //    `chosen-opponent` does, and the answer is what lands.
+  if (effect.type === "chooseOne") {
+    openChoicePrompt(draft, effect, actorId, survivors, path, options);
+
+    return;
   }
+
+  // 8. `resolution: "shared"` — the default — means one roll for the whole
+  //    target set. The v1 applier rolls inside itself, once per player it is
+  //    handed, so delegating a multi-target `rollCheck` to it silently makes
+  //    every card `per-target`: the field validated and did nothing, because
+  //    both of its values behaved the same. A single target is left on the v1
+  //    path deliberately, so `rerollEligible` and the Lucky Employee doubles
+  //    passive keep working for the overwhelmingly common case.
+  if (
+    effect.type === "rollCheck" &&
+    (effect.resolution ?? "shared") === "shared" &&
+    survivors.length > 1
+  ) {
+    resolveSharedRollCheck(draft, effect, actorId, survivors, path, random, options);
+
+    return;
+  }
+
+  // 9. Land it.
+  for (const [index, targetId] of survivors.entries()) {
+    applyToTarget(draft, effect, actorId, targetId, path, random, options, {
+      index,
+      count: survivors.length,
+    });
+  }
+}
+
+/**
+ * One roll, one matched outcome, applied to every target — §3.9 rule 3's
+ * `"shared"` resolution.
+ *
+ * The nested outcome effects inherit the roll's whole target set (rule 2), so a
+ * six-seat table gets one result applied six times rather than one player being
+ * paid six times.
+ */
+function resolveSharedRollCheck(
+  draft: Draft,
+  effect: Extract<EffectV2, { type: "rollCheck" }>,
+  actorId: PlayerId,
+  targetIds: readonly PlayerId[],
+  path: string,
+  random: RandomSource,
+  options: EffectsV2Options,
+): void {
+  const first = rollDie(random, effect.dice.sides);
+  const second = effect.dice.count === 2 ? rollDie(random, effect.dice.sides) : null;
+  const total = first + (second ?? 0);
+  const doubles = second !== null && second === first;
+
+  draft.trace.push({
+    type: "roll-check",
+    total,
+    doubles,
+    resolution: "shared",
+    playerIds: [...targetIds],
+    path,
+  });
+
+  const outcome = matchRollOutcome(effect.outcomes, total, doubles);
+  if (outcome === null) return;
+
+  resolveNested(draft, outcome.effects, actorId, targetIds, `${path}:roll`, random, options);
+}
+
+/**
+ * Opens the prompt a `chooseOne` resolves through.
+ *
+ * `chooser` (§3.3's amendment) decides *who picks*, independently of who the
+ * branch effects land on: "the drawer picks after targeting" and "the target
+ * picks the lesser evil" are different cards, and the workbook does not say
+ * which unless the field does. `chosen-opponent` as a chooser resolves to the
+ * eligible-opponent set as a **multi-audience** prompt — `PromptState.audience`
+ * has always modelled that and has never been populated — rather than chaining a
+ * second pick-an-opponent prompt in front of it.
+ */
+function openChoicePrompt(
+  draft: Draft,
+  effect: Extract<EffectV2, { type: "chooseOne" }>,
+  actorId: PlayerId,
+  targetIds: readonly PlayerId[],
+  path: string,
+  options: EffectsV2Options,
+): void {
+  if (effect.options.length === 0) {
+    skip(draft, "choice-not-decided", path, null);
+
+    return;
+  }
+
+  const chooserTargeting = resolveEffectTargets({
+    state: draft.state,
+    actorId,
+    target: effect.chooser ?? "self",
+    hostile: false,
+  });
+  const audience =
+    chooserTargeting.kind === "choice-required"
+      ? chooserTargeting.candidateIds
+      : chooserTargeting.playerIds;
+  if (audience.length === 0) {
+    skip(draft, "no-target", path, null);
+
+    return;
+  }
+
+  const scope = options.idScope ?? "effects";
+  const pending = park(draft, effect, actorId, targetIds, path, "choose-one", options);
+  const legalResponses = effect.options.map((option) => ({
+    id: createStableId("PromptOptionId", option.id),
+    value: option.id,
+  }));
+  const first = legalResponses[0];
+  if (first === undefined) return;
+
+  const prompt: PromptState = {
+    id: effectPromptId(draft.state, scope, path),
+    frameId: pending.frameId,
+    kind: CHOOSE_ONE_PROMPT_KIND,
+    audience: [...audience],
+    legalResponses,
+    deadlineAt: options.deadlineAt ?? null,
+    // The first authored option, so a stalled choice is the one the author wrote
+    // first rather than whichever happens to be cheapest to compute.
+    defaultResponse: { optionId: first.id, value: first.value },
+    visibility: "public",
+    responses: {},
+  };
+  draft.state = { ...draft.state, prompts: [...draft.state.prompts, prompt] };
+  draft.prompts.push(prompt);
+  draft.trace.push({
+    type: "choice-opened",
+    playerIds: [...audience],
+    optionIds: effect.options.map((option) => option.id),
+    path,
+  });
 }
 
 export type EffectsV2Input = {
@@ -1254,7 +1824,8 @@ export type ResumeResult =
         | "not-parked"
         | "not-effects-v2"
         | "actor-mismatch"
-        | "target-not-eligible";
+        | "target-not-eligible"
+        | "option-not-offered";
     };
 
 export type ResumePendingEffectOptions = {
@@ -1276,6 +1847,13 @@ export type ResumePendingEffectOptions = {
    * answers player A's prompt" and player B choosing who player A steals from.
    */
   readonly expectedActorId?: PlayerId | null;
+  /**
+   * The answer to a `chooseOne` prompt: the authored option id the chooser
+   * picked. Validated against the parked effect's own option list, so a response
+   * naming a branch this card never offered is refused rather than silently
+   * falling through to the first one.
+   */
+  readonly chosenOptionId?: string | null;
   readonly effectOptions?: Partial<EffectsV2Options>;
 };
 
@@ -1348,16 +1926,46 @@ export function resumePendingEffect(
     idScope: payload.idScope,
     ...(resumeOptions.effectOptions ?? {}),
   };
+  const resumedPath = `${payload.path}:resumed`;
 
-  for (const targetId of targetPlayerIds) {
+  // A parked `chooseOne` resumes into *one branch*, not into itself: the answer
+  // selects an effect list, and that list lands on the targets the choice was
+  // parked with (§3.3). Validating the option id here rather than trusting the
+  // prompt layer is the same defence-in-depth as `expectedActorId` — a response
+  // naming a branch this card never offered must not fall through to the first.
+  if (payload.effect.type === "chooseOne") {
+    const options_ = payload.effect.options;
+    const requested = resumeOptions.chosenOptionId ?? null;
+    const chosen =
+      requested === null
+        ? options_[0]
+        : options_.find((option) => option.id === requested);
+    if (chosen === undefined) return { ok: false, reason: "option-not-offered" };
+
+    draft.trace.push({ type: "choice-resolved", optionId: chosen.id, path: resumedPath });
+    resolveNested(
+      draft,
+      chosen.effects,
+      payload.actorId,
+      targetPlayerIds,
+      resumedPath,
+      random,
+      options,
+    );
+
+    return { ok: true, outcome: finish(draft) };
+  }
+
+  for (const [index, targetId] of targetPlayerIds.entries()) {
     applyToTarget(
       draft,
       payload.effect,
       payload.actorId,
       targetId,
-      `${payload.path}:resumed`,
+      resumedPath,
       random,
       options,
+      { index, count: targetPlayerIds.length },
     );
   }
 

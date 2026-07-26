@@ -128,6 +128,21 @@ export function isEffectEnabled(
       return rules.economy.incomeStreamsEnabled
         ? ENABLED
         : disabled("economy.incomeStreamsEnabled");
+    case "opposedRoll":
+      // Two rollers and a stake. There is no mode where a contest between two
+      // players is anything but conflict, and §5.4 marks every authored
+      // `opposedRoll` aimed — so it rides the same switch, already applied
+      // above, and needs no second one.
+      return ENABLED;
+    case "removeStatuses":
+    case "chooseOne":
+    case "noEffect":
+      // No `ModeRules` field of their own, deliberately. Removing a status you
+      // are carrying, branching on a card you drew, and doing nothing on purpose
+      // are all things every mode allows; gating them would need a switch
+      // nothing in §4 declares, and §4's binding rule is that no mechanic may be
+      // gated on anything but a named `ModeRules` field.
+      return ENABLED;
     default:
       // Every v1 effect: no v2 switch of its own, and its cross-player
       // hostility (if any) was already gated above.

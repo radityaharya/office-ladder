@@ -37,6 +37,13 @@ export type SetupModeContent = {
     readonly money: number;
     readonly reputation: number;
     readonly energy: number;
+    /**
+     * The energy resource's starting `maximum`, separate from its starting
+     * `value`. `createGame` used to pass `energy` for both, which pinned the
+     * ceiling to the starting value and made every energy grant and every
+     * `restoreResourceToMaximum` a no-op for a rested player.
+     */
+    readonly energyMaximum: number;
     readonly workCounter: number;
   };
   readonly startingTokens: Readonly<Record<string, number | undefined>>;

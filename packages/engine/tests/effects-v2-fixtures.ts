@@ -1,4 +1,5 @@
 import { deadlineDashModes } from "@office-ladder/content";
+import type { TileId as ContentTileId } from "@office-ladder/content";
 
 import { createSeededRandomSource } from "../src";
 import type {
@@ -190,6 +191,19 @@ export function effectsV2State(): GameState {
     eliminatedPlayerIds: [],
     lastCommandId: null,
   };
+}
+
+/**
+ * The engine's branded `TileId`, read as content's authored tile-id shape.
+ *
+ * Content types a tile id as the template literal `` `tile.board.${string}` ``;
+ * the engine mints an opaque branded string. They are the same bytes and neither
+ * is assignable to the other, and `tests/fixtures.ts` (not this agent's file)
+ * seeds the canonical board with `tile-0…tile-27`. Rather than restate the board
+ * here just to satisfy a template literal, the crossing is made once.
+ */
+export function contentTileId(tileId: TileId): ContentTileId {
+  return tileId as unknown as ContentTileId;
 }
 
 /** A deterministic source. No v2 effect draws from it; the v1 ones still can. */
