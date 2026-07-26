@@ -11,17 +11,17 @@ import type {
 } from "../model";
 import { objectivePointsFor, playersWithAllObjectivesComplete } from "./objectives";
 import { quartersElapsed } from "./quarters";
-import type { TransitionContent } from "./types";
 
 /**
  * Every weight the score sheet needs.
  *
- * The first three are authored: they are the `endgame.scoring` block that has sat
- * in `mode.marathon` since the content pack was written and has never had a
- * consumer. They are read from content rather than restated here.
+ * The first three are authored: they are `ModeRules.endgame`, which mirrors the
+ * `endgame.scoring` block in the content pack into the ruleset **snapshotted
+ * into `GameState.rules` at `game.start`**. They are read from that snapshot and
+ * never from the live pack — see {@link resolveScoringConfig}.
  *
  * The last four have no authored home yet — `ScoreBreakdown` asks for ownership,
- * project and penalty columns and `ModeConfig` has no numbers for them — so they
+ * project and penalty columns and `ModeRules` has no numbers for them — so they
  * are *derived* from the authored three rather than invented, and every one of
  * them is overridable by the caller. See `DERIVED_WEIGHT_NOTES`.
  */
@@ -36,14 +36,22 @@ export type ScoringConfig = {
 };
 
 /**
- * The authored weights, repeated here only as the fallback for a mode whose
- * `endgame` is `{ type: "immediate" }`.
+ * The authored weights, repeated here only as the fallback for a ruleset whose
+ * `endgame` block is missing or unusable.
  *
- * A race mode ends the moment somebody reaches Director and has no scoring block
- * of its own, but `MatchOutcome.scores` is filled in whatever the end reason is —
- * the end screen shows the table how close it was — so a race still needs a
- * scale. Reusing marathon's is the only choice that keeps two matches of
- * different modes comparable.
+ * Every shipped preset carries these exact numbers (`ENDGAME_RULES` in
+ * `packages/content/src/deadline-dash/modes.ts` derives them from the authored
+ * `endgame.scoring`), including the race mode: a race ends the moment somebody
+ * reaches Director and has no authored scoring block of its own, but
+ * `MatchOutcome.scores` is filled in whatever the end reason is — the end screen
+ * shows the table how close it was — so a race still needs a scale, and reusing
+ * marathon's is the only choice that keeps two matches of different modes
+ * comparable.
+ *
+ * They stay here as a fallback because `GameState.rules` also arrives from a
+ * legacy snapshot (spec §5.10) and from a lobby, and a state whose `endgame`
+ * block predates this field must still be scorable rather than score every
+ * column as zero.
  */
 export const FALLBACK_SCORING_WEIGHTS = {
   rankTierPoints: 1000,
@@ -59,22 +67,39 @@ export const DERIVED_WEIGHT_NOTES: readonly string[] = [
 ];
 
 /**
- * The mode's own scoring block, or the fallback when it has none.
+ * The score sheet's weights, taken from the **snapshotted** ruleset.
  *
- * `modeId` is a plain string for the same reason `resolvePromotion` takes one:
- * `GameState.modeId` is branded, content keys are literals, and the lookup is a
- * find rather than an index.
+ * This used to take the content pack and a `modeId` and look the mode up live,
+ * which quietly broke the guarantee in spec §5.9: editing a preset's scoring
+ * block rescored matches that had already finished, because a replay resolved
+ * its weights against whatever the pack said *now* rather than what it said when
+ * the match was played. `rules` is frozen into `GameState` at `game.start`, so
+ * reading it here is what makes a replay reproduce the original score sheet
+ * whatever has happened to the pack since.
+ *
+ * A weight that is not a usable number falls back to
+ * {@link FALLBACK_SCORING_WEIGHTS} field by field rather than wholesale: a
+ * legacy snapshot with a half-populated `endgame` block should lose only the
+ * fields it is actually missing.
  */
 export function resolveScoringConfig(
-  content: TransitionContent,
-  modeId: string,
+  rules: ModeRules,
   overrides: Partial<ScoringConfig> = {},
 ): ScoringConfig {
-  const mode = Object.values(content.modes).find((candidate) => candidate.id === modeId);
-  const authored =
-    mode !== undefined && mode.endgame.type === "additional-rounds"
-      ? mode.endgame.scoring
-      : FALLBACK_SCORING_WEIGHTS;
+  const weight = (value: number | undefined, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const declared = rules.endgame as ModeRules["endgame"] | undefined;
+  const authored = {
+    rankTierPoints: weight(declared?.rankTierPoints, FALLBACK_SCORING_WEIGHTS.rankTierPoints),
+    moneyMultiplier: weight(
+      declared?.moneyMultiplier,
+      FALLBACK_SCORING_WEIGHTS.moneyMultiplier,
+    ),
+    reputationPoints: weight(
+      declared?.reputationPoints,
+      FALLBACK_SCORING_WEIGHTS.reputationPoints,
+    ),
+  };
 
   return {
     rankTierPoints: authored.rankTierPoints,
@@ -336,12 +361,11 @@ export type MatchEndOptions = {
  */
 export function evaluateMatchEnd(
   state: GameState,
-  content: TransitionContent,
   options: MatchEndOptions,
 ): MatchOutcome | null {
   if (state.outcome !== null || state.status !== "active") return null;
 
-  const config = options.config ?? resolveScoringConfig(content, state.modeId);
+  const config = options.config ?? resolveScoringConfig(state.rules);
   const scores = scoreMatch(state, config);
   const survivors = state.playerOrder.filter(
     (playerId) => !state.eliminatedPlayerIds.includes(playerId),

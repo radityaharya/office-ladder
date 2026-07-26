@@ -52,10 +52,31 @@ export type ModeRules = {
     readonly survival: boolean;
   };
 
+  /**
+   * How the match ends and what the final score sheet is worth.
+   *
+   * Part of the ruleset rather than of the content pack because the engine reads
+   * these *during* a match, out of the frozen `GameState.rules` snapshot: a
+   * scoring weight read live from content would mean a preset edit rescoring a
+   * match that has already finished (spec §5.9).
+   */
+  readonly endgame: {
+    readonly rankTierPoints: number;
+    readonly moneyMultiplier: number;
+    readonly reputationPoints: number;
+    readonly clockDecksEndMatch: boolean;
+  };
+
   readonly economy: {
     readonly upkeepEnabled: boolean;
     /** Charge per round, indexed by rank index. Length must equal the rank ladder. */
     readonly upkeepByRankIndex: readonly number[];
+    /**
+     * What being promoted **into** each rank costs, indexed by rank index. Length
+     * must equal the rank ladder, and index 0 is 0 — nobody is promoted into the
+     * entry rank.
+     */
+    readonly promotionCostByRankIndex: readonly number[];
     readonly loansEnabled: boolean;
     readonly maxLoanPrincipal: number;
     readonly interestBasisPoints: number;
@@ -98,6 +119,8 @@ export type ModeRules = {
     readonly maxPipAdjust: number;
     readonly freeActionsPerTurn: number;
     readonly handEnabled: boolean;
+    /** How many cards a player may hold. 0 means none may be kept. */
+    readonly handLimit: number;
   };
 
   readonly interaction: {
@@ -166,6 +189,12 @@ export const MODE_RULES_BOUNDS = {
   quarterCount: { minimum: 1, maximum: 12 },
   quarterRoundsEach: { minimum: 1, maximum: 50 },
   upkeepPerRound: { minimum: 0, maximum: 100_000 },
+  /**
+   * What a single promotion may cost. The shipped ladder tops out at 12,500
+   * (campaign's Director rung); a million is the "no sane game" ceiling, and an
+   * unbounded one is a ruleset where nobody can ever be promoted.
+   */
+  promotionCost: { minimum: 0, maximum: 1_000_000 },
   maxLoanPrincipal: { minimum: 0, maximum: 1_000_000 },
   interestBasisPoints: { minimum: 0, maximum: 10_000 },
   claimCostMultiplier: { minimum: 0, maximum: 10 },
@@ -183,6 +212,20 @@ export const MODE_RULES_BOUNDS = {
    */
   maxPipAdjust: { minimum: 0, maximum: 6 },
   freeActionsPerTurn: { minimum: 0, maximum: 5 },
+  /**
+   * Twenty cards is far past any authored preset (the shipped four hold 1-4) and
+   * still short of a hand nobody can read. Unbounded is the cheat: a hand limit
+   * of 10,000 is an author asking for the whole deck in one player's hand.
+   */
+  handLimit: { minimum: 0, maximum: 20 },
+  /**
+   * The score-sheet weights. A weight is a lever on who *won*, so an unbounded
+   * one is the same cheat as an unbounded `maxPipAdjust`: `rankTierPoints:
+   * 1e12` makes every other column noise.
+   */
+  rankTierPoints: { minimum: 0, maximum: 100_000 },
+  moneyMultiplier: { minimum: 0, maximum: 100 },
+  reputationPoints: { minimum: 0, maximum: 100_000 },
   reactionWindowSeconds: { minimum: 1, maximum: 120 },
   turnSeconds: { minimum: 5, maximum: 600 },
   chessClockSeconds: { minimum: 30, maximum: 7_200 },
@@ -274,6 +317,35 @@ function parseWinPaths(value: unknown): ModeRules["winPaths"] {
   return winPaths;
 }
 
+/**
+ * One entry per rung, bounded, for a table the engine indexes by rank index.
+ *
+ * Shared by `upkeepByRankIndex` and `promotionCostByRankIndex` because the
+ * failure mode is identical: a short table reads `undefined` at the top of the
+ * ladder, which for upkeep is a rent-free promotion and for promotion cost is a
+ * *free* one.
+ */
+function parseRankIndexedLadder(
+  value: unknown,
+  rankLadderLength: number,
+  path: string,
+  bounds: { readonly minimum: number; readonly maximum: number },
+): readonly number[] {
+  if (!Array.isArray(value)) {
+    throw new ContractValidationError(path, "must be an array");
+  }
+  if (value.length !== rankLadderLength) {
+    throw new ContractValidationError(
+      path,
+      `must have exactly ${String(rankLadderLength)} entries, one per rank`,
+    );
+  }
+
+  return value.map((entry, index) =>
+    boundedInteger(entry, `${path}[${String(index)}]`, bounds),
+  );
+}
+
 function parseUpkeepByRankIndex(
   value: unknown,
   rankLadderLength: number,
@@ -311,6 +383,7 @@ function parseEconomy(value: unknown, rankLadderLength: number): ModeRules["econ
     [
       "upkeepEnabled",
       "upkeepByRankIndex",
+      "promotionCostByRankIndex",
       "loansEnabled",
       "maxLoanPrincipal",
       "interestBasisPoints",
@@ -328,6 +401,12 @@ function parseEconomy(value: unknown, rankLadderLength: number): ModeRules["econ
     upkeepByRankIndex: parseUpkeepByRankIndex(
       input["upkeepByRankIndex"],
       rankLadderLength,
+    ),
+    promotionCostByRankIndex: parseRankIndexedLadder(
+      input["promotionCostByRankIndex"],
+      rankLadderLength,
+      "rules.economy.promotionCostByRankIndex",
+      MODE_RULES_BOUNDS.promotionCost,
     ),
     loansEnabled: requireBoolean(input["loansEnabled"], "rules.economy.loansEnabled"),
     maxLoanPrincipal: boundedInteger(
@@ -485,6 +564,7 @@ function parseAgency(value: unknown): ModeRules["agency"] {
       "maxPipAdjust",
       "freeActionsPerTurn",
       "handEnabled",
+      "handLimit",
     ],
     "rules.agency",
   );
@@ -518,6 +598,44 @@ function parseAgency(value: unknown): ModeRules["agency"] {
       MODE_RULES_BOUNDS.freeActionsPerTurn,
     ),
     handEnabled: requireBoolean(input["handEnabled"], "rules.agency.handEnabled"),
+    handLimit: boundedInteger(
+      input["handLimit"],
+      "rules.agency.handLimit",
+      MODE_RULES_BOUNDS.handLimit,
+    ),
+  };
+}
+
+function parseEndgame(value: unknown): ModeRules["endgame"] {
+  const input = requireObject(value, "rules.endgame");
+  requireExactKeys(
+    input,
+    ["rankTierPoints", "moneyMultiplier", "reputationPoints", "clockDecksEndMatch"],
+    "rules.endgame",
+  );
+
+  return {
+    rankTierPoints: boundedInteger(
+      input["rankTierPoints"],
+      "rules.endgame.rankTierPoints",
+      MODE_RULES_BOUNDS.rankTierPoints,
+    ),
+    // The only non-integer weight: the shipped value is 0.1, a point per ten
+    // money, so an integer gate here would refuse every shipped preset.
+    moneyMultiplier: boundedNumber(
+      input["moneyMultiplier"],
+      "rules.endgame.moneyMultiplier",
+      MODE_RULES_BOUNDS.moneyMultiplier,
+    ),
+    reputationPoints: boundedInteger(
+      input["reputationPoints"],
+      "rules.endgame.reputationPoints",
+      MODE_RULES_BOUNDS.reputationPoints,
+    ),
+    clockDecksEndMatch: requireBoolean(
+      input["clockDecksEndMatch"],
+      "rules.endgame.clockDecksEndMatch",
+    ),
   };
 }
 
@@ -723,6 +841,7 @@ export function parseModeRules(
       "winShape",
       "quarters",
       "winPaths",
+      "endgame",
       "economy",
       "board",
       "projects",
@@ -746,6 +865,7 @@ export function parseModeRules(
     ),
     quarters: parseQuarters(input["quarters"]),
     winPaths: parseWinPaths(input["winPaths"]),
+    endgame: parseEndgame(input["endgame"]),
     economy: parseEconomy(input["economy"], rankLadderLength),
     board: parseBoard(input["board"]),
     projects: parseProjects(input["projects"]),

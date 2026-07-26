@@ -1667,9 +1667,17 @@ const MODE_RULES_SHAPE = {
     influence: BOOLEAN_FIELD,
     survival: BOOLEAN_FIELD,
   },
+  endgame: {
+    rankTierPoints: { kind: "number", integer: true, maximum: 100_000 },
+    // Not an integer: the shipped weight is 0.1, i.e. a point per ten money.
+    moneyMultiplier: { kind: "number", maximum: 100 },
+    reputationPoints: { kind: "number", integer: true, maximum: 100_000 },
+    clockDecksEndMatch: BOOLEAN_FIELD,
+  },
   economy: {
     upkeepEnabled: BOOLEAN_FIELD,
     upkeepByRankIndex: { kind: "number-array", integer: true, maximum: 100_000 },
+    promotionCostByRankIndex: { kind: "number-array", integer: true, maximum: 1_000_000 },
     loansEnabled: BOOLEAN_FIELD,
     maxLoanPrincipal: { kind: "number", integer: true, maximum: 1_000_000 },
     interestBasisPoints: { kind: "number", integer: true, maximum: 10_000 },
@@ -1708,6 +1716,7 @@ const MODE_RULES_SHAPE = {
     maxPipAdjust: { kind: "number", integer: true, maximum: 6 },
     freeActionsPerTurn: { kind: "number", integer: true, maximum: 5 },
     handEnabled: BOOLEAN_FIELD,
+    handLimit: { kind: "number", integer: true, maximum: 20 },
   },
   interaction: {
     reactionWindows: BOOLEAN_FIELD,
@@ -1918,6 +1927,31 @@ function appendModeRulesIssues(
         `${path}.economy.upkeepByRankIndex.length`,
         options.rankLadderLength,
         economy.upkeepByRankIndex.length,
+      );
+    }
+  }
+  // One price per rung, for the same reason as upkeep: a short ladder makes the
+  // ranks past its end free, which for promotion costs is the whole game.
+  if (isRecord(economy) && Array.isArray(economy.promotionCostByRankIndex)) {
+    if (economy.promotionCostByRankIndex.length !== options.rankLadderLength) {
+      addIssue(
+        issues,
+        "mode.rules-upkeep-length",
+        `${path}.economy.promotionCostByRankIndex.length`,
+        options.rankLadderLength,
+        economy.promotionCostByRankIndex.length,
+      );
+    }
+    // Nobody is promoted *into* the entry rank, so a non-zero first entry is a
+    // ladder that has been shifted by one — which would price every promotion
+    // one rung short.
+    if (economy.promotionCostByRankIndex[0] !== 0) {
+      addIssue(
+        issues,
+        "mode.rules-number",
+        `${path}.economy.promotionCostByRankIndex[0]`,
+        0,
+        economy.promotionCostByRankIndex[0],
       );
     }
   }
@@ -2144,6 +2178,7 @@ function validateModes(
   issues: DeadlineDashValidationIssue[],
   rankLadderLength: number,
   decks: DeadlineDashContentValidationInput["decks"],
+  ranks: DeadlineDashContentValidationInput["ranks"],
 ): void {
   /**
    * Physical size of each authored deck — designs expanded by `copies`. This is
@@ -2308,6 +2343,56 @@ function validateModes(
         expected.endgame,
         mode.endgame,
       );
+    }
+
+    // The two values `ModeRules` mirrors out of `ModeConfig` so that the engine
+    // can read them from the frozen snapshot instead of from the live pack
+    // (spec §5.9). A mirror that can drift is worse than no mirror: the lobby
+    // would advertise one hand limit and the match would enforce another, and a
+    // finished match's score sheet would stop matching the mode it was played
+    // under. So they are checked rather than trusted.
+    if (mode.rules.agency.handLimit !== mode.handLimit) {
+      addIssue(
+        issues,
+        "mode.hand-limit",
+        `modes.${modeId}.rules.agency.handLimit`,
+        mode.handLimit,
+        mode.rules.agency.handLimit,
+      );
+    }
+    const authoredCosts = ranks.map((rank) =>
+      rank.promotionFromPrevious === null
+        ? 0
+        : (rank.promotionFromPrevious.moneyCost[
+            modeId as keyof typeof rank.promotionFromPrevious.moneyCost
+          ] ?? 0),
+    );
+    if (!valuesEqual(mode.rules.economy.promotionCostByRankIndex, authoredCosts)) {
+      addIssue(
+        issues,
+        "mode.rules-number",
+        `modes.${modeId}.rules.economy.promotionCostByRankIndex`,
+        authoredCosts,
+        mode.rules.economy.promotionCostByRankIndex,
+      );
+    }
+
+    if (mode.endgame.type === "additional-rounds") {
+      const authored = mode.endgame.scoring;
+      const mirrored = {
+        rankTierPoints: mode.rules.endgame.rankTierPoints,
+        moneyMultiplier: mode.rules.endgame.moneyMultiplier,
+        reputationPoints: mode.rules.endgame.reputationPoints,
+      };
+      if (!valuesEqual(mirrored, authored)) {
+        addIssue(
+          issues,
+          "mode.endgame",
+          `modes.${modeId}.rules.endgame`,
+          authored,
+          mirrored,
+        );
+      }
     }
 
     appendModeRulesIssues(
@@ -2490,7 +2575,7 @@ export function validateDeadlineDashContent(
 
   const authoredDeckIds = validateDecks(content.decks, issues);
   validateBoard(content.board, issues, authoredDeckIds);
-  validateModes(content.modes, issues, content.ranks.length, content.decks);
+  validateModes(content.modes, issues, content.ranks.length, content.decks, content.ranks);
   validateRanks(content.ranks, issues);
   validateCharacters(content.characters, issues);
   validateGlobalEvents(

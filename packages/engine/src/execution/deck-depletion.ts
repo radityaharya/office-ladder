@@ -7,7 +7,6 @@ import type {
   DeckId,
   DeckKind,
   DeckState,
-  GameId,
   GameState,
   LogicalTimestamp,
   MatchOutcome,
@@ -163,7 +162,6 @@ export type DeckPiles = {
 };
 
 export type BuildDecksInput = {
-  readonly gameId: GameId;
   /** Authored decks, in content order. */
   readonly decks: readonly DeckConfig[];
   /** `ModeConfig.deckQuantities` — how many physical cards each deck holds. */
@@ -272,8 +270,17 @@ export function expandCardCopies(cards: readonly DeckCard[]): readonly DeckCard[
  *   deck named by `clockDeckIds`, which is the entire mechanism behind the
  *   `clock-deck-exhausted` end condition.
  *
- * Card instance ids are derived from `gameId`, the deck id and the card's index,
- * so they are stable across a replay and unique within the game.
+ * Card instance ids are derived from the deck id and the card's index, so they
+ * are stable across a replay and unique within the game — the same scoping
+ * `TileId` already uses. `gameId` is deliberately **not** in them: a card id is
+ * only ever resolved against its own game's `cards` map, every event carrying one
+ * carries `gameId` too, and prefixing it multiplied the largest thing in the
+ * persisted state by a third. That is not a micro-optimisation at this scale.
+ * Each card id appears three times in the snapshot — as the `cards` key, as the
+ * record's own `id`, and in a pile — so a 36-character UUID prefix cost about 110
+ * bytes per card, which is 25 KB on a `mode.campaign` table and lands on the
+ * write path of every single command, since the repository rewrites the whole
+ * room blob each time.
  */
 export function buildDecks(input: BuildDecksInput): DeckPiles {
   const decks: Record<string, DeckState> = {};
@@ -295,10 +302,7 @@ export function buildDecks(input: BuildDecksInput): DeckPiles {
       const definition = pool[index % pool.length];
       if (definition === undefined) continue;
 
-      const cardId = createStableId(
-        "CardInstanceId",
-        `${input.gameId}:card:${deck.id}:${index}`,
-      );
+      const cardId = createStableId("CardInstanceId", `card:${deck.id}:${index}`);
       instanceIds.push(cardId);
       cards[cardId] = {
         id: cardId,
@@ -328,6 +332,87 @@ export function buildDecks(input: BuildDecksInput): DeckPiles {
   }
 
   return { decks, cards };
+}
+
+/**
+ * A content pack, shaped for `materializeDecksOnLoad`. Read structurally so this
+ * module does not depend on the concrete pack.
+ *
+ * Deck *sizes* are content and are read from here. Which decks form the clock is
+ * not: that comes from the ruleset snapshot via {@link resolveClockDeckIds}.
+ */
+export type DeckMaterializationContent = {
+  readonly decks: readonly DeckConfig[];
+  readonly modes: Readonly<
+    Record<
+      string,
+      {
+        readonly id: string;
+        readonly deckQuantities?: Readonly<Record<string, number>>;
+      }
+    >
+  >;
+};
+
+/**
+ * Deals the piles for a match that was persisted **before** decks were
+ * materialised at setup, and returns every other state unchanged.
+ *
+ * The problem this solves: `packages/engine/src/setup/create-game.ts` now builds
+ * `decks`/`cards` at creation, but rows written before it did carry `decks: {}`
+ * (see `apps/server/tests/rooms/fixtures/v1-room-snapshot.ts`, which is frozen
+ * precisely so that stays true). Such a match is playable — draws fall back to
+ * the content pack — but it has no clock, no reshuffle and no
+ * `management.shuffle-deck`, because all three read `state.decks`. Dealing on
+ * first load gives it all three without touching anything it already carries.
+ *
+ * Three properties that make this safe to call on every load:
+ *
+ * - **Idempotent.** A state that already has decks *or* cards is returned by
+ *   identity, so a v2 match is never re-dealt and a half-populated state is
+ *   never clobbered.
+ * - **Stable across loads.** The seed is built only from fields that do not move
+ *   once a game exists — `gameId`, `modeId`, and the `setup` stream, which is
+ *   written at creation and never consumed. Seeding from `revision` or the
+ *   `dice` stream would deal a *different* deck on every read, which for a state
+ *   that is loaded far more often than it is written is worse than no deck.
+ * - **Not client-predictable.** The `setup` stream's `state` is derived from the
+ *   server-only match seed and is sealed out of every projection
+ *   (`secret-info.ts`), so a player cannot reconstruct the deck order. A state
+ *   with no `setup` stream degrades to a `gameId`-only seed, which is weaker;
+ *   that is a property of a state that never had one, not a choice made here.
+ *
+ * It does **not** pretend to reconstruct the original deal — there was none. The
+ * `CardDrawn` entries in a legacy event log name definitions drawn with
+ * replacement from the pack and correspond to no instance in the map this
+ * builds. `rng` is deliberately untouched: the migration contract
+ * (`state-schema-migration.test.ts`) is that a replay finds the streams exactly
+ * where the match left them.
+ */
+export function materializeDecksOnLoad(
+  state: GameState,
+  content: DeckMaterializationContent,
+): GameState {
+  if (Object.keys(state.decks).length > 0 || Object.keys(state.cards).length > 0) {
+    return state;
+  }
+
+  const mode = Object.values(content.modes).find(
+    (candidate) => candidate.id === state.modeId,
+  );
+  const piles = buildDecks({
+    decks: content.decks,
+    quantities: mode?.deckQuantities ?? {},
+    rules: state.rules,
+    clockDeckIds: resolveClockDeckIds(state),
+    random: createSeededRandomSource(
+      ["decks-materialize", state.gameId, state.modeId, ...streamFields(state, "setup")].join(
+        SEED_FIELD_SEPARATOR,
+      ),
+    ),
+  });
+
+  return { ...state, decks: piles.decks, cards: piles.cards };
 }
 
 /** A deck that cannot produce another card: empty, with nothing left to recycle. */
@@ -486,34 +571,38 @@ export function discardCard(input: DiscardCardInput): DeckPiles {
   };
 }
 
-type ClockDeckContent = {
-  readonly modes: Readonly<
-    Record<
-      string,
-      {
-        readonly id: string;
-        readonly clockDeck: { readonly deckIds: readonly string[] };
-      }
-    >
-  >;
-};
+/**
+ * The decks that make up the match clock.
+ *
+ * Mirrors `ModeConfig.clockDeck.deckIds`, which the content schema pins to
+ * exactly this pair for **every** mode — the pack has one clock and it is the
+ * meeting and event decks. Which decks those are is content geometry, like the
+ * board's tile order; *whether the clock ends the match* is a rule, and that is
+ * `ModeRules.endgame.clockDecksEndMatch`.
+ *
+ * Kept as an engine constant rather than resolved from the pack for the reason
+ * `clockDeckRemaining` below already names both ids in its payload: a value that
+ * decides when a match ends must not change under a finished match's feet. A
+ * pack that ever wants a different clock has to move the list into `ModeRules`
+ * so it is snapshotted per match; a test asserts the two agree today.
+ */
+export const CLOCK_DECK_IDS: readonly string[] = ["deck.meeting", "deck.event"];
 
 /**
- * The decks whose exhaustion ends the match, read from the mode the game was
- * created under.
+ * The decks whose exhaustion ends *this* match, read from the ruleset
+ * snapshotted at `game.start`.
  *
- * Config-driven both ways: a mode that names no clock decks has no clock, and
- * therefore no `clock-deck-exhausted` end condition. An unknown mode returns an
- * empty list — failing closed, because inventing a clock for a mode the pack has
- * never heard of would end matches nobody asked to be timed.
+ * Config-driven and fail-closed, exactly as before: a ruleset with
+ * `endgame.clockDecksEndMatch` off has no clock, and therefore no
+ * `clock-deck-exhausted` end condition. What changed is where the answer comes
+ * from — this used to find the mode in the live content pack, so a pack edit (or
+ * a pack that no longer has the mode) silently changed whether a match in
+ * progress, or a replay of a finished one, was on the clock at all.
  */
-export function resolveClockDeckIds(
-  state: GameState,
-  content: ClockDeckContent,
-): readonly string[] {
-  const mode = Object.values(content.modes).find((candidate) => candidate.id === state.modeId);
+export function resolveClockDeckIds(state: GameState): readonly string[] {
+  const endgame = state.rules.endgame as ModeRules["endgame"] | undefined;
 
-  return mode?.clockDeck.deckIds ?? [];
+  return endgame?.clockDecksEndMatch === true ? CLOCK_DECK_IDS : [];
 }
 
 export type ClockDeckRemaining = {

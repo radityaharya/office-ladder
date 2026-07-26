@@ -516,7 +516,7 @@ export function rollTurn(
   // Resolved up front (it is pure) so a promotion that ends the match can
   // suppress a prompt nobody would ever be able to answer.
   const promotionCandidate: PromotionResolution = promotionAllowed
-    ? resolvePromotion(landedPlayer, context.content, state.modeId)
+    ? resolvePromotion(landedPlayer, context.content, state.modeId, state.rules)
     : { promoted: false };
   // An offer that opened as affordable has to stay payable until it is
   // answered, so the automatic promotion never spends money the player has just
@@ -1001,8 +1001,12 @@ export function rollTurn(
   // every role face up — but only when `hidden.roleWinConditions` says roles are
   // playing for something. It returns the outcome untouched otherwise.
   // =======================================================================
-  const scoringConfig = resolveScoringConfig(context.content, state.modeId);
-  const clockDeckIds = resolveClockDeckIds(working, context.content);
+  // Both come from `state.rules` — the snapshot frozen at `game.start` — never
+  // from `context.content`: a score weight or a clock read live from the pack
+  // means a preset edit changes who won a match that has already finished
+  // (spec §5.9).
+  const scoringConfig = resolveScoringConfig(state.rules);
+  const clockDeckIds = resolveClockDeckIds(working);
   const clockExhausted = isClockDeckExhausted(working.decks, clockDeckIds);
 
   let outcome: MatchOutcome | null =
@@ -1010,7 +1014,7 @@ export function rollTurn(
       ? null
       : { ...raceOutcome, scores: scoreMatch(working, scoringConfig) };
   if (outcome === null) {
-    outcome = evaluateMatchEnd(working, context.content, {
+    outcome = evaluateMatchEnd(working, {
       round: nextRound,
       endedAt: context.logicalTimestamp,
       config: scoringConfig,

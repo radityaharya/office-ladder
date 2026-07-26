@@ -1,4 +1,25 @@
 import type { ModeConfig, ModeId } from "../schema";
+import { deadlineDashRanks } from "./ranks";
+
+/**
+ * The promotion-cost ladder for one mode, read out of the rank table.
+ *
+ * Derived rather than restated so the two cannot disagree: `ranks.ts` stays the
+ * place promotion costs are authored, and this is the per-mode column of it that
+ * gets snapshotted into `GameState.rules` at `game.start` (spec §5.9) so the
+ * engine never has to re-price a promotion against the live pack. Entry `i` is
+ * the cost of being promoted *into* rank index `i`, so entry 0 is 0: nobody is
+ * promoted into `rank.intern`.
+ *
+ * Content validation checks the result against the same table, so a repriced
+ * ladder that forgets to flow through here goes red rather than silently
+ * splitting into two prices.
+ */
+function promotionCostLadder(modeId: ModeId): readonly number[] {
+  return deadlineDashRanks.map((rank) =>
+    rank.promotionFromPrevious === null ? 0 : rank.promotionFromPrevious.moneyCost[modeId],
+  );
+}
 
 /**
  * The scoring block shared by every score-resolved mode. Identical to the
@@ -15,6 +36,25 @@ const SCORE_RESOLVED_ENDGAME = {
     moneyMultiplier: 0.1,
     reputationPoints: 50,
   },
+} as const;
+
+/**
+ * The same three weights as `SCORE_RESOLVED_ENDGAME.scoring`, plus the
+ * clock-deck switch, in the shape `ModeRules.endgame` wants.
+ *
+ * Derived from the authored block rather than restated, so the two provably
+ * cannot drift: `ModeConfig.endgame.scoring` stays the authored source, and this
+ * is the copy that gets snapshotted into `GameState.rules` at `game.start` and
+ * read by the engine from then on (spec §5.9). `mode.quick` has no authored
+ * scoring block at all — a race ends the moment somebody reaches Director — but
+ * its final table is still scored, so it carries the same scale rather than a
+ * second one.
+ */
+const ENDGAME_RULES = {
+  rankTierPoints: SCORE_RESOLVED_ENDGAME.scoring.rankTierPoints,
+  moneyMultiplier: SCORE_RESOLVED_ENDGAME.scoring.moneyMultiplier,
+  reputationPoints: SCORE_RESOLVED_ENDGAME.scoring.reputationPoints,
+  clockDecksEndMatch: true,
 } as const;
 
 const UNPLAYTESTED_RULES_NOTE =
@@ -86,9 +126,11 @@ export const deadlineDashModes = {
         influence: false,
         survival: false,
       },
+      endgame: ENDGAME_RULES,
       economy: {
         upkeepEnabled: false,
         upkeepByRankIndex: DISABLED_UPKEEP_LADDER,
+        promotionCostByRankIndex: promotionCostLadder("mode.quick"),
         loansEnabled: false,
         maxLoanPrincipal: 0,
         interestBasisPoints: 0,
@@ -127,6 +169,7 @@ export const deadlineDashModes = {
         maxPipAdjust: 2,
         freeActionsPerTurn: 1,
         handEnabled: true,
+        handLimit: 1,
       },
       interaction: {
         reactionWindows: true,
@@ -198,9 +241,11 @@ export const deadlineDashModes = {
         influence: true,
         survival: false,
       },
+      endgame: ENDGAME_RULES,
       economy: {
         upkeepEnabled: true,
         upkeepByRankIndex: [0, 50, 75, 100, 150, 200, 250, 300, 400],
+        promotionCostByRankIndex: promotionCostLadder("mode.standard"),
         loansEnabled: true,
         maxLoanPrincipal: 3000,
         interestBasisPoints: 1000,
@@ -239,6 +284,7 @@ export const deadlineDashModes = {
         maxPipAdjust: 2,
         freeActionsPerTurn: 1,
         handEnabled: true,
+        handLimit: 2,
       },
       interaction: {
         reactionWindows: true,
@@ -324,9 +370,11 @@ export const deadlineDashModes = {
         influence: true,
         survival: true,
       },
+      endgame: ENDGAME_RULES,
       economy: {
         upkeepEnabled: true,
         upkeepByRankIndex: [0, 75, 100, 150, 200, 275, 350, 450, 600],
+        promotionCostByRankIndex: promotionCostLadder("mode.marathon"),
         loansEnabled: true,
         maxLoanPrincipal: 5000,
         interestBasisPoints: 1000,
@@ -365,6 +413,7 @@ export const deadlineDashModes = {
         maxPipAdjust: 3,
         freeActionsPerTurn: 1,
         handEnabled: true,
+        handLimit: 3,
       },
       interaction: {
         reactionWindows: true,
@@ -439,9 +488,11 @@ export const deadlineDashModes = {
         influence: true,
         survival: false,
       },
+      endgame: ENDGAME_RULES,
       economy: {
         upkeepEnabled: true,
         upkeepByRankIndex: [0, 100, 150, 200, 275, 350, 450, 575, 750],
+        promotionCostByRankIndex: promotionCostLadder("mode.campaign"),
         loansEnabled: true,
         maxLoanPrincipal: 8000,
         interestBasisPoints: 1200,
@@ -480,6 +531,7 @@ export const deadlineDashModes = {
         maxPipAdjust: 3,
         freeActionsPerTurn: 2,
         handEnabled: true,
+        handLimit: 4,
       },
       interaction: {
         reactionWindows: true,

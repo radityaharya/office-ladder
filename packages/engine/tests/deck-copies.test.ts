@@ -4,7 +4,6 @@ import { deadlineDashContent, deadlineDashModes } from "@office-ladder/content";
 import type { DeckCard, DeckConfig, ModeRules } from "@office-ladder/content";
 
 import { createSeededRandomSource } from "../src";
-import type { GameId } from "../src";
 import { buildDecks, expandCardCopies } from "../src/execution/deck-depletion";
 
 const brand = <Id extends string>(value: string) => value as Id;
@@ -13,7 +12,6 @@ const quick = deadlineDashModes["mode.quick"];
 const marathon = deadlineDashModes["mode.marathon"];
 const campaign = deadlineDashModes["mode.campaign"];
 
-const gameId = brand<GameId>("game-deck-copies");
 
 function card(id: string, copies?: number): DeckCard {
   return {
@@ -35,7 +33,6 @@ function build(
   seed = "copies-seed",
 ) {
   return buildDecks({
-    gameId,
     decks,
     quantities,
     rules,

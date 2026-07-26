@@ -4,7 +4,7 @@ import { deadlineDashContent, deadlineDashModes } from "@office-ladder/content";
 import type { DeckCard, DeckConfig, ModeRules } from "@office-ladder/content";
 
 import { createSeededRandomSource, deserializeGameState, serializeGameState } from "../src";
-import type { CardInstanceId, GameId, GameState, PlayerState } from "../src";
+import type { CardInstanceId, GameState, PlayerState } from "../src";
 import {
   buildDecks,
   cardTiming,
@@ -26,7 +26,6 @@ const brand = <Id extends string>(value: string) => value as Id;
 const quick = deadlineDashModes["mode.quick"];
 const marathon = deadlineDashModes["mode.marathon"];
 
-const gameId = brand<GameId>("game-deck-depletion");
 
 /** A card carrying a `timing` the content schema does not declare yet (spec §10.2). */
 function timedCard(id: string, timing: string): DeckCard {
@@ -58,7 +57,6 @@ function build(
   seed = "seed-a",
 ) {
   return buildDecks({
-    gameId,
     decks,
     quantities,
     rules,
@@ -380,16 +378,27 @@ describe("clock deck exhaustion", () => {
     expect(isClockDeckExhausted(state.decks, [])).toBe(false);
   });
 
-  it("Given each shipped mode, When its clock decks are resolved, Then they come from the mode config and an unknown mode has none", () => {
+  it("Given each shipped mode's snapshotted ruleset, When its clock decks are resolved, Then they are exactly the pair that mode authors, and a ruleset with the clock switched off has none", () => {
     const base = handState();
     for (const mode of Object.values(deadlineDashModes)) {
-      const state: GameState = { ...base, modeId: brand(mode.id) };
-      expect(resolveClockDeckIds(state, deadlineDashContent)).toEqual(mode.clockDeck.deckIds);
+      // Resolved from `state.rules`, so the mode id is set only to prove it is
+      // not what the answer comes from. The assertion is still against the
+      // *pack's* authored list, which is what stops `CLOCK_DECK_IDS` drifting
+      // away from the decks the content release actually ships.
+      const state: GameState = { ...base, modeId: brand(mode.id), rules: mode.rules };
+      expect(resolveClockDeckIds(state)).toEqual(mode.clockDeck.deckIds);
     }
 
-    expect(
-      resolveClockDeckIds({ ...base, modeId: brand("mode.unknown") }, deadlineDashContent),
-    ).toEqual([]);
+    const noClock = withRules(base, { endgame: { clockDecksEndMatch: false } });
+    expect(resolveClockDeckIds(noClock)).toEqual([]);
+
+    // A pre-v2 snapshot, whose ruleset predates the `endgame` block: fail closed
+    // rather than put a match nobody asked to be timed on the clock.
+    const legacy: GameState = {
+      ...base,
+      rules: { ...base.rules, endgame: undefined } as unknown as ModeRules,
+    };
+    expect(resolveClockDeckIds(legacy)).toEqual([]);
   });
 
   it("Given role win conditions, When the clock runs out, Then Management wins", () => {

@@ -37,9 +37,16 @@ const rules: ModeRules = {
   winShape: "fixed-length",
   quarters: { enabled: true, count: 4, roundsEach: 4, globalEvents: true },
   winPaths: { promotion: true, wealth: true, influence: true, survival: false },
+  endgame: {
+    rankTierPoints: 1_000,
+    moneyMultiplier: 0.1,
+    reputationPoints: 50,
+    clockDecksEndMatch: true,
+  },
   economy: {
     upkeepEnabled: true,
     upkeepByRankIndex: [0, 50, 100, 150, 200, 300, 400, 500, 650],
+    promotionCostByRankIndex: [0, 500, 750, 1_000, 1_500, 2_250, 3_500, 5_500, 8_000],
     loansEnabled: true,
     maxLoanPrincipal: 2_000,
     interestBasisPoints: 1_000,
@@ -78,6 +85,7 @@ const rules: ModeRules = {
     maxPipAdjust: 2,
     freeActionsPerTurn: 1,
     handEnabled: true,
+    handLimit: 2,
   },
   interaction: {
     reactionWindows: true,

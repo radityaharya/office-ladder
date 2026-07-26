@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isJsonCompatible, stableStringify } from "../src";
 import type {
   GameState,
+  ModeRules,
   ObjectiveId,
   ObjectiveState,
   ProjectState,
@@ -31,7 +32,7 @@ import { logicalTimestamp, withRules } from "./turn-loop-fixtures";
 
 const branded = <Id extends string>(value: string) => value as Id;
 
-const standardConfig = resolveScoringConfig(content, "mode.standard");
+const standardConfig = resolveScoringConfig(standardRules);
 
 function objective(overrides: Partial<ObjectiveState> = {}): ObjectiveState {
   return {
@@ -76,17 +77,28 @@ function endOfMatch(state: GameState): GameState {
 }
 
 describe("scoring — configuration", () => {
-  it("Given a score-resolved mode, When its config is resolved, Then the authored endgame block is used verbatim", () => {
-    const marathon = resolveScoringConfig(content, "mode.marathon");
+  it("Given a score-resolved mode, When its config is resolved, Then the snapshotted endgame block is used verbatim, and it agrees with what the pack authored", () => {
+    const marathon = resolveScoringConfig(marathonRules);
 
     expect(marathon.rankTierPoints).toBe(1000);
     expect(marathon.moneyMultiplier).toBe(0.1);
     expect(marathon.reputationPoints).toBe(50);
+
+    // The mirror `ModeRules.endgame` makes of `ModeConfig.endgame.scoring`. The
+    // engine reads only the former; this is what keeps the two the same numbers.
+    const authored = content.modes["mode.marathon"].endgame;
+    expect(authored.type).toBe("additional-rounds");
+    if (authored.type === "additional-rounds") {
+      expect(marathon.rankTierPoints).toBe(authored.scoring.rankTierPoints);
+      expect(marathon.moneyMultiplier).toBe(authored.scoring.moneyMultiplier);
+      expect(marathon.reputationPoints).toBe(authored.scoring.reputationPoints);
+    }
   });
 
-  it("Given a race mode with no scoring block, When its config is resolved, Then the documented fallback is used so a race still scores", () => {
-    const quick = resolveScoringConfig(content, "mode.quick");
+  it("Given a race mode with no authored scoring block, When its config is resolved, Then its ruleset still carries the shared scale so a race still scores", () => {
+    const quick = resolveScoringConfig(quickRules);
 
+    expect(content.modes["mode.quick"].endgame.type).toBe("immediate");
     expect(quick.rankTierPoints).toBe(FALLBACK_SCORING_WEIGHTS.rankTierPoints);
     expect(quick.moneyMultiplier).toBe(FALLBACK_SCORING_WEIGHTS.moneyMultiplier);
     expect(quick.reputationPoints).toBe(FALLBACK_SCORING_WEIGHTS.reputationPoints);
@@ -100,7 +112,7 @@ describe("scoring — configuration", () => {
   });
 
   it("Given an override, When the config is resolved, Then the caller wins", () => {
-    const config = resolveScoringConfig(content, "mode.standard", {
+    const config = resolveScoringConfig(standardRules, {
       projectCompletionPoints: 42,
     });
 
@@ -108,8 +120,25 @@ describe("scoring — configuration", () => {
     expect(config.rankTierPoints).toBe(1000);
   });
 
-  it("Given an unknown mode id, When the config is resolved, Then the fallback keeps scoring possible", () => {
-    expect(resolveScoringConfig(content, "mode.does-not-exist").rankTierPoints).toBe(1000);
+  it("Given a legacy ruleset with no endgame block, When the config is resolved, Then the fallback keeps scoring possible", () => {
+    // A pre-v2 snapshot (spec §5.10): every weight is missing, and a match that
+    // has already been played still has to produce a score sheet.
+    const legacy = { ...standardRules, endgame: undefined } as unknown as ModeRules;
+
+    expect(resolveScoringConfig(legacy)).toMatchObject({
+      rankTierPoints: FALLBACK_SCORING_WEIGHTS.rankTierPoints,
+      moneyMultiplier: FALLBACK_SCORING_WEIGHTS.moneyMultiplier,
+      reputationPoints: FALLBACK_SCORING_WEIGHTS.reputationPoints,
+    });
+  });
+
+  it("Given a mode id that names no mode at all, When the config is resolved, Then it makes no difference, because the weights come from the snapshot", () => {
+    const state = tableState(marathonRules);
+    const unknownMode: GameState = { ...state, modeId: branded("mode.does-not-exist") };
+
+    expect(resolveScoringConfig(unknownMode.rules)).toEqual(
+      resolveScoringConfig(marathonRules),
+    );
   });
 });
 
@@ -138,7 +167,7 @@ describe("scoring — one player's sheet", () => {
       [fixtureIds.owner]: { rankIndex: 2, wallet: { money: 9000, reputation: 12 } },
     });
 
-    const score = scorePlayer(state, fixtureIds.owner, resolveScoringConfig(content, "mode.quick"));
+    const score = scorePlayer(state, fixtureIds.owner, resolveScoringConfig(quickRules));
 
     expect(quickRules.winPaths).toMatchObject({ wealth: false, influence: false });
     expect(score.moneyPoints).toBe(0);
@@ -326,7 +355,7 @@ describe("scoring — end of match", () => {
     const state = tableState(standardRules);
 
     expect(
-      evaluateMatchEnd(state, content, { round: 3, endedAt: logicalTimestamp }),
+      evaluateMatchEnd(state, { round: 3, endedAt: logicalTimestamp }),
     ).toBeNull();
   });
 
@@ -338,7 +367,7 @@ describe("scoring — end of match", () => {
       }),
     );
 
-    const outcome = evaluateMatchEnd(state, content, { round: 17, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 17, endedAt: logicalTimestamp });
 
     expect(outcome).not.toBeNull();
     expect(outcome?.reason).toBe("quarters-elapsed");
@@ -357,7 +386,7 @@ describe("scoring — end of match", () => {
       }),
     );
 
-    const outcome = evaluateMatchEnd(state, content, { round: 17, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 17, endedAt: logicalTimestamp });
 
     expect(outcome?.winnerPlayerIds).toEqual([fixtureIds.owner, fixtureIds.hiddenOpponent]);
   });
@@ -366,7 +395,7 @@ describe("scoring — end of match", () => {
     const state = tableState(quickRules);
 
     expect(
-      evaluateMatchEnd(state, content, { round: 400, endedAt: logicalTimestamp }),
+      evaluateMatchEnd(state, { round: 400, endedAt: logicalTimestamp }),
     ).toBeNull();
   });
 
@@ -383,7 +412,7 @@ describe("scoring — end of match", () => {
       ],
     };
 
-    const outcome = evaluateMatchEnd(state, content, { round: 5, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 5, endedAt: logicalTimestamp });
 
     expect(outcome?.reason).toBe("objectives-complete");
     expect(outcome?.winnerPlayerIds).toEqual([fixtureIds.owner]);
@@ -399,7 +428,7 @@ describe("scoring — end of match", () => {
 
     expect(standardRules.winShape).toBe("fixed-length");
     expect(
-      evaluateMatchEnd(state, content, { round: 5, endedAt: logicalTimestamp }),
+      evaluateMatchEnd(state, { round: 5, endedAt: logicalTimestamp }),
     ).toBeNull();
   });
 
@@ -409,7 +438,7 @@ describe("scoring — end of match", () => {
       eliminatedPlayerIds: [fixtureIds.hiddenOpponent, fixtureIds.revealedOpponent],
     };
 
-    const outcome = evaluateMatchEnd(state, content, { round: 6, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 6, endedAt: logicalTimestamp });
 
     expect(marathonRules.conflict.elimination).toBe(true);
     expect(outcome?.reason).toBe("last-standing");
@@ -427,7 +456,7 @@ describe("scoring — end of match", () => {
       eliminatedPlayerIds: [fixtureIds.hiddenOpponent, fixtureIds.revealedOpponent],
     };
 
-    const outcome = evaluateMatchEnd(state, content, { round: 6, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 6, endedAt: logicalTimestamp });
 
     expect(outcome?.reason).toBe("last-standing");
     expect(outcome?.winPath).toBeNull();
@@ -441,18 +470,18 @@ describe("scoring — end of match", () => {
 
     expect(standardRules.conflict.elimination).toBe(false);
     expect(
-      evaluateMatchEnd(state, content, { round: 3, endedAt: logicalTimestamp }),
+      evaluateMatchEnd(state, { round: 3, endedAt: logicalTimestamp }),
     ).toBeNull();
   });
 
   it("Given a match that already has an outcome, When the end is evaluated again, Then it is not re-ended", () => {
     const base = endOfMatch(tableState(standardRules));
-    const first = evaluateMatchEnd(base, content, { round: 17, endedAt: logicalTimestamp });
+    const first = evaluateMatchEnd(base, { round: 17, endedAt: logicalTimestamp });
     if (first === null) throw new Error("expected the match to end");
     const ended: GameState = { ...base, status: "ended", outcome: first };
 
     expect(
-      evaluateMatchEnd(ended, content, { round: 18, endedAt: logicalTimestamp }),
+      evaluateMatchEnd(ended, { round: 18, endedAt: logicalTimestamp }),
     ).toBeNull();
   });
 
@@ -463,7 +492,7 @@ describe("scoring — end of match", () => {
       }),
     );
 
-    const outcome = evaluateMatchEnd(state, content, { round: 17, endedAt: logicalTimestamp });
+    const outcome = evaluateMatchEnd(state, { round: 17, endedAt: logicalTimestamp });
     if (outcome === null) throw new Error("expected the match to end");
 
     expect(isJsonCompatible(outcome)).toBe(true);
@@ -490,13 +519,13 @@ describe("scoring — end of match", () => {
 
     expect(
       stableStringify(
-        evaluateMatchEnd(jsonRoundTrip(state), content, {
+        evaluateMatchEnd(jsonRoundTrip(state), {
           round: 17,
           endedAt: logicalTimestamp,
         }),
       ),
     ).toBe(
-      stableStringify(evaluateMatchEnd(state, content, { round: 17, endedAt: logicalTimestamp })),
+      stableStringify(evaluateMatchEnd(state, { round: 17, endedAt: logicalTimestamp })),
     );
   });
 

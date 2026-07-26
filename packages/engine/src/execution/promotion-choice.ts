@@ -131,7 +131,7 @@ export function canAttemptPromotion(
   const player = state.players[playerId];
   if (player === undefined) return null;
 
-  const resolved = resolvePromotion(player, content, state.modeId);
+  const resolved = resolvePromotion(player, content, state.modeId, state.rules);
   if (!resolved.promoted) return null;
 
   const toRankIndex = player.rank.index + 1;

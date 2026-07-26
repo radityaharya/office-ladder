@@ -13,6 +13,7 @@ import {
   writeResource,
 } from "./agency";
 import { rejectCommand } from "./errors";
+import { promotionCostForRankIndex } from "./roll-promotion";
 import type { TransitionContent, TransitionContext, TransitionResult } from "./types";
 
 /**
@@ -88,13 +89,20 @@ function rankSalary(player: PlayerState, content: TransitionContent): number {
  * is actually working towards.
  *
  * This is why `network` gets more expensive as you climb: the ladder's own
- * `moneyCost` per `reputationRequired` is the market rate, it is authored per
- * mode, and it means a networking economy never needs its own price table. At
- * the top of the ladder there is no next rung, so the last promotable rung's
- * rate stands in.
+ * money cost per `reputationRequired` is the market rate, it is priced per mode,
+ * and it means a networking economy never needs its own price table. At the top
+ * of the ladder there is no next rung, so the last promotable rung's rate stands
+ * in.
+ *
+ * The money half of that rate comes from `rules.economy.promotionCostByRankIndex`
+ * — the snapshot — rather than from the pack's per-mode column, so a repriced
+ * ladder cannot change what a networking action cost in a match that has already
+ * been played. `reputationRequired` is not priced per mode and is read from the
+ * pack like every other rank attribute.
  */
 function reputationPrice(
   player: PlayerState,
+  state: GameState,
   content: TransitionContent,
   modeId: string,
 ): number {
@@ -110,9 +118,12 @@ function reputationPrice(
   if (rung === undefined || rung.promotionFromPrevious === null) return 0;
 
   const requirement = rung.promotionFromPrevious;
-  const cost =
-    requirement.moneyCost[modeId as keyof typeof requirement.moneyCost] ??
-    requirement.moneyCost["mode.quick"];
+  const cost = promotionCostForRankIndex(
+    state.rules,
+    rung.tier - 1,
+    requirement.moneyCost,
+    modeId,
+  );
   const required = Math.max(1, requirement.reputationRequired);
 
   return Math.max(1, Math.ceil(cost / required));
@@ -136,7 +147,7 @@ export function resolveFreeActionPrices(
       1,
       Math.floor(rankSalary(player, content) / FREE_ACTION_TUNING.workSalaryDivisor),
     ),
-    reputationPrice: reputationPrice(player, content, state.modeId),
+    reputationPrice: reputationPrice(player, state, content, state.modeId),
     reputationStep: FREE_ACTION_TUNING.reputationStep,
   };
 }

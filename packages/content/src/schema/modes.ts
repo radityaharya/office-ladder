@@ -37,10 +37,47 @@ export type ModeRules = {
     readonly survival: boolean;
   };
 
+  /**
+   * How the match ends and what the final score sheet is worth.
+   *
+   * These are here rather than on `ModeConfig.endgame` because the engine reads
+   * them **during a match**, from `GameState.rules`, and spec §5.9 requires the
+   * resolved ruleset to be snapshotted at `game.start` and frozen: a scoring
+   * weight read live from the content pack means editing a preset today silently
+   * rescores a match that finished last week. `ModeConfig.endgame.scoring` stays
+   * as the authored source these values are copied from (content validation
+   * enforces that they agree), but no transition reads it.
+   *
+   * `clockDecksEndMatch` is the enablement switch for the clock-deck ending.
+   * *Which* decks are the clock stays content — see `ModeConfig.clockDeck` — and
+   * a mode that switches this off has no clock at all.
+   */
+  readonly endgame: {
+    readonly rankTierPoints: number;
+    readonly moneyMultiplier: number;
+    readonly reputationPoints: number;
+    readonly clockDecksEndMatch: boolean;
+  };
+
   readonly economy: {
     readonly upkeepEnabled: boolean;
     /** Charge per round, indexed by rank index. Length must equal the rank ladder. */
     readonly upkeepByRankIndex: readonly number[];
+    /**
+     * What it costs to be promoted **into** each rank, indexed by rank index.
+     * Length must equal the rank ladder, and index 0 is 0 — nobody is promoted
+     * into the entry rank.
+     *
+     * Mirrors the `promotionFromPrevious.moneyCost[modeId]` column of
+     * `packages/content/src/deadline-dash/ranks.ts`, which is where the numbers
+     * are authored and which content validation checks this against. It is
+     * mirrored for the same reason as `endgame`: `resolvePromotion` runs *during*
+     * a match and used to index that column live by `GameState.modeId`, so
+     * repricing the ladder changed who reached Director in a match that had
+     * already been played — and a lobby-authored ruleset (spec §8.4) has no
+     * column in the pack to be priced by at all.
+     */
+    readonly promotionCostByRankIndex: readonly number[];
     readonly loansEnabled: boolean;
     readonly maxLoanPrincipal: number;
     readonly interestBasisPoints: number;
@@ -83,6 +120,16 @@ export type ModeRules = {
     readonly maxPipAdjust: number;
     readonly freeActionsPerTurn: number;
     readonly handEnabled: boolean;
+    /**
+     * The hand limit, mirroring `ModeConfig.handLimit`, which is what it is
+     * copied from and validated against.
+     *
+     * It is duplicated here for the same reason `endgame` is: `hand.ts` reads it
+     * on every draw, and a tunable a transition reads has to come from the
+     * frozen snapshot rather than from the live pack. 0 means no cards may be
+     * held, which is what an unknown mode used to resolve to.
+     */
+    readonly handLimit: number;
   };
 
   readonly interaction: {

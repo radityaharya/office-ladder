@@ -465,15 +465,30 @@ describe("hand management", () => {
     expect(findHeldCard(state, fixtureIds.owner, cardIds.ownerOvertime)).toBeNull();
   });
 
-  it("Given each shipped mode, When the hand limit is resolved, Then it matches the mode config and an unknown mode fails closed", () => {
+  it("Given each shipped mode's snapshotted ruleset, When the hand limit is resolved, Then it matches that mode's authored limit and a ruleset that declares none fails closed", () => {
     const state = handState();
     for (const mode of Object.values(deadlineDashModes)) {
-      const modeState: GameState = { ...state, modeId: brand(mode.id) };
-      expect(resolveHandLimit(modeState, deadlineDashContent)).toBe(mode.handLimit);
+      // The limit is read from `state.rules`, not from the pack, so the mode id
+      // is set as well only to prove it is *not* what decides the answer.
+      const modeState: GameState = {
+        ...state,
+        modeId: brand(mode.id),
+        rules: mode.rules,
+      };
+      expect(resolveHandLimit(modeState)).toBe(mode.handLimit);
     }
 
-    const unknown: GameState = { ...state, modeId: brand("mode.not-in-the-pack") };
-    expect(resolveHandLimit(unknown, deadlineDashContent)).toBe(0);
+    // A pre-v2 snapshot, whose `agency` block predates `handLimit`.
+    const legacy = withRules(state, { agency: { handLimit: undefined } });
+    expect(resolveHandLimit(legacy)).toBe(0);
+
+    // And the mode id genuinely does not enter into it: a ruleset that says 3
+    // resolves to 3 even under a mode the pack has never heard of.
+    const unknownMode: GameState = {
+      ...withRules(state, { agency: { handLimit: 3 } }),
+      modeId: brand("mode.not-in-the-pack"),
+    };
+    expect(resolveHandLimit(unknownMode)).toBe(3);
   });
 
   it("Given a drawn card's timing, When its disposition is resolved, Then a disabled timing is discarded rather than resolved", () => {

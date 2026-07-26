@@ -25,28 +25,24 @@ import { type CardTiming, discardCard } from "./deck-depletion";
  */
 export const HAND_DISCARD_PROMPT_KIND = "hand-discard";
 
-type HandLimitContent = {
-  readonly modes: Readonly<
-    Record<string, { readonly id: string; readonly handLimit: number }>
-  >;
-};
-
 /**
- * The mode's hand limit.
+ * The ruleset's hand limit.
  *
- * Read from the mode the game was created under. An unknown mode resolves to 0 —
- * fail closed, because a mode the content pack has never heard of should not be
- * granted an unbounded hand.
+ * Read from `GameState.rules` — the ruleset snapshotted at `game.start` and
+ * frozen for the match (spec §5.9). It used to be looked up live from
+ * `ModeConfig.handLimit` in the content pack, which meant editing a preset
+ * changed how many cards a player could hold *in a match already running*, and
+ * changed what a replay of a finished match decided. `ModeRules.agency.handLimit`
+ * mirrors the same authored number (content validation proves the two agree), so
+ * the limit is identical and where it comes from is not.
  *
- * `handLimit` lives on `ModeConfig`, not on `ModeRules`, so unlike every other
- * tunable this mechanic reads it is *not* snapshotted into `GameState.rules` and
- * an edit to the content pack does change an in-flight match. Moving it into
- * `ModeRules` is the fix; until then every function here takes the resolved limit
- * as a plain number so the impurity stays at exactly one call site.
+ * A limit that is not a usable positive integer resolves to 0 — fail closed,
+ * because a ruleset that does not say what the limit is should not be granted an
+ * unbounded hand. That is also what a pre-v2 snapshot with no `handLimit` field
+ * gets.
  */
-export function resolveHandLimit(state: GameState, content: HandLimitContent): number {
-  const mode = Object.values(content.modes).find((candidate) => candidate.id === state.modeId);
-  const limit = mode?.handLimit;
+export function resolveHandLimit(state: GameState): number {
+  const limit = (state.rules.agency as { readonly handLimit?: number }).handLimit;
 
   return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : 0;
 }

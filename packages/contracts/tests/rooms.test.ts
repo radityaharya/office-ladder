@@ -397,7 +397,10 @@ describe("create-room with a custom ruleset", () => {
     // The server passes the content pack's real ladder length, which is the value
     // that actually binds; the mirrored constant in mode-rules.ts is only the
     // fallback. A three-rank pack must not be validated against a nine-rank table.
-    const rules = withBlock("economy", { upkeepByRankIndex: [0, 100, 250] });
+    const rules = withBlock("economy", {
+      upkeepByRankIndex: [0, 100, 250],
+      promotionCostByRankIndex: [0, 500, 900],
+    });
 
     expect(() => parseCreateRoomRequest({ ...base, rules })).toThrow(
       ContractValidationError,

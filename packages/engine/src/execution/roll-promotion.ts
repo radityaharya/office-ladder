@@ -1,4 +1,4 @@
-import type { PlayerState, ResourceState } from "../model";
+import type { ModeRules, PlayerState, ResourceState } from "../model";
 import type { TransitionContent } from "./types";
 
 export type PromotionResolution =
@@ -21,10 +21,39 @@ function findResource(
   return Object.entries(player.resources).find(([, resource]) => resource.kind === kind);
 }
 
+/**
+ * What the next rung costs, from the **snapshotted** ruleset.
+ *
+ * `rules.economy.promotionCostByRankIndex` mirrors the
+ * `promotionFromPrevious.moneyCost[modeId]` column of the authored rank ladder
+ * (content validation proves the two agree), indexed by the rank being promoted
+ * *into*. Reading it here instead of indexing the live pack by `GameState.modeId`
+ * is what makes a promotion — and therefore the race win — replay to the same
+ * answer after the ladder is repriced, and it is the only source that means
+ * anything at all for a lobby-authored ruleset, which has no column in the pack.
+ *
+ * A ruleset with no ladder (a pre-v2 snapshot, spec §5.10) falls back to the
+ * authored column so an old match stays playable at the price it was played at.
+ */
+export function promotionCostForRankIndex(
+  rules: ModeRules,
+  rankIndex: number,
+  authored: Readonly<Record<string, number>>,
+  modeId: string,
+): number {
+  const ladder = (rules.economy as { readonly promotionCostByRankIndex?: readonly number[] })
+    .promotionCostByRankIndex;
+  const snapshotted = ladder?.[rankIndex];
+  if (typeof snapshotted === "number" && Number.isFinite(snapshotted)) return snapshotted;
+
+  return authored[modeId] ?? authored["mode.quick"] ?? 0;
+}
+
 export function resolvePromotion(
   player: PlayerState,
   content: TransitionContent,
   modeId: string,
+  rules: ModeRules,
 ): PromotionResolution {
   const currentRankId = player.rank.kind;
   if (currentRankId === null) return { promoted: false };
@@ -42,9 +71,14 @@ export function resolvePromotion(
   if (money === undefined || reputation === undefined) return { promoted: false };
 
   const requirement = nextRank.promotionFromPrevious;
-  const cost =
-    requirement.moneyCost[modeId as keyof typeof requirement.moneyCost] ??
-    requirement.moneyCost["mode.quick"];
+  // Rank index is tier - 1: the ladder is authored 1-based and every rank-indexed
+  // table in `ModeRules` is 0-based, the same convention `upkeepByRankIndex` uses.
+  const cost = promotionCostForRankIndex(
+    rules,
+    nextRank.tier - 1,
+    requirement.moneyCost,
+    modeId,
+  );
 
   const character = Object.values(content.characters).find(
     (candidate) => candidate.id === player.characterId,

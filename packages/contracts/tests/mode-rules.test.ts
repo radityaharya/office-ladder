@@ -163,7 +163,10 @@ describe("custom mode rules — the exploit cases", () => {
 
   it("Given a content pack with a different ladder length, When validating against it, Then the table must match that ladder instead", () => {
     const rules = withBlock("economy", {
+      // Both rank-indexed tables are validated against the same ladder, so a
+      // three-rank pack needs three entries in each.
       upkeepByRankIndex: [0, 10, 20],
+      promotionCostByRankIndex: [0, 100, 250],
     });
 
     expect(() => parseModeRules(rules)).toThrow(ContractValidationError);
@@ -337,7 +340,10 @@ describe("the set-mode-rules request", () => {
 
   it("Given a rank ladder override, When parsing the request, Then it reaches the ruleset validator", () => {
     const body = {
-      rules: withBlock("economy", { upkeepByRankIndex: [0, 5] }),
+      rules: withBlock("economy", {
+        upkeepByRankIndex: [0, 5],
+        promotionCostByRankIndex: [0, 250],
+      }),
     };
 
     expect(() => parseSetModeRulesRequest(body)).toThrow(ContractValidationError);
