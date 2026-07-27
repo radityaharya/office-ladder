@@ -501,6 +501,22 @@ export function eventDwellMs(event: SafeEventSummary): number {
     // A card has to be read, not glimpsed — two reveal budgets.
     case "CardDrawn":
       return GAMEPLAY_MOTION_MS.reveal * 2;
+    /*
+     * Bookkeeping the activity log folds into the line above it whenever it
+     * carries no amount (`buildActivityLog` in turn-rail.tsx). A full 190ms
+     * beat on an event that draws no row is playback holding on nothing — the
+     * reader sees the log stall, not a tick. The compressed beat is short
+     * enough not to read as a stall and still long enough to be a distinct tick
+     * on the turns where these DO earn a row, which is what `ResourceChanged`
+     * does the moment the projection carries a real delta.
+     *
+     * `PlayerMoved` is deliberately not in this list: the log may fold it, but
+     * the board still hops a token for it and that animation owns the beat.
+     */
+    case "EffectProposed":
+    case "ResourceChanged":
+    case "TileResolved":
+      return EVENT_PACING.compressedBeat;
     case "SalaryAwarded":
     case "StatusApplied":
     case "PromptOpened":

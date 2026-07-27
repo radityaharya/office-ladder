@@ -52,9 +52,19 @@ export type ActivityLogEntry = {
 export type ActivityLogDeltaValue = {
   /** Signed. The sign is always rendered, so gain/loss is never color-only. */
   readonly amount: number;
-  /** Short lowercase unit suffix, e.g. "rep", "energy". Omit for money. */
+  /**
+   * Short lowercase unit suffix, e.g. `"rep"`, `"energy"`, `"work"`.
+   *
+   * `"money"` is the one special case: it renders as a `$` PREFIX (`-$200`)
+   * rather than a trailing word, matching `formatPanelSignedMoney` in the panel
+   * kit so the same amount reads the same in both places. Omit the unit
+   * entirely for a bare count.
+   */
   readonly unit?: string;
 };
+
+/** The unit token that renders a delta as cash. See {@link ActivityLogDeltaValue}. */
+export const MONEY_UNIT = "money";
 
 /**
  * Decoration contract for the feedback layer: give the log an `eventId` from
@@ -1102,9 +1112,24 @@ export function formatNumber(value: number): string {
 }
 
 /**
- * Builds the log from the committed event stream. Every known event type gets
- * a real sentence; an unrecognised type degrades to a readable fallback rather
- * than an empty row, so a new server event never blanks the log.
+ * Builds the log from the committed event stream.
+ *
+ * Two passes, and the second one is the point.
+ *
+ * 1. **Describe.** Every event becomes a {@link LogLine} — a sentence in the
+ *    right grammatical person, plus the signed amount when the projection
+ *    actually carries one. See {@link describeEvent}.
+ * 2. **Fold.** A line that says nothing the line above it has not already said
+ *    is absorbed into it rather than getting a row of its own. One committed
+ *    turn used to spend five rows saying "started their turn / had resources
+ *    adjusted / resolved their tile / moved their token / rolled 4"; four of
+ *    those five carried no fact at all.
+ *
+ * A line is only ever folded into an anchor **from the same revision**, i.e.
+ * from the same committed command, and only when it carries no delta and no
+ * caller decoration. Nothing that holds a number is ever dropped, and an event
+ * with nothing above it to fold into keeps its own row — the log loses events
+ * only when they were pure restatement.
  */
 export function buildActivityLog(
   game: PublicGameProjection,
@@ -1118,39 +1143,62 @@ export function buildActivityLog(
   selfPlayerId: string | null = null,
 ): readonly ActivityLogEntry[] {
   const decorations = new Map(deltas.map((delta) => [delta.eventId, delta]));
+  const context: LogContext = { room, selfPlayerId };
+  const kept: ActivityLogEntry[] = [];
+  let anchorRevision: number | null = null;
 
-  return game.eventSummaries.map((event) => {
+  for (const event of game.eventSummaries) {
     const decoration = decorations.get(event.id);
-    const actorPlayerId = event.actorPlayerId;
-    const seated = actorPlayerId !== null && game.players.some((p) => p.id === actorPlayerId);
+    const described = describeEvent(event, context);
 
-    return {
+    /*
+     * The row belongs to whoever the line is ABOUT, which is not always the
+     * command's actor: the server attributes every bookkeeping event to the
+     * seat that issued the command, so a card that charges an opponent emits a
+     * `ResourceChanged` stamped with the *player's* id. Colouring that row for
+     * the actor would say the wrong seat lost the money.
+     */
+    const subjectPlayerId = described.subjectPlayerId ?? event.actorPlayerId;
+    const seated = subjectPlayerId !== null && game.players.some((p) => p.id === subjectPlayerId);
+    const delta =
+      decoration === undefined
+        ? described.delta
+        : { amount: decoration.amount, ...(decoration.unit ? { unit: decoration.unit } : {}) };
+
+    const entry = {
       id: event.id,
       revision: event.revision,
       occurredAt: event.occurredAt,
-      text: decoration?.text ?? activitySentence(event, room),
-      delta:
-        decoration === undefined
-          ? null
-          : { amount: decoration.amount, ...(decoration.unit ? { unit: decoration.unit } : {}) },
+      text: decoration?.text ?? described.text,
+      delta,
       origin:
-        actorPlayerId === null
+        subjectPlayerId === null
           ? "system"
-          : actorPlayerId === selfPlayerId
+          : subjectPlayerId === selfPlayerId
             ? "local"
             : "remote",
       eventType: event.type,
-      // Only when the actor really holds a seat: `seatSlot` answers 1 for an
+      // Only when the subject really holds a seat: `seatSlot` answers 1 for an
       // unknown id, and a row rendered in seat 1's colour for a player who is
       // not in seat 1 would be a lie about identity.
-      ...(seated ? { slot: seatSlot(game, actorPlayerId) } : {}),
+      ...(seated ? { slot: seatSlot(game, subjectPlayerId) } : {}),
     } satisfies ActivityLogEntry;
-  });
+
+    const folds =
+      described.folds && decoration === undefined && delta === null && anchorRevision === event.revision;
+    if (folds) continue;
+
+    kept.push(entry);
+    anchorRevision = event.revision;
+  }
+
+  return kept;
 }
 
 export function formatDelta(delta: ActivityLogDeltaValue): string {
   const sign = delta.amount < 0 ? "-" : "+";
   const magnitude = formatNumber(Math.abs(delta.amount));
+  if (delta.unit === MONEY_UNIT) return `${sign}$${magnitude}`;
   return delta.unit ? `${sign}${magnitude} ${delta.unit}` : `${sign}${magnitude}`;
 }
 
@@ -1160,40 +1208,403 @@ export function clockLabel(occurredAt: string): string {
   return /T(\d{2}:\d{2}:\d{2})/.exec(occurredAt)?.[1] ?? "--:--:--";
 }
 
-const eventSentences: Readonly<Record<string, string>> = {
-  GameStarted: "opened the match",
-  TurnStarted: "started their turn",
-  PlayerMoved: "moved their token",
-  SalaryAwarded: "passed reception and collected salary",
-  TileResolved: "resolved their tile",
-  CardStored: "filed a card for later",
-  CardPlayed: "played a card",
-  EffectProposed: "proposed an effect",
-  EffectPrevented: "prevented an effect",
-  ResourceChanged: "had resources adjusted",
-  StatusApplied: "picked up a status effect",
-  PromptOpened: "reached a decision point",
-  PromptResolved: "answered a decision point",
-  ReactionWindowOpened: "opened a reaction window",
-  PromotionAttempted: "attempted a promotion",
-  PromotionBlocked: "had a promotion blocked",
-  ManagementRevealed: "revealed a management role",
-  PlayerPromoted: "was promoted",
-  ClockDeckExhausted: "exhausted the clock deck",
-  MatchEnded: "closed out the match",
+/* -------------------------------------------------------------------------- */
+/* The log's vocabulary.                                                       */
+/*                                                                             */
+/* The governing complaint is "i genuinely cant follow the game", and the log   */
+/* is the instrument a player follows it with. Two rules hold everything below  */
+/* together:                                                                    */
+/*                                                                             */
+/*   SAY THE THING. "Had resources adjusted" is a shrug: it names no resource,  */
+/*   no direction and no amount. Every line here either states a real fact or   */
+/*   folds into the line above it. No line restates a number the delta column   */
+/*   already shows, and no line invents one the projection does not carry.      */
+/*                                                                             */
+/*   OWN VERSUS OPPONENT IS GRAMMATICAL, not a name tag. The viewer's own lines */
+/*   are written in the SECOND PERSON ("You paid the audit fine.") and every    */
+/*   other seat's in the third ("Ada paid the audit fine."). That is a          */
+/*   structural difference a reader parses before they have read the name, and  */
+/*   it survives into assistive tech, which the tonal step and the seat rule do */
+/*   not. See plans/24-gameplay-v2-spec.md §12.1.                               */
+/* -------------------------------------------------------------------------- */
+
+type LogContext = {
+  readonly room: RoomProjection;
+  readonly selfPlayerId: string | null;
 };
 
-function activitySentence(event: SafeEventSummary, room: RoomProjection): string {
-  const actor = event.actorPlayerId === null ? "The office" : playerName(room, event.actorPlayerId);
+/**
+ * One seat's grammatical forms. Built once per line so a sentence never has to
+ * branch on "is this me" itself, which is how the second-person voice stays
+ * consistent instead of being applied to whichever sentences someone remembered.
+ */
+type LogVoice = {
+  /** Sentence subject: `You`, `Ada`, `The office`. */
+  readonly subject: string;
+  /** Leading possessive: `Your`, `Ada's`, `The office's`. */
+  readonly possessive: string;
+  /** Mid-sentence possessive: `your`, `Ada's`, `the office's`. */
+  readonly possessiveMid: string;
+  readonly were: "were" | "was";
+  readonly have: "have" | "has";
+  readonly are: "are" | "is";
+};
 
-  if (event.type === "DiceRolled") return diceSentence(event, actor);
-  if (event.type === "CardDrawn") {
-    return `${actor} drew ${cardTitle(event.card.definitionId, event.card.nameKey)} from the ${deckName(event.card.deckId)} deck.`;
+function voiceFor(context: LogContext, playerId: string | null): LogVoice {
+  if (playerId === null) {
+    return {
+      subject: "The office",
+      possessive: "The office's",
+      possessiveMid: "the office's",
+      were: "was",
+      have: "has",
+      are: "is",
+    };
+  }
+  if (playerId === context.selfPlayerId) {
+    return {
+      subject: "You",
+      possessive: "Your",
+      possessiveMid: "your",
+      were: "were",
+      have: "have",
+      are: "are",
+    };
   }
 
-  const known = eventSentences[event.type];
-  if (known !== undefined) return `${actor} ${known}.`;
-  return `${actor} triggered ${humanizeEventType(event.type)}.`;
+  const name = playerName(context.room, playerId);
+  return {
+    subject: name,
+    possessive: `${name}'s`,
+    possessiveMid: `${name}'s`,
+    were: "was",
+    have: "has",
+    are: "is",
+  };
+}
+
+type LogLine = {
+  readonly text: string;
+  readonly delta: ActivityLogDeltaValue | null;
+  /**
+   * Whom the line is about, when that is not the command's actor. Drives the
+   * row's origin, seat rule and `You`/`S2` stamp.
+   */
+  readonly subjectPlayerId?: string;
+  /**
+   * True when this line adds nothing the line above it already said, so it may
+   * be absorbed into it. Advisory: `buildActivityLog` still keeps the row when
+   * there is no anchor from the same command to absorb it into, and never folds
+   * a line that carries a number.
+   */
+  readonly folds: boolean;
+};
+
+/** A line that stands on its own and carries no amount. */
+function stated(text: string): LogLine {
+  return { text, delta: null, folds: false };
+}
+
+function describeEvent(event: SafeEventSummary, context: LogContext): LogLine {
+  const actor = voiceFor(context, event.actorPlayerId);
+  /*
+   * Read before the switch narrows it away. The union is exhaustive, so inside
+   * `default` the event is `never` — but the server is free to ship a type this
+   * build has never heard of, and that row must still be readable rather than
+   * blank.
+   */
+  const rawType: string = event.type;
+
+  switch (event.type) {
+    case "DiceRolled":
+      return stated(diceSentence(event, actor.subject));
+    case "CardDrawn":
+      return stated(
+        `${actor.subject} drew ${cardTitle(event.card.definitionId, event.card.nameKey)} from the ${deckName(event.card.deckId)} deck.`,
+      );
+    case "GameStarted":
+      return stated(`${actor.subject} opened the match.`);
+    /*
+     * A turn boundary is a heading, not a sentence: three words, so a reader
+     * scanning for where their own last turn began finds it by shape. hud.css
+     * strengthens the hairline under `[data-event="TurnStarted"]` to match.
+     */
+    case "TurnStarted":
+      return stated(`${actor.possessive} turn.`);
+    case "PlayerMoved":
+      return movementLine(event, actor);
+    case "SalaryAwarded":
+      return {
+        text: `${actor.subject} collected salary at reception.`,
+        delta: moneyDelta(numberField(event, "amount")),
+        folds: false,
+      };
+    /*
+     * Structural, never a story. What a tile DID arrives as the resource,
+     * card-draw and status lines that follow it in the same command, and those
+     * say it far better than "resolved their tile" ever could.
+     */
+    case "TileResolved":
+      return { text: `${actor.possessive} tile resolved.`, delta: null, folds: true };
+    case "ResourceChanged":
+      return resourceLine(event, context, actor);
+    /*
+     * Pure plumbing: an effect being *offered* to the reaction layer. Its two
+     * possible endings — `EffectPrevented` and `ResourceChanged` — are the
+     * events with something to say, and they both get their own line.
+     */
+    case "EffectProposed":
+      return { text: `${actor.subject} put an effect on the table.`, delta: null, folds: true };
+    case "EffectPrevented": {
+      const by = voiceFor(context, stringField(event, "preventedByPlayerId") ?? event.actorPlayerId);
+      return stated(`${by.subject} blocked that effect.`);
+    }
+    case "CardStored":
+      return stated(`${actor.subject} filed a card to play later.`);
+    case "CardPlayed":
+      return stated(`${actor.subject} played a card.`);
+    case "StatusApplied":
+      return statusLine(event, context, actor);
+    case "PromptOpened":
+      return stated(`${actor.subject} ${actor.have} a decision to make.`);
+    case "ReactionWindowOpened":
+      return stated(`${actor.subject} opened a reaction window.`);
+    case "PromotionAttempted":
+      return stated(`${actor.subject} went for a promotion.`);
+    case "PromotionBlocked": {
+      const blocker = stringField(event, "blockedByPlayerId");
+      return stated(
+        blocker === null
+          ? `${actor.possessive} promotion was blocked.`
+          : `${voiceFor(context, blocker).subject} blocked ${actor.possessiveMid} promotion.`,
+      );
+    }
+    case "ManagementRevealed":
+      return stated(`${actor.subject} ${actor.are} management. That is public now.`);
+    case "PlayerPromoted":
+      return promotionLine(event, actor);
+    case "ClockDeckExhausted":
+      return stated(`${actor.subject} ran the clock deck out.`);
+    case "MatchEnded":
+      return stated(`${actor.subject} closed out the match.`);
+    default:
+      return stated(`${actor.subject} triggered ${humanizeEventType(rawType)}.`);
+  }
+}
+
+/**
+ * Where a token went, when the projection says where.
+ *
+ * With no destination there is nothing here the roll on the line above has not
+ * already said, so the line folds — "moved their token" after "rolled 4" is the
+ * same fact twice.
+ */
+function movementLine(event: SafeEventSummary, actor: LogVoice): LogLine {
+  const to = numberField(event, "to");
+  if (to === null) return { text: `${actor.subject} moved.`, delta: null, folds: true };
+
+  const distance = numberField(event, "distance");
+  const step = distance === null ? "" : ` ${formatNumber(Math.abs(distance))}`;
+  const lap = (numberField(event, "lapsGained") ?? 0) > 0 ? ", passing reception" : "";
+  const where = `tile ${tileLabel(to)}`;
+  const direction = stringField(event, "direction");
+
+  if (direction === "teleport") return stated(`${actor.subject} was moved to ${where}${lap}.`);
+  if (direction === "backward") return stated(`${actor.subject} went back${step} to ${where}${lap}.`);
+  return stated(`${actor.subject} moved${step} to ${where}${lap}.`);
+}
+
+function promotionLine(event: SafeEventSummary, actor: LogVoice): LogLine {
+  const rank = stringField(event, "toRank");
+  const cost = numberField(event, "cost");
+
+  return {
+    text:
+      rank === null
+        ? `${actor.subject} ${actor.were} promoted.`
+        : `${actor.subject} ${actor.were} promoted to ${rankName(rank)}.`,
+    delta: cost === null || cost === 0 ? null : moneyDelta(-Math.abs(cost)),
+    folds: false,
+  };
+}
+
+function statusLine(event: SafeEventSummary, context: LogContext, actor: LogVoice): LogLine {
+  const subjectPlayerId = stringField(event, "subjectPlayerId");
+  const subject = subjectPlayerId === null ? actor : voiceFor(context, subjectPlayerId);
+  const status = stringField(event, "status");
+
+  return {
+    text:
+      status === null
+        ? `${subject.subject} picked up a status effect.`
+        : `${subject.subject} picked up a status effect: ${idPhrase(status, "status.")}.`,
+    delta: null,
+    folds: false,
+    ...(subjectPlayerId === null ? {} : { subjectPlayerId }),
+  };
+}
+
+/**
+ * The line the whole task exists for.
+ *
+ * `ResourceChanged` is emitted twice or more per turn and used to render as
+ * "had resources adjusted" every single time — no resource, no direction, no
+ * amount, and attributed to whoever issued the command rather than to whoever
+ * actually lost the money.
+ *
+ * With an amount it becomes a real sentence plus a signed mono delta, and the
+ * row moves onto the affected seat. Without one it folds away entirely, because
+ * a row that says only "something changed" is worse than no row: it costs a
+ * reader a line of attention and repays nothing.
+ */
+function resourceLine(event: SafeEventSummary, context: LogContext, actor: LogVoice): LogLine {
+  const subjectPlayerId = stringField(event, "subjectPlayerId");
+  const subject = subjectPlayerId === null ? actor : voiceFor(context, subjectPlayerId);
+  const attribution = subjectPlayerId === null ? {} : { subjectPlayerId };
+  const amount = resourceAmount(event);
+
+  if (amount === null || amount === 0) {
+    return { text: `${subject.possessive} resources moved.`, delta: null, folds: true, ...attribution };
+  }
+
+  const resource = resourceCopy(stringField(event, "resource"));
+  const reason = REASON_COPY[stringField(event, "reason") ?? ""];
+  const predicate =
+    reason === undefined
+      ? `${amount < 0 ? "spent" : "gained"} ${resource.noun}`
+      : amount < 0
+        ? reason.loss
+        : reason.gain;
+
+  return {
+    text: `${subject.subject} ${predicate}.`,
+    delta: { amount, ...(resource.unit === null ? {} : { unit: resource.unit }) },
+    folds: false,
+    ...attribution,
+  };
+}
+
+/**
+ * Why a resource moved, in the player's words rather than the engine's.
+ *
+ * Keyed by the engine's own `ResourceChangedEvent.payload.reason` vocabulary
+ * (`packages/engine/src/execution/economy.ts` and the transitions that emit
+ * their own). Both directions are authored because a refund is not a charge:
+ * "paid upkeep" with a `+` in front of it would be a contradiction the reader
+ * has to resolve. An unlisted reason falls back to spent/gained on the
+ * resource's own noun, which is still a true sentence.
+ */
+const REASON_COPY: Readonly<Record<string, { readonly gain: string; readonly loss: string }>> = {
+  salary: { gain: "collected salary", loss: "gave back salary" },
+  upkeep: { gain: "was refunded upkeep", loss: "paid upkeep" },
+  "income-stream": { gain: "took income", loss: "lost income" },
+  "loan-principal": { gain: "drew down a loan", loss: "returned loan money" },
+  "loan-repayment": { gain: "was credited a repayment", loss: "repaid a loan" },
+  "audit-fine": { gain: "had the audit fine refunded", loss: "paid the audit fine" },
+  "promotion-cost": { gain: "was refunded a promotion", loss: "paid for a promotion" },
+  "employee-promoted-out": { gain: "was paid out by a promotion", loss: "paid out on a promotion" },
+  "tile-effect": { gain: "gained from the tile", loss: "paid the tile" },
+  "tile-decision-cost": { gain: "was refunded the tile deal", loss: "paid for the tile deal" },
+  "card-played": { gain: "gained from a card", loss: "paid for a card" },
+  "pending-effect": { gain: "gained from an effect", loss: "paid an effect" },
+  "reaction-window": { gain: "gained from a reaction", loss: "paid for a reaction" },
+  "objective-reward": { gain: "banked an objective reward", loss: "gave back an objective reward" },
+  "agreement-settlement": { gain: "was paid on an agreement", loss: "paid out on an agreement" },
+  "project-payout": { gain: "was paid out by a project", loss: "returned a project payout" },
+  "project-stake": { gain: "took back a project stake", loss: "staked a project" },
+  "project-contribution": { gain: "was refunded a contribution", loss: "put money into a project" },
+  "project-contribution-work": { gain: "was credited project work", loss: "put work into a project" },
+  "project-failure-penalty": { gain: "recovered a project penalty", loss: "paid a project penalty" },
+  "project-sabotage-cost": { gain: "recovered a sabotage cost", loss: "paid to sabotage a project" },
+  "project-sabotage-concealment": {
+    gain: "recovered a concealment cost",
+    loss: "paid to conceal sabotage",
+  },
+  "placement-cost": { gain: "recovered a placement cost", loss: "paid to place on the board" },
+  attack: { gain: "took from a rival", loss: "was hit by a rival" },
+  "attack-cost": { gain: "recovered an attack cost", loss: "paid to move against a rival" },
+  "attack-gain": { gain: "took from a rival", loss: "gave ground to a rival" },
+  "burnout-recovery": { gain: "recovered from burnout", loss: "burned out" },
+  "clock-deck-exhausted": { gain: "was settled at the buzzer", loss: "was settled at the buzzer" },
+  "director-reached": { gain: "was settled on the win", loss: "was settled on the win" },
+};
+
+/**
+ * The noun a resource is called in prose, and the unit its delta carries.
+ *
+ * Keyed on the resource KIND (`resource.money`), with the bare form accepted
+ * too. Deliberately not keyed on `ResourceChangedEvent.payload.resourceId` —
+ * that is a hashed per-player `createStableId("ResourceId", …)` and names
+ * nothing a reader could use.
+ */
+const RESOURCE_COPY: Readonly<
+  Record<string, { readonly noun: string; readonly unit: string | null }>
+> = {
+  money: { noun: "cash", unit: MONEY_UNIT },
+  reputation: { noun: "reputation", unit: "rep" },
+  energy: { noun: "energy", unit: "energy" },
+  "work-counter": { noun: "work", unit: "work" },
+  debt: { noun: "debt", unit: MONEY_UNIT },
+  heat: { noun: "heat", unit: "heat" },
+};
+
+function resourceCopy(resource: string | null): { readonly noun: string; readonly unit: string | null } {
+  if (resource === null) return { noun: "resources", unit: null };
+  return RESOURCE_COPY[resource.replace("resource.", "")] ?? { noun: "resources", unit: null };
+}
+
+/**
+ * How far a resource moved, signed.
+ *
+ * Accepts either shape the projection might carry: a pre-signed `amount`, or
+ * the engine's own `previousValue`/`newValue` pair. Returns `null` when it
+ * carries neither — an unknown amount renders without one rather than with a
+ * guess.
+ */
+function resourceAmount(event: SafeEventSummary): number | null {
+  const amount = numberField(event, "amount");
+  if (amount !== null) return amount;
+
+  const previous = numberField(event, "previousValue");
+  const next = numberField(event, "newValue");
+  return previous === null || next === null ? null : next - previous;
+}
+
+function moneyDelta(amount: number | null): ActivityLogDeltaValue | null {
+  return amount === null || amount === 0 ? null : { amount, unit: MONEY_UNIT };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Optional payload readers.                                                   */
+/*                                                                             */
+/* `SafeEventSummary` gives `DiceRolled` and `CardDrawn` real payloads and      */
+/* every other type nothing but metadata, which is exactly why the log could    */
+/* only ever manage "had resources adjusted". These read the fields this        */
+/* module WOULD say something with, structurally and defensively, so the log    */
+/* states a real amount the moment the server passes one through and states     */
+/* none until then. The field names mirror the engine's own payloads            */
+/* (`packages/engine/src/events/index.ts`), plus `subjectPlayerId` for the      */
+/* affected seat and `resource` for the resource kind.                          */
+/* -------------------------------------------------------------------------- */
+
+function numberField(event: SafeEventSummary, key: string): number | null {
+  const value = (event as unknown as Readonly<Record<string, unknown>>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringField(event: SafeEventSummary, key: string): string | null {
+  const value = (event as unknown as Readonly<Record<string, unknown>>)[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** `status.next-salary-multiplier` → `next salary multiplier`. */
+function idPhrase(id: string, prefix: string): string {
+  return id.replace(prefix, "").replaceAll("-", " ");
+}
+
+/** `rank.senior-staff` → `Senior staff`. */
+function rankName(rankId: string): string {
+  return sentenceCase(idPhrase(rankId, "rank."));
 }
 
 /**

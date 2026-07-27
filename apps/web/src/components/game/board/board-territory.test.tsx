@@ -9,6 +9,7 @@ import type {
   BoardPlacementView,
   BoardSpaceView,
   BoardTileOwnershipView,
+  PlayerTokenView,
 } from "./types";
 
 const incident = {
@@ -79,19 +80,28 @@ function board(
   props: {
     readonly ownership?: readonly BoardTileOwnershipView[];
     readonly placements?: readonly BoardPlacementView[];
+    readonly players?: readonly PlayerTokenView[];
     readonly territory?: boolean;
   } = {},
 ): string {
   return renderToStaticMarkup(
     <GameBoard
+      activeTile={props.players?.[0]?.position ?? null}
       incident={incident}
       ownership={props.ownership}
       placements={props.placements}
+      players={props.players}
       spaces={createSpaces()}
       territory={props.territory}
     />,
   );
 }
+
+const table = [
+  { id: "p-1", name: "Mina", seat: 1, position: 5 },
+  { id: "p-2", name: "Omar", seat: 2, position: 12 },
+  { id: "p-3", name: "Rae", seat: 3, position: 30 },
+] as const satisfies readonly PlayerTokenView[];
 
 describe("ownership on the board", () => {
   it("marks an owned space on the tile itself, not only in a rail panel", () => {
@@ -312,6 +322,147 @@ describe("territory key", () => {
     expect(markup).toContain('data-slot="board-plate-keys"');
     expect(markup).toContain('<p class="board-legend-head">Zone key</p>');
     expect(markup).toContain('<p class="board-legend-head">Territory key</p>');
+  });
+});
+
+/*
+ * The ring's interior, measured in a live campaign match at 1698x913: the
+ * rectangle bounded by the inner edges of the four ring sides is 1086.8x552.7px
+ * — 600,633px², 69.4% of the whole board — of which 44.1% was two contiguous
+ * blank blocks. The claim ledger is what one of them went to, and it is the one
+ * fact about shared state the ring genuinely cannot express: a claim is drawn on
+ * its own tile, but 44 gutters never add up to a standing.
+ */
+describe("claims by seat", () => {
+  it("aggregates what 44 tile gutters cannot: who is ahead", () => {
+    // Given a ring where two seats have claimed and one has not
+    const markup = board({
+      players: table,
+      ownership: [
+        owned({ tileId: "tile-7", ownerSeat: 3, ownerName: "Rae" }),
+        owned({ tileId: "tile-9", ownerSeat: 3, ownerName: "Rae" }),
+        owned({ tileId: "tile-4", ownerSeat: 1, ownerName: "Mina", isSelf: true }),
+      ],
+    });
+
+    // Then every seat has a row, counts included, in the same seat grammar the
+    // pieces and the tile marks use.
+    expect(markup).toContain('data-slot="board-claim-ledger"');
+    expect(markup).toContain('<p class="board-legend-head">Claims by seat</p>');
+    expect(markup).toContain(
+      '<span aria-hidden="true" class="board-ledger-seat" data-board-seat="3">3</span>',
+    );
+    expect(markup).toContain('<span class="board-ledger-name">Rae</span>');
+    expect(markup).toContain('<span class="board-ledger-name">Omar</span>');
+  });
+
+  it("marks the viewer's own row structurally, not just by their name", () => {
+    // Given the viewer holds seat 1 — derivable because one of their claims is
+    // flagged `isSelf`, the only place the board is told which seat is theirs.
+    const markup = board({
+      players: table,
+      ownership: [owned({ tileId: "tile-4", ownerSeat: 1, ownerName: "Mina", isSelf: true })],
+    });
+
+    // Then own-versus-opponent is an attribute the stylesheet keys a tonal step
+    // off, plus a word — never a name to read (§12.1).
+    expect(markup.match(/data-board-claim-self="true"/g)?.length).toBeGreaterThan(0);
+    expect(markup).toContain('<span class="board-ledger-name">Mina (you)</span>');
+  });
+
+  it("keeps one row per seat from turn 0, so a first claim cannot move the board", () => {
+    // Given the same table before and after the very first claim of the match
+    const before = board({ players: table, ownership: [], territory: true });
+    const after = board({
+      players: table,
+      ownership: [owned({ tileId: "tile-4", ownerSeat: 1, ownerName: "Mina" })],
+    });
+
+    // Then the ledger's row count is identical — the claim changed a digit, not
+    // a height — and a seat on zero is still listed rather than appearing later.
+    const ledger = (markup: string) =>
+      markup.slice(
+        markup.indexOf('data-slot="board-claim-ledger"'),
+        markup.indexOf('data-slot="board-territory-key"'),
+      );
+    expect(before.match(/class="board-ledger-seat"/g)).toHaveLength(3);
+    expect(after.match(/class="board-ledger-seat"/g)).toHaveLength(3);
+    expect(ledger(before).match(/class="board-legend-item"/g)).toHaveLength(3);
+    expect(ledger(after).match(/class="board-legend-item"/g)).toHaveLength(3);
+    expect(before).toContain('<dd class="board-legend-count">0</dd>');
+  });
+
+  it("puts the one block that resizes last, so nothing above it is pushed down", () => {
+    // Given a territory match at its first claim. The territory key legitimately
+    // changes height (§12.5 swaps a teaching empty state for rows), so the
+    // column is ordered rigid-first: whatever resizes has to be the last block
+    // in it or it moves everything beneath it (§12.1).
+    const markup = board({ players: table, ownership: [owned()] });
+
+    // Then
+    expect(markup.indexOf('data-slot="board-legend"')).toBeLessThan(
+      markup.indexOf('data-slot="board-claim-ledger"'),
+    );
+    expect(markup.indexOf('data-slot="board-claim-ledger"')).toBeLessThan(
+      markup.indexOf('data-slot="board-territory-key"'),
+    );
+  });
+
+  it("draws no ledger for a mode that never claims anything", () => {
+    // Given a ruleset with no tile ownership
+    const markup = renderToStaticMarkup(
+      <GameBoard incident={incident} players={table} spaces={createSpaces()} />,
+    );
+
+    // Then
+    expect(markup).not.toContain("board-claim-ledger");
+  });
+
+  it("draws no ledger before anyone is seated", () => {
+    // Given a territory mode with an empty table
+    const markup = board({ territory: true });
+
+    // Then the block is absent rather than an empty heading over nothing.
+    expect(markup).not.toContain("board-claim-ledger");
+  });
+});
+
+describe("the reach table names who owns each destination", () => {
+  it("says whose the square is and what is sitting on it", () => {
+    // Given the active player one space short of a claimed, sabotaged tile
+    const markup = board({
+      players: [{ id: "p-1", name: "Mina", seat: 1, position: 6 }],
+      ownership: [owned()],
+      placements: [placed()],
+    });
+
+    // Then the destination's owner and its placement are stated in words on the
+    // reach column — a player deciding whether to roll into a trap should not
+    // have to infer it from a 12px mark on a 97px tile.
+    expect(markup).toContain('data-slot="board-reach-claim"');
+    expect(markup).toContain("Seat 3 · Sabotage");
+  });
+
+  it("shows an unclaimed destination as unclaimed rather than as blank", () => {
+    // Given a territory match where nothing on the reach is owned
+    const markup = board({ players: [{ id: "p-1", name: "Mina", seat: 1, position: 20 }], ownership: [], placements: [] });
+
+    // Then every column carries the line, so a claim landing changes a word and
+    // never a height (§12.1).
+    expect(markup.match(/data-slot="board-reach-claim"/g)).toHaveLength(6);
+    expect(markup).toContain("Unclaimed");
+  });
+
+  it("marks your own destination structurally", () => {
+    // Given
+    const markup = board({
+      players: [{ id: "p-1", name: "Mina", seat: 1, position: 6 }],
+      ownership: [owned({ ownerSeat: 1, ownerName: "Mina", isSelf: true })],
+    });
+
+    // Then
+    expect(markup).toContain('data-board-claim-self="true"');
+    expect(markup).toContain("Yours");
   });
 });
 

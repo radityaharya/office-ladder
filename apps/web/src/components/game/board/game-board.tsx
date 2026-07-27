@@ -9,6 +9,7 @@ import type {
   BoardDockSlot,
   BoardIncidentView,
   BoardPlacementView,
+  BoardScheduleView,
   BoardSpaceView,
   BoardTileOwnershipView,
   BoardZone,
@@ -197,6 +198,7 @@ export function GameBoard({
             incident={incident}
             ownership={ownership ?? []}
             placements={placements ?? []}
+            players={seated}
             spaces={spaces}
             territory={showTerritory}
           />
@@ -245,17 +247,38 @@ export function GameBoard({
 /**
  * The ring's interior. Once the frame stops being a forced square this is a wide
  * panel rather than a 506px box holding one paragraph, so it is laid out on a
- * real grid: a head bar, a two-column body (status on the left, the zone key as
- * a proper table on the right), and a full-width readout rail whose cells align
- * to the panel's own edges (DESIGN.md §4.5, §6.3, §6.4). It collapses back to a
- * single column on a narrow board through a container query, not a breakpoint,
- * because what matters is the panel's width and not the viewport's.
+ * real grid: a head bar, an optional quarter strip, a two-column body (status on
+ * the left, the keys as proper tables on the right), and a full-width readout
+ * rail whose cells align to the panel's own edges (DESIGN.md §4.5, §6.3, §6.4).
+ * It collapses back to a single column on a narrow board through a container
+ * query, not a breakpoint, because what matters is the panel's width and not the
+ * viewport's.
+ *
+ * WHAT LIVES HERE, AND WHY (measured in a live campaign match at 1698x913):
+ * the interior is 1086.8 x 552.7px — 600,633px², 69.4% of the whole board's
+ * area — and 44.1% of that was two contiguous blank blocks (254.7px below the
+ * reach strip in the body column, 210.7px below the last key in the keys
+ * column) with a total ink coverage of 22.6%. Three rules decided what got the
+ * space back:
+ *
+ *  1. The ring stays the thing the eye goes to. Nothing here may restate what
+ *     the ring already says better — which is why there is deliberately NO
+ *     standings table of "who is on which tile". The tokens are that table, and
+ *     a text copy of them printed in the middle of the ring would compete with
+ *     the ring for no new information.
+ *  2. What the ring CANNOT say gets the room: the ring shows one claim per tile
+ *     in a 16px gutter but never aggregates them, so nobody can tell who is
+ *     winning the territory race without counting 44 gutters ({@link
+ *     BoardClaimLedger}); and it shows where a token is but not what each die
+ *     face does from there ({@link BoardReach}).
+ *  3. Whatever remains stays empty. An empty interior beats a busy one.
  */
 function BoardPlate({
   activeTile,
   incident,
   ownership,
   placements,
+  players,
   spaces,
   territory,
 }: {
@@ -263,6 +286,7 @@ function BoardPlate({
   readonly incident: BoardIncidentView;
   readonly ownership: readonly BoardTileOwnershipView[];
   readonly placements: readonly BoardPlacementView[];
+  readonly players: readonly PlayerTokenView[];
   readonly spaces: readonly BoardSpaceView[];
   readonly territory: boolean;
 }) {
@@ -276,6 +300,7 @@ function BoardPlate({
         <p className="board-plate-kicker">{incident.status ?? "Floor plan"}</p>
         <p className="board-plate-ref">{spaces.length} spaces · clockwise</p>
       </div>
+      {incident.schedule ? <BoardSchedule schedule={incident.schedule} /> : null}
       <div className="board-plate-main">
         <div className="board-plate-body">
           {incident.marker ? (
@@ -288,7 +313,13 @@ function BoardPlate({
           {incident.description ? (
             <p className="board-plate-copy">{incident.description}</p>
           ) : null}
-          <BoardReach activeTile={activeTile} spaces={spaces} />
+          <BoardReach
+            activeTile={activeTile}
+            ownership={ownership}
+            placements={placements}
+            spaces={spaces}
+            territory={territory}
+          />
           {incident.detail ? (
             <div className="board-plate-detail">{incident.detail}</div>
           ) : null}
@@ -296,7 +327,19 @@ function BoardPlate({
         {/* One column of keys, always rendered so the plate's wide two-column
             layout does not depend on how many keys there happen to be. */}
         <div className="board-plate-keys" data-slot="board-plate-keys">
+          {/*
+           * Ordered by how much each block's HEIGHT moves. The zone key is fixed
+           * for a whole match and the ledger reserves one row per seat from turn
+           * 0, so both are rigid; the territory key is the only variable block
+           * here (§12.5 requires it swap a teaching empty state for rows once
+           * something is claimed, and it gains a row per placement kind that
+           * appears). Putting the one thing that resizes LAST means nothing in
+           * this column is ever pushed down by it.
+           */}
           <BoardLegend spaces={spaces} />
+          {territory ? (
+            <BoardClaimLedger ownership={ownership} players={players} />
+          ) : null}
           {territory ? (
             <BoardTerritoryKey ownership={ownership} placements={placements} />
           ) : null}
@@ -317,19 +360,94 @@ function BoardPlate({
 }
 
 /**
+ * The fiscal calendar and, more to the point, the event this table has been told
+ * is coming (spec §5.7).
+ *
+ * §5.7 announces an office-wide event one quarter ahead **so players can
+ * position for it**. That only works if the announcement is somewhere a player
+ * actually looks, and until now its only home was the footer of a docked panel
+ * behind a tab. This is the same three facts on the board itself.
+ *
+ * Fixed three-cell rail, in the HUD's own grammar (§6.4: label + mono value,
+ * separated by 1px vertical rules, never pills). Every cell has a resting form,
+ * so the quarter turning over or an event being announced changes text inside a
+ * cell and never the strip's height.
+ */
+function BoardSchedule({ schedule }: { readonly schedule: BoardScheduleView }) {
+  const announced = schedule.nextEventLabel !== null;
+
+  return (
+    <dl
+      aria-label="Fiscal calendar"
+      className="board-schedule"
+      data-slot="board-schedule"
+    >
+      <div className="board-schedule-cell">
+        <dt className="board-schedule-label">Quarter</dt>
+        <dd className="board-schedule-value">
+          {schedule.quarterLabel} · {schedule.span}
+        </dd>
+      </div>
+      <div className="board-schedule-cell">
+        <dt className="board-schedule-label">This quarter</dt>
+        <dd className="board-schedule-value">{schedule.currentEventLabel ?? "—"}</dd>
+      </div>
+      {/* The announcement. The LED is always in the markup — caution once
+          something is scheduled, idle before — so arming it cannot reflow the
+          row, and the state is never carried by colour alone (§8): the value
+          beside it says it in words either way. */}
+      <div
+        className="board-schedule-cell"
+        data-board-announced={announced ? "true" : undefined}
+        data-slot="board-schedule-announcement"
+      >
+        <dt className="board-schedule-label">
+          Announced{schedule.nextQuarterLabel ? ` · ${schedule.nextQuarterLabel}` : ""}
+        </dt>
+        <dd className="board-schedule-value">
+          <span aria-hidden="true" className="board-schedule-led" />
+          {schedule.nextEventLabel ?? "Nothing scheduled yet"}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+/**
  * What each face of the movement die lands on from where the active player is
  * standing. This is the one thing the ring's interior can say that nothing else
  * in the shell says: it is derived entirely from the authored board and the
  * projected position — no rule and no projection field is being invented — and it
  * is the difference between watching a token move and being able to follow why.
  * It is descriptive, never a control: legality still comes from the server.
+ *
+ * It is now the interior's PRIMARY content rather than a 78px footnote under a
+ * paragraph. That was the single worst use of the plate's space: the most
+ * decision-relevant thing on the screen ("3 is Burnout, 4 is the reception
+ * desk") was set at 11px in a strip a fifth the height of the blank block
+ * beneath it. Six columns now run the body column's full height, so the space
+ * that was blank is structure — hairline column rules the eye can read — rather
+ * than a hole.
+ *
+ * Each column answers the three questions in the order a player asks them:
+ * WHERE (the zone swatch and facility code, the same swatch grammar the zone key
+ * uses, so a column is scannable by pattern before any word is read), WHAT (the
+ * room name), and WHOSE (the claim line, in territory modes only). The claim
+ * line always renders — "Unclaimed" is its resting form — so a claim landing
+ * mid-match changes a word and never a height.
  */
 function BoardReach({
   activeTile,
+  ownership,
+  placements,
   spaces,
+  territory,
 }: {
   readonly activeTile: number | null;
+  readonly ownership: readonly BoardTileOwnershipView[];
+  readonly placements: readonly BoardPlacementView[];
   readonly spaces: readonly BoardSpaceView[];
+  readonly territory: boolean;
 }) {
   if (activeTile === null || spaces.length === 0) return null;
 
@@ -342,22 +460,72 @@ function BoardReach({
   });
   if (reach.length === 0) return null;
 
+  const ownerOf = new Map(ownership.map((entry) => [entry.tileId, entry]));
+  const placedOn = groupByTile(placements);
+
   return (
     <div className="board-reach" data-slot="board-reach">
       <p className="board-reach-head">
         Movement reach · one d6 clockwise from {formatSpace(activeTile)}
       </p>
       <ol className="board-reach-list">
-        {reach.map(({ roll, space }) => (
-          <li className="board-reach-item" key={roll}>
-            <span className="board-reach-roll">{roll}</span>
-            <span className="board-reach-code">{space.code}</span>
-            <span className="board-reach-name">{space.label}</span>
-          </li>
-        ))}
+        {reach.map(({ roll, space }) => {
+          const owner = ownerOf.get(space.id) ?? null;
+          const placed = placedOn.get(space.id) ?? [];
+
+          return (
+            <li className="board-reach-item" key={roll}>
+              <span className="board-reach-roll">{roll}</span>
+              <span className="board-reach-facility">
+                <span
+                  aria-hidden="true"
+                  className="board-legend-swatch"
+                  data-board-zone={space.zone}
+                />
+                <span className="board-reach-code">{space.code}</span>
+              </span>
+              <span className="board-reach-name">{space.label}</span>
+              <span className="board-reach-zone">{space.zoneLabel}</span>
+              {territory ? (
+                <span
+                  className="board-reach-claim"
+                  data-board-claim-self={owner?.isSelf ? "true" : undefined}
+                  data-board-owner-seat={owner?.ownerSeat}
+                  data-slot="board-reach-claim"
+                >
+                  <span aria-hidden="true" className="board-reach-claim-rule" />
+                  {describeReachClaim(owner, placed)}
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
       </ol>
     </div>
   );
+}
+
+/**
+ * One short phrase for "whose is this, and what is waiting on it".
+ *
+ * Words, not a colour: the seat rule beside it is the same seat identity the
+ * ring draws, but §8 forbids that rule being the only carrier, and a player
+ * deciding whether to roll into a space with a sabotage on it needs to be told,
+ * not to infer it from a hue.
+ */
+function describeReachClaim(
+  owner: BoardTileOwnershipView | null,
+  placed: readonly BoardPlacementView[],
+): string {
+  const claim =
+    owner === null
+      ? "Unclaimed"
+      : owner.isSelf
+        ? "Yours"
+        : `Seat ${owner.ownerSeat}`;
+  if (placed.length === 0) return claim;
+
+  return `${claim} · ${placed.map((entry) => placementMark(entry).label).join(", ")}`;
 }
 
 function BoardLegend({ spaces }: { readonly spaces: readonly BoardSpaceView[] }) {
@@ -459,6 +627,76 @@ function BoardTerritoryKey({
           ))}
         </dl>
       )}
+    </div>
+  );
+}
+
+/**
+ * Who is winning the territory race.
+ *
+ * This is the one piece of shared state the ring genuinely cannot express. A
+ * claim is drawn on its own tile in a 16px gutter, which is correct — §12.4
+ * requires ownership be readable on the board rather than only in a rail — but
+ * it never aggregates, so answering "am I behind?" means counting 44 gutters.
+ * The territory key above already reports the two totals; this reports the
+ * split, which is the only form of the number that is actually a standing.
+ *
+ * ONE ROW PER SEATED PLAYER, ALWAYS, FROM TURN 0 — including seats on zero. That
+ * is what makes this safe to put on the board: a first claim changes a digit,
+ * never the row count, so the block's height is fixed for the whole match
+ * (§12.1). Seats are drawn in seat order rather than sorted by score for the
+ * same reason — a lead changing hands must not reorder rows under the eye.
+ */
+function BoardClaimLedger({
+  ownership,
+  players,
+}: {
+  readonly ownership: readonly BoardTileOwnershipView[];
+  readonly players: readonly PlayerTokenView[];
+}) {
+  if (players.length === 0) return null;
+
+  const claims = new Map<number, number>();
+  for (const entry of ownership) {
+    claims.set(entry.ownerSeat, (claims.get(entry.ownerSeat) ?? 0) + 1);
+  }
+
+  /*
+   * Own-versus-opponent (§12.1) without a new prop. `PlayerTokenView` does not
+   * say which seat the viewer holds, but every ownership entry does, so the
+   * viewer's seat is whichever seat owns a tile flagged `isSelf`. Before the
+   * viewer has claimed anything there is nothing to derive it from and no row is
+   * marked — the "Yours" total in the key above still reads 0 correctly, so the
+   * degradation loses emphasis, never truth.
+   */
+  const selfSeat = ownership.find((entry) => entry.isSelf)?.ownerSeat ?? null;
+
+  return (
+    <div className="board-legend" data-slot="board-claim-ledger">
+      <p className="board-legend-head">Claims by seat</p>
+      <dl className="board-legend-list">
+        {players.map((player) => (
+          <div
+            className="board-legend-item"
+            data-board-claim-self={player.seat === selfSeat ? "true" : undefined}
+            key={player.id}
+          >
+            <dt className="board-legend-term">
+              <span
+                aria-hidden="true"
+                className="board-ledger-seat"
+                data-board-seat={player.seat}
+              >
+                {player.seat}
+              </span>
+              <span className="board-ledger-name">
+                {player.seat === selfSeat ? `${player.name} (you)` : player.name}
+              </span>
+            </dt>
+            <dd className="board-legend-count">{claims.get(player.seat) ?? 0}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }

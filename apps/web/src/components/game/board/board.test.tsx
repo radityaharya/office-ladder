@@ -381,8 +381,41 @@ describe("movement reach", () => {
     expect(markup).toContain('<span class="board-reach-roll">6</span>');
     // 42 + 2 = 44 wraps to space index 0, the bottom-right corner.
     expect(markup).toContain(
-      '<span class="board-reach-roll">2</span><span class="board-reach-code">BRD</span><span class="board-reach-name">Corner 0</span>',
+      '<span class="board-reach-roll">2</span><span class="board-reach-facility">' +
+        '<span aria-hidden="true" class="board-legend-swatch" data-board-zone="landmark">' +
+        '</span><span class="board-reach-code">BRD</span></span>' +
+        '<span class="board-reach-name">Corner 0</span>' +
+        '<span class="board-reach-zone">Landmark</span>',
     );
+  });
+
+  it("names the zone of every destination, not only its code", () => {
+    // Given — the interior's 254.7 x 825.3px blank block went to this table, so
+    // it now answers "is this a good square to land on" and not only "what is it
+    // called". The swatch is the zone key's own swatch, reused, so a column can
+    // be scanned by pattern before a word is read.
+    const markup = renderToStaticMarkup(
+      <GameBoard activeTile={11} incident={incident} spaces={createSpaces()} />,
+    );
+
+    // Then
+    expect(markup).toContain('<span class="board-reach-zone">Hazard</span>');
+    expect(markup).toContain('<span class="board-reach-name">Burnout</span>');
+    expect(
+      markup.match(
+        /class="board-reach-facility"><span aria-hidden="true" class="board-legend-swatch"/g,
+      ),
+    ).toHaveLength(6);
+  });
+
+  it("leaves the claim line off entirely when the mode has no territory", () => {
+    // Given a mode that never claims anything
+    const markup = renderToStaticMarkup(
+      <GameBoard activeTile={7} incident={incident} spaces={createSpaces()} />,
+    );
+
+    // Then the column does not pay height for a fact the ruleset cannot produce.
+    expect(markup).not.toContain("board-reach-claim");
   });
 
   it("omits the reach strip when no seat is on the floor", () => {
@@ -393,6 +426,77 @@ describe("movement reach", () => {
 
     // Then
     expect(markup).not.toContain('data-slot="board-reach"');
+  });
+});
+
+describe("the quarter strip", () => {
+  it("puts the announced event on the board instead of behind a tab (§5.7)", () => {
+    // Given a mode running quarters, with next quarter's shock already announced
+    const markup = renderToStaticMarkup(
+      <GameBoard
+        incident={{
+          ...incident,
+          schedule: {
+            quarterLabel: "Q2",
+            span: "R13–24",
+            currentEventLabel: "Hiring freeze",
+            nextQuarterLabel: "Q3",
+            nextEventLabel: "Restructure",
+          },
+        }}
+        spaces={createSpaces()}
+      />,
+    );
+
+    // Then all three facts are on the board, and the announcement is flagged as
+    // one — an announcement nobody sees is not an announcement.
+    expect(markup).toContain('data-slot="board-schedule"');
+    expect(markup).toContain("Q2 · R13–24");
+    expect(markup).toContain("Hiring freeze");
+    expect(markup).toContain("Announced · Q3");
+    expect(markup).toContain("Restructure");
+    expect(markup).toContain('data-board-announced="true"');
+  });
+
+  it("reserves every cell so arming an announcement cannot move the board", () => {
+    // Given the same quarter before anything is scheduled
+    const quiet = renderToStaticMarkup(
+      <GameBoard
+        incident={{
+          ...incident,
+          schedule: {
+            quarterLabel: "Q1",
+            span: "R01–12",
+            currentEventLabel: null,
+            nextQuarterLabel: "Q2",
+            nextEventLabel: null,
+          },
+        }}
+        spaces={createSpaces()}
+      />,
+    );
+
+    // Then the strip has the same three cells and the same LED, carrying resting
+    // values rather than being absent (§12.1).
+    expect(quiet.match(/class="board-schedule-cell"/g)).toHaveLength(3);
+    expect(quiet).toContain('data-slot="board-schedule-announcement"');
+    expect(quiet).toContain("Nothing scheduled yet");
+    expect(quiet).toContain('class="board-schedule-led"');
+    expect(quiet).not.toContain('data-board-announced="true"');
+    expect(quiet).toContain(
+      '<dd class="board-schedule-value">—</dd>',
+    );
+  });
+
+  it("draws no strip at all for a mode that runs no quarters", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <GameBoard incident={incident} spaces={createSpaces()} />,
+    );
+
+    // Then the plate's quarter row collapses rather than reserving an empty band
+    // for a fact this ruleset can never have.
+    expect(markup).not.toContain("board-schedule");
   });
 });
 

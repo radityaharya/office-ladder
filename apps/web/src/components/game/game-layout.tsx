@@ -16,6 +16,11 @@ type GameLayoutProps = {
    * nothing: the board's row is unaffected because the band's row never changes
    * size. Anything that must be seen on a deadline belongs here rather than in
    * a modal or in an extra row above the action bar.
+   *
+   * In a live match this is always supplied: the band's resting state is a real
+   * readout — whose turn it is and their clock — not an absence. The reservation
+   * is what stopped the board moving; filling it is what stopped a 40px
+   * instrument row being spent on the word "Attention" and an em dash.
    */
   readonly attention?: ReactNode;
 };
@@ -59,9 +64,20 @@ export function GameLayout({
         tabIndex={attention === null ? undefined : 0}
       >
         {attention ?? (
+          /*
+             The pre-projection frame, and only that.
+             `createAttentionNotice` (game-view.tsx) no longer returns `null`:
+             once a projection exists the band always has an answer, and at rest
+             that answer is whose turn it is and how long they have left. So this
+             fallback is reached only before the first bootstrap lands, or by a
+             caller that passes no band content at all.
+             It used to read "Attention —", which spent a whole instrument row
+             saying nothing. It now names the lane and says what will appear in
+             it (§12.5), in the same label+value grammar as every other readout.
+          */
           <p className="game-shell-attention-rest" data-slot="game-attention-rest">
-            <span className="hud-label">Attention</span>
-            <span className="hud-sub">—</span>
+            <span className="hud-label">Standing by</span>
+            <span className="hud-sub">Nothing is on a clock yet.</span>
           </p>
         )}
       </div>

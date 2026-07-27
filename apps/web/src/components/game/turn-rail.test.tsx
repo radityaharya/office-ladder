@@ -217,11 +217,11 @@ describe("turn rail dossier", () => {
 
 describe("activity log", () => {
   it("logs a real die face from the DiceRolled event rather than 'rolled the dice'", () => {
-    // Given
+    // Given — Avery is the viewer, so the line is written in the second person.
     const markup = rail();
 
     // Then
-    expect(markup).toContain("Avery rolled 4.");
+    expect(markup).toContain("You rolled 4.");
     expect(markup).not.toContain("rolled the dice");
   });
 
@@ -248,8 +248,8 @@ describe("activity log", () => {
 
     // When
     const rows = markup.match(/data-slot="turn-rail-activity"/g) ?? [];
-    const diceIndex = markup.indexOf("Avery rolled 4.");
-    const turnIndex = markup.indexOf("Avery started their turn.");
+    const diceIndex = markup.indexOf("You rolled 4.");
+    const turnIndex = markup.indexOf("Your turn.");
 
     // Then
     expect(rows).toHaveLength(2);
@@ -337,6 +337,240 @@ describe("activity log", () => {
 
     // Then
     expect(markup).toContain("--:--:--");
+  });
+});
+
+/*
+ * These pin the defect found by watching a real campaign match: eight
+ * consecutive rows that between them answered nothing. Verbatim from that run —
+ *   "Contract Auditor had resources adjusted."   (twice per turn)
+ *   "Temp Analyst proposed an effect."
+ *   "Contract Auditor resolved their tile."
+ * A reader cannot answer "what just happened to whom, and by how much" from any
+ * of those, which is the only question the log exists to answer.
+ */
+describe("activity log says what happened", () => {
+  /**
+   * A summary carrying fields `SafeEventSummary` does not model yet.
+   *
+   * The generic arm of the union is metadata-only, so the payload the engine
+   * already produces (`ResourceChangedEvent`, `PlayerMovedEvent`, …) is dropped
+   * on the way out of `apps/server/src/rooms/service/game-setup.ts`. The log
+   * reads those fields defensively, so these fixtures are what a row looks like
+   * once the projection carries them — and the sibling tests below pin the
+   * degraded, number-free rendering that holds until it does.
+   */
+  function summary(overrides: Record<string, unknown>): SafeEventSummary {
+    return {
+      id: "event-x",
+      revision: 9,
+      occurredAt: "2026-07-24T12:00:06.000Z",
+      actorPlayerId: "player-1",
+      ...overrides,
+    } as unknown as SafeEventSummary;
+  }
+
+  function log(
+    events: readonly SafeEventSummary[],
+    selfPlayerId: string | null = "player-1",
+  ): readonly ReturnType<typeof buildActivityLog>[number][] {
+    return [...buildActivityLog({ ...game, eventSummaries: events }, room, [], selfPlayerId)];
+  }
+
+  it("names the reason and the amount instead of 'had resources adjusted'", () => {
+    // Given
+    const entries = log([
+      summary({
+        id: "event-fine",
+        type: "ResourceChanged",
+        resource: "resource.money",
+        previousValue: 1_400,
+        newValue: 1_200,
+        reason: "audit-fine",
+      }),
+    ]);
+
+    // Then
+    expect(entries[0]?.text).toBe("You paid the audit fine.");
+    expect(entries[0]?.delta).toEqual({ amount: -200, unit: "money" });
+    expect(entries[0]?.text).not.toContain("resources adjusted");
+  });
+
+  it("renders a cash delta as money and never restates the amount in the sentence", () => {
+    // Given
+    const markup = renderToStaticMarkup(
+      <ActivityLog
+        entries={log([
+          summary({
+            id: "event-rent",
+            type: "ResourceChanged",
+            actorPlayerId: "player-2",
+            resource: "resource.money",
+            amount: -200,
+            reason: "agreement-settlement",
+          }),
+        ])}
+      />,
+    );
+
+    // Then
+    expect(markup).toContain(">-$200</span>");
+    expect(markup).toContain("Ada paid out on an agreement.");
+    expect(markup).not.toContain("200.");
+  });
+
+  it("writes the viewer's own lines in the second person and everyone else's in the third", () => {
+    // Given — a structural split a reader parses before the name, and one that
+    // survives into assistive tech (§12.1).
+    const entries = log([
+      summary({ id: "mine", type: "PromotionAttempted", actorPlayerId: "player-1" }),
+      summary({ id: "theirs", type: "PromotionAttempted", actorPlayerId: "player-2" }),
+    ]);
+
+    // Then
+    expect(entries.map((entry) => entry.text)).toEqual([
+      "You went for a promotion.",
+      "Ada went for a promotion.",
+    ]);
+  });
+
+  it("puts the row on the seat the change landed on, not the seat that issued the command", () => {
+    // Given — the server stamps every bookkeeping event with the COMMANDING
+    // seat, so a card Avery plays against Ada arrives attributed to Avery.
+    const entries = log([
+      summary({
+        id: "event-hit",
+        type: "ResourceChanged",
+        actorPlayerId: "player-1",
+        subjectPlayerId: "player-2",
+        resource: "resource.reputation",
+        amount: -2,
+        reason: "attack",
+      }),
+    ]);
+
+    // Then
+    expect(entries[0]?.text).toBe("Ada was hit by a rival.");
+    expect(entries[0]?.origin).toBe("remote");
+    expect(entries[0]?.slot).toBe(2);
+    expect(entries[0]?.delta).toEqual({ amount: -2, unit: "rep" });
+  });
+
+  it("collapses a turn's contentless bookkeeping into the lines that carry the facts", () => {
+    // Given — the live sequence: five events, two of which said anything.
+    const entries = log([
+      summary({ id: "turn", type: "TurnStarted", revision: 10 }),
+      summary({ id: "dice", type: "DiceRolled", revision: 11, dice: [4], total: 4, purpose: "" }),
+      summary({ id: "moved", type: "PlayerMoved", revision: 11 }),
+      summary({ id: "tile", type: "TileResolved", revision: 11 }),
+      summary({ id: "res-1", type: "ResourceChanged", revision: 11 }),
+      summary({ id: "res-2", type: "ResourceChanged", revision: 11 }),
+    ]);
+
+    // Then
+    expect(entries.map((entry) => entry.text)).toEqual(["Your turn.", "You rolled 4."]);
+  });
+
+  it("keeps a folding line that has nothing above it to fold into", () => {
+    // Given — the log truncates from the front at 200 events, so a supporting
+    // event can be the oldest thing in the window. Losing it would be losing an
+    // event, which is different from collapsing a restatement.
+    const entries = log([summary({ id: "orphan", type: "TileResolved" })]);
+
+    // Then
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.text).toBe("Your tile resolved.");
+  });
+
+  it("never folds a line the caller decorated with a delta", () => {
+    // Given
+    const entries = buildActivityLog(
+      {
+        ...game,
+        eventSummaries: [
+          summary({ id: "dice", type: "DiceRolled", revision: 11, dice: [4], total: 4, purpose: "" }),
+          summary({ id: "res", type: "ResourceChanged", revision: 11 }),
+        ],
+      },
+      room,
+      [{ eventId: "res", amount: -150, unit: "money", text: "You paid the tile." }],
+      "player-1",
+    );
+
+    // Then
+    expect(entries).toHaveLength(2);
+    expect(entries[1]?.text).toBe("You paid the tile.");
+  });
+
+  it("renders no number at all when the projection carries none", () => {
+    // Given — an unknown amount renders without one rather than with a guess.
+    const entries = log([
+      summary({ id: "salary", type: "SalaryAwarded" }),
+      summary({ id: "promoted", type: "PlayerPromoted" }),
+    ]);
+
+    // Then
+    expect(entries.map((entry) => entry.text)).toEqual([
+      "You collected salary at reception.",
+      "You were promoted.",
+    ]);
+    expect(entries.every((entry) => entry.delta === null)).toBe(true);
+  });
+
+  it("states salary, promotion and movement in full once the payload carries them", () => {
+    // Given
+    const entries = log([
+      summary({ id: "moved", type: "PlayerMoved", to: 10, distance: 4, direction: "forward", lapsGained: 1 }),
+      summary({ id: "salary", type: "SalaryAwarded", amount: 2_000 }),
+      summary({ id: "promoted", type: "PlayerPromoted", toRank: "rank.senior-staff", cost: 1_500 }),
+    ]);
+
+    // Then
+    expect(entries[0]?.text).toBe("You moved 4 to tile 11, passing reception.");
+    expect(entries[1]?.text).toBe("You collected salary at reception.");
+    expect(entries[1]?.delta).toEqual({ amount: 2_000, unit: "money" });
+    expect(entries[2]?.text).toBe("You were promoted to Senior staff.");
+    expect(entries[2]?.delta).toEqual({ amount: -1_500, unit: "money" });
+  });
+
+  it("keeps engine vocabulary out of every line it can still render", () => {
+    // Given — one of each remaining type, so a wording regression is caught
+    // here rather than in a live match.
+    const texts = log([
+      summary({ id: "e1", type: "EffectProposed", revision: 20 }),
+      summary({ id: "e2", type: "EffectPrevented", revision: 21, preventedByPlayerId: "player-2" }),
+      summary({ id: "e3", type: "PromptOpened", revision: 22 }),
+      summary({ id: "e4", type: "PromptOpened", revision: 23, actorPlayerId: "player-2" }),
+      summary({ id: "e5", type: "StatusApplied", revision: 24, status: "status.next-salary-multiplier" }),
+      summary({ id: "e6", type: "PromotionBlocked", revision: 25, blockedByPlayerId: "player-2" }),
+      summary({ id: "e7", type: "ManagementRevealed", revision: 26 }),
+    ]).map((entry) => entry.text);
+
+    // Then — `EffectProposed` is plumbing and has nothing above it to fold into
+    // at revision 20, so it keeps a row; it must still read as English.
+    expect(texts).toEqual([
+      "You put an effect on the table.",
+      "Ada blocked that effect.",
+      "You have a decision to make.",
+      "Ada has a decision to make.",
+      "You picked up a status effect: next salary multiplier.",
+      "Ada blocked your promotion.",
+      "You are management. That is public now.",
+    ]);
+    for (const text of texts) {
+      expect(text).not.toMatch(/[a-z][A-Z]/);
+    }
+  });
+
+  it("makes a turn boundary a heading rather than a sentence", () => {
+    // Given — three words, so a reader scanning for where their own last turn
+    // began finds it by shape. hud.css strengthens the rule under this row.
+    const markup = rail();
+
+    // Then
+    expect(markup).toContain("Your turn.");
+    expect(markup).not.toContain("started their turn");
+    expect(markup).toContain('data-event="TurnStarted"');
   });
 });
 
@@ -558,6 +792,12 @@ describe("turn rail helpers", () => {
     expect(formatDelta({ amount: 1_200 })).toBe("+1,200");
     expect(formatDelta({ amount: -40, unit: "energy" })).toBe("-40 energy");
     expect(formatDelta({ amount: 0 })).toBe("+0");
+  });
+
+  it("renders cash with a $ prefix so it is never mistaken for reputation", () => {
+    // Then — same shape as `formatPanelSignedMoney` in the panel kit.
+    expect(formatDelta({ amount: -200, unit: "money" })).toBe("-$200");
+    expect(formatDelta({ amount: 2_000, unit: "money" })).toBe("+$2,000");
   });
 
   it("keeps playerName resolving members by id for game-client", () => {

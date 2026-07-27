@@ -732,9 +732,23 @@ describe("event presentation pacing", () => {
     expect(eventDwellMs(event("m", "PlayerMoved", 1, "player-1"))).toBe(420);
     expect(eventDwellMs(cardDrawn("c", 1, "player-1", "card.work.x"))).toBe(480);
     expect(eventDwellMs(event("p", "PlayerPromoted", 1, "player-1"))).toBe(320);
-    expect(eventDwellMs(event("t", "TileResolved", 1, "player-1"))).toBe(
+    expect(eventDwellMs(event("x", "ClockDeckExhausted", 1, "player-1"))).toBe(
       EVENT_PACING.beat,
     );
+  });
+
+  it("does not hold a full beat on bookkeeping the activity log folds away", () => {
+    // Given — the log collapses these into the line above them whenever they
+    // carry no amount (`buildActivityLog`), so a full 190ms beat each is
+    // playback stalling on rows nobody is shown. `PlayerMoved` stays on its
+    // animation budget above: the board still hops a token for it.
+    for (const type of ["EffectProposed", "ResourceChanged", "TileResolved"] as const) {
+      // Then
+      expect(eventDwellMs(event(`e-${type}`, type, 1, "player-1"))).toBe(
+        EVENT_PACING.compressedBeat,
+      );
+    }
+    expect(EVENT_PACING.compressedBeat).toBeLessThan(EVENT_PACING.beat);
   });
 });
 

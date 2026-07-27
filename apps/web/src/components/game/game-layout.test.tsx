@@ -673,6 +673,155 @@ describe("match shell geometry", () => {
   });
 
   /**
+   * The band's row is reserved, and the reservation is what stopped the board
+   * moving — so the resting state is not allowed to buy that back by being empty.
+   * It used to render "Attention" and an em dash: a whole instrument row spent
+   * saying nothing, in a UI whose governing complaint is "i genuinely cant follow
+   * the game".
+   *
+   * A live match never reaches this fallback — `createAttentionNotice` always
+   * returns a notice once a projection exists — so what it must do is name the
+   * lane and say what will appear in it (§12.5), not print a placeholder glyph.
+   */
+  it("never renders a dead lane at rest", () => {
+    // Given the band with nothing passed at all: the pre-projection frame.
+    const markup = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+
+    // Then
+    expect(markup).toContain("Standing by");
+    expect(markup).toContain("Nothing is on a clock yet.");
+    // And the placeholder is gone: no bare em dash standing in for a readout.
+    expect(markup).not.toContain(">Attention<");
+    expect(markup).not.toContain(">—<");
+  });
+
+  /**
+   * "The row height must not change between resting and occupied. Verify that,
+   * do not assume it."
+   *
+   * `renderToStaticMarkup` cannot measure a box, so this verifies the two things
+   * that DECIDE the box instead, which is stronger than a single measurement:
+   *
+   *  1. The region element is identical in both states apart from `data-occupied`
+   *     and its tab stop — same class, no inline style, nothing that could carry a
+   *     different height.
+   *  2. Its height is stated once, as a definite `height` with `overflow-y:
+   *     hidden`, and NEITHER child declares anything on the block axis. A child
+   *     with block padding or its own height is the only way content could push
+   *     the row, and both are absent by assertion rather than by luck.
+   */
+  it("gives the band the same box resting and occupied", () => {
+    // Given both states of the same region.
+    const region = (markup: string): string => {
+      const match = /<div class="game-shell-attention"[^>]*>/.exec(markup);
+      expect(match, "the attention region is missing").not.toBeNull();
+      return match?.[0] ?? "";
+    };
+    const resting = region(
+      renderToStaticMarkup(
+        <GameLayout
+          actionTray={<div>Actions</div>}
+          board={<div>Board</div>}
+          hud={<div>HUD</div>}
+          turnRail={<div>Rail</div>}
+        />,
+      ),
+    );
+    const occupied = region(
+      renderToStaticMarkup(
+        <GameLayout
+          actionTray={<div>Actions</div>}
+          attention={
+            <AttentionNotice
+              actions={<div data-slot="action-controls">Pay fine</div>}
+              deadline={<div data-slot="game-turn-clock">Bar</div>}
+              detail="Audit release is waiting on you."
+              label="Decision"
+              tone="caution"
+            />
+          }
+          board={<div>Board</div>}
+          hud={<div>HUD</div>}
+          turnRail={<div>Rail</div>}
+        />,
+      ),
+    );
+
+    // Then the element itself is the same box in both states.
+    const normalise = (tag: string): string =>
+      tag.replace(/ data-occupied="(?:true|false)"/, "").replace(' tabindex="0"', "");
+    expect(normalise(resting)).toBe(normalise(occupied));
+    expect(resting).not.toContain("style=");
+    expect(occupied).not.toContain("style=");
+
+    // And nothing in the CSS lets its contents resize it.
+    const band = cssRule(shellSheet, ".game-shell-attention");
+    expect(band).toContain("height: var(--game-shell-attention)");
+    expect(band).toContain("overflow-y: hidden");
+    expect(band).not.toContain("min-height");
+    expect(band).not.toContain("max-height");
+
+    for (const selector of [".game-shell-attention-rest", ".game-shell-attention-notice"]) {
+      const rule = cssRule(shellSheet, selector);
+      expect(rule, selector).not.toMatch(/[\s;]height:/);
+      expect(rule, selector).not.toContain("min-height");
+      expect(rule, selector).not.toContain("padding-block");
+      expect(rule, selector).not.toContain("padding-top");
+      expect(rule, selector).not.toContain("padding-bottom");
+    }
+  });
+
+  /**
+   * The band already carries a decision's controls inline — PAY FINE / ATTEMPT
+   * ROLL were observed there in a live match — so a player can answer without
+   * opening the modal. Filling the resting state must not cost that.
+   */
+  it("keeps the decision's controls inline in the band", () => {
+    // Given a notice with controls and a clock, in the shape the live band uses.
+    const markup = renderToStaticMarkup(
+      <GameLayout
+        actionTray={<div>Actions</div>}
+        attention={
+          <AttentionNotice
+            actions={
+              <div data-slot="action-controls">
+                <button type="button">Pay fine</button>
+                <button type="button">Attempt roll</button>
+              </div>
+            }
+            deadline={<div data-slot="game-turn-clock">Bar</div>}
+            detail="Audit release is waiting on you."
+            label="Decision"
+            tone="caution"
+          />
+        }
+        board={<div>Board</div>}
+        hud={<div>HUD</div>}
+        turnRail={<div>Rail</div>}
+      />,
+    );
+
+    // Then both controls are in the band itself, after the clock, and nothing
+    // about them is a dialog.
+    const bandIndex = markup.indexOf('data-slot="game-attention-notice"');
+    const clockIndex = markup.indexOf('data-slot="game-attention-deadline"');
+    const controlsIndex = markup.indexOf('data-slot="action-controls"');
+    expect(bandIndex).toBeGreaterThan(-1);
+    expect(bandIndex).toBeLessThan(clockIndex);
+    expect(clockIndex).toBeLessThan(controlsIndex);
+    expect(markup).toContain("Pay fine");
+    expect(markup).toContain("Attempt roll");
+    expect(markup).not.toContain('role="dialog"');
+  });
+
+  /**
    * The catch-up strip used to be a flow row of the action region, appearing and
    * vanishing during playback and moving the board 32px (631px -> 599px) every
    * time. It now lives in the rail head, which is a definite grid track, so the
@@ -966,6 +1115,11 @@ describe("attention notice derivation", () => {
     expect(notice?.deadline).toEqual({
       deadlineAt: "2026-07-24T12:00:30.000Z",
       durationMs: 30_000,
+      // A prompt in the band is by definition addressed to this viewer, so the
+      // clock is theirs and the meter is toned for it.
+      owner: "self",
+      subject: "you",
+      expiryNote: "At zero the server answers for you and the match continues.",
     });
     // And it is the pair, not a rendered clock face: a string here could carry
     // neither the budget the bar needs for its scale nor the instant it needs for
@@ -1029,6 +1183,9 @@ describe("attention notice derivation", () => {
     expect(notice?.deadline).toEqual({
       deadlineAt: "2026-07-24T12:00:09.000Z",
       durationMs: 8_000,
+      owner: "self",
+      subject: "you",
+      expiryNote: "At zero the server answers for you and the match continues.",
     });
   });
 
@@ -1048,12 +1205,156 @@ describe("attention notice derivation", () => {
       ],
     } as unknown as GameBootstrap);
 
-    // Then
-    expect(notice).toBeNull();
+    // Then — the window is no longer what the band is about. It drops back to
+    // the resting line rather than to nothing, but the reaction's own critical
+    // register and its 12:00:09 instant are gone from the row.
+    expect(notice.label).not.toBe("Reaction");
+    expect(notice.tone).not.toBe("critical");
+    expect(notice.detail).not.toContain("closes on its own");
+    expect(notice.deadline?.deadlineAt).not.toBe("2026-07-24T12:00:09.000Z");
   });
 
-  it("says nothing when nothing is on a clock", () => {
-    expect(createAttentionNotice(bootstrap)).toBeNull();
+  /**
+   * The defect this replaces: the derivation returned `null` whenever nothing was
+   * being asked of anybody — which is most of a match — and the band then spent a
+   * reserved 40px instrument row rendering the literal string "ATTENTION —".
+   *
+   * A watching player's actual question at rest is "what is the table waiting
+   * for", and the answer is whose turn it is plus their clock. That was only
+   * available in the rail head. The reservation is unchanged; what fills it is
+   * the point of this test.
+   */
+  it("answers whose turn it is when nothing is being asked of anybody", () => {
+    // Given the fixture's resting match: player-1 is both the viewer and the
+    // active seat, with a real turn clock armed.
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: {
+        ...game,
+        deadlineAt: "2026-07-24T12:01:30.000Z",
+        turnTimerDurationMs: 90_000,
+      },
+    } as unknown as GameBootstrap);
+
+    // Then the band is never dead: one line, one answer.
+    expect(notice).not.toBeNull();
+    expect(notice.label).toBe("Your turn");
+    expect(notice.detail).toBe("The table is waiting on you.");
+    // Caution, not info: the table IS waiting on this viewer. It still ranks
+    // below a real decision — see the priority test below.
+    expect(notice.tone).toBe("caution");
+    // And the clock is the turn's own canonical pair, so the band shows the same
+    // deadline the rail head does rather than inventing a second one.
+    expect(notice.deadline).toEqual({
+      deadlineAt: "2026-07-24T12:01:30.000Z",
+      durationMs: 90_000,
+      owner: "self",
+      subject: "you",
+      expiryNote: "At zero the server rolls for you, so the table is never blocked.",
+    });
+  });
+
+  /**
+   * Own versus opponent is not satisfied by a name label (§12.1). Three
+   * structural carriers change together here: the label word, the tone, and the
+   * deadline's `owner` — which is what tones the bar itself. A self-toned (amber,
+   * "this needs you") bar on a bot's turn would be precisely the noise the band
+   * is supposed to remove.
+   */
+  it("names the opponent whose turn it is, in the opponent register", () => {
+    // Given the other seat is active.
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: {
+        ...game,
+        activePlayerId: "player-2",
+        deadlineAt: "2026-07-24T12:01:30.000Z",
+        turnTimerDurationMs: 90_000,
+      },
+    } as unknown as GameBootstrap);
+
+    // Then
+    expect(notice.label).toBe("Turn");
+    expect(notice.detail).toBe("Morgan is taking their turn.");
+    expect(notice.tone).toBe("info");
+    expect(notice.deadline).toEqual({
+      deadlineAt: "2026-07-24T12:01:30.000Z",
+      durationMs: 90_000,
+      owner: "opponent",
+      subject: "seat 2",
+      expiryNote: "At zero the server rolls on their behalf, so the table is never blocked.",
+    });
+  });
+
+  /**
+   * The resting line is the LEAST urgent thing the band can say. It fills the row
+   * when nothing is being asked; it never displaces something that is.
+   */
+  it("keeps a decision addressed to the viewer ahead of the resting turn line", () => {
+    // Given it is this viewer's turn AND they have an open decision.
+    const notice = createAttentionNotice({
+      ...bootstrap,
+      legalActions: [
+        {
+          type: "prompt.respond",
+          expectedRevision: 8,
+          decisionPointId: "decision-1",
+          kind: "audit-release",
+          options: [{ id: "pay-fine" }, { id: "attempt-roll" }],
+        },
+      ],
+    } as unknown as GameBootstrap);
+
+    // Then the decision wins, and the resting copy is nowhere in the row.
+    expect(notice.label).toBe("Decision");
+    expect(notice.detail).toContain("waiting on you");
+    expect(notice.detail).not.toContain("The table is waiting on you.");
+  });
+
+  /**
+   * One line, one answer — not a second activity feed. The rail's Activity panel
+   * is the feed; a band that started listing what just happened would be both a
+   * duplicate and, in a 40px nowrap row, an ellipsised one.
+   */
+  it("gives the resting band one sentence, not a digest", () => {
+    // Given a projection carrying committed events.
+    const notice = createAttentionNotice(bootstrap as unknown as GameBootstrap);
+
+    // Then the detail is a single sentence and mentions no event at all.
+    expect(notice.detail.split(". ")).toHaveLength(1);
+    expect(notice.detail.trim()).toBe(notice.detail);
+    expect(notice.detail).not.toContain("\n");
+    expect(notice.detail).not.toContain("TurnStarted");
+  });
+
+  /**
+   * A clock nobody is on is not a proportion of anything, so these states report
+   * the match's own state and arm no bar — rather than showing an empty lane that
+   * looks like a stalled countdown.
+   */
+  it("reports the match's own state instead of a turn when no seat is on the clock", () => {
+    // Given
+    const paused = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: { ...game, status: "paused" },
+    } as unknown as GameBootstrap);
+    const between = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: { ...game, activePlayerId: null },
+    } as unknown as GameBootstrap);
+    const ended = createAttentionNotice({
+      ...bootstrap,
+      publicProjection: { ...game, status: "ended", winnerPlayerIds: ["player-2"] },
+    } as unknown as GameBootstrap);
+
+    // Then
+    expect(paused.label).toBe("Paused");
+    expect(paused.deadline).toBeNull();
+    expect(between.label).toBe("Standing by");
+    expect(between.deadline).toBeNull();
+    expect(ended.label).toBe("Result");
+    expect(ended.detail).toBe("Morgan took the match.");
+    expect(ended.deadline).toBeNull();
   });
 });
 

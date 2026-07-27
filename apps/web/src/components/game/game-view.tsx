@@ -185,16 +185,28 @@ export function createGameView(bootstrap: GameBootstrap) {
 }
 
 /**
- * What the shell's attention band should be showing, or `null` for "nothing is
- * on a clock".
+ * What the shell's attention band should be showing. Never `null`.
  *
  * The band is a fixed row in the shell grid (see `GameLayout`), so this only
  * decides its CONTENT — nothing here can move the board. It is the home for
- * anything time-limited: today the only such thing is an open decision, and v2
- * adds reaction windows, closing ballots and the quarter/event track.
+ * anything time-limited: a reaction window, an open decision, and in v2 closing
+ * ballots and the quarter/event track.
+ *
+ * **At rest that is not nothing.** This used to return `null` whenever no
+ * decision was open, which was most of the match, and the band then rendered the
+ * literal string "ATTENTION —": a reserved 40px instrument row spent saying
+ * nothing, in a UI whose governing complaint is "i genuinely cant follow the
+ * game". The resting answer to "what is the table waiting for" is whose turn it
+ * is and how long they have left — the one fact a watching player wants, and
+ * until now the one they had to go and find in the rail head.
+ *
+ * The reservation is unchanged; only what fills it is. Priority still runs
+ * reaction -> decision -> match state -> whose turn, so an open decision
+ * addressed to the viewer outranks the resting line exactly as before.
  *
  * Deliberately derived from the CANONICAL bootstrap by the caller, not from the
- * paced one: a countdown that plays back late is a lie about a deadline.
+ * paced one: a countdown that plays back late is a lie about a deadline, and the
+ * resting turn line is a countdown like any other.
  */
 export type AttentionNoticeDescriptor = {
   readonly label: string;
@@ -221,26 +233,51 @@ export type AttentionNoticeDescriptor = {
 export type AttentionDeadline = {
   readonly deadlineAt: string | null;
   readonly durationMs: number | null;
+  /**
+   * Own versus opponent, carried structurally as well as in the sentence — the
+   * same two values `DeadlineMeter` takes, because the band's clock and the rail
+   * head's clock are the same instrument and must not disagree about whose it is.
+   *
+   * This travels WITH the pair rather than beside it: a deadline with no owner is
+   * not describable, and the band used to hardcode "self" because the only clocks
+   * it ever hosted were the viewer's own. The resting turn line is the first one
+   * that can belong to somebody else, and a self-toned (amber, "this needs you")
+   * bar on a bot's turn is exactly the noise §12.1 exists to remove.
+   */
+  readonly owner: "self" | "opponent";
+  /** Who the clock is on, e.g. `"you"` or `"seat 3"`. */
+  readonly subject: string;
+  /** What the server does at zero, stated in words (§12.3 forbids a number). */
+  readonly expiryNote: string;
 };
+
+/*
+ * What the server does when a band clock reaches zero, per kind of clock. Stated
+ * in words because the bar is deliberately not a number and a player still has to
+ * know the consequence. The turn wordings match `TurnClock`'s (game-hud.tsx) so
+ * the two instruments describe the same deadline the same way.
+ */
+const SERVER_ANSWERS_FOR_YOU = "At zero the server answers for you and the match continues.";
+const SERVER_ROLLS_FOR_YOU =
+  "At zero the server rolls for you, so the table is never blocked.";
+const SERVER_ROLLS_FOR_THEM =
+  "At zero the server rolls on their behalf, so the table is never blocked.";
 
 /**
  * What the band should be showing, in priority order: an open reaction window
  * first (it is the shortest clock in the game and the only one measured in
- * seconds), then an open decision, then a paused match.
+ * seconds), then an open decision, then the match's own state, then — always —
+ * whose turn it is and how long they have left.
  *
  * A reaction window outranks a prompt because losing it is silent — the server
  * closes it and the effect lands — whereas an unanswered prompt stalls the turn
- * and keeps asking.
+ * and keeps asking. Both outrank the resting line, which is by construction the
+ * least urgent thing the band can say: it is what fills the row when nothing is
+ * being asked of anybody.
+ *
+ * The tail never falls through to `null`. One row, one answer, always.
  */
-export function createAttentionNotice(
-  bootstrap: GameBootstrap,
-): AttentionNoticeDescriptor | null {
-  const game = bootstrap.publicProjection;
-  const turnDeadline: AttentionDeadline = {
-    deadlineAt: game.deadlineAt,
-    durationMs: game.turnTimerDurationMs,
-  };
-
+export function createAttentionNotice(bootstrap: GameBootstrap): AttentionNoticeDescriptor {
   const reaction = openReaction(bootstrap);
   if (reaction !== null) {
     return {
@@ -250,24 +287,125 @@ export function createAttentionNotice(
       deadline: {
         deadlineAt: reaction.deadlineAt,
         durationMs: reactionWindowMs(bootstrap),
+        owner: "self",
+        subject: "you",
+        expiryNote: SERVER_ANSWERS_FOR_YOU,
       },
     };
   }
 
   const prompt = findPromptAction(bootstrap.legalActions);
   if (prompt !== null) {
+    const game = bootstrap.publicProjection;
+
     return {
       label: "Decision",
       detail: `${promptKindLabel(prompt)} is waiting on you.`,
       tone: "caution",
-      deadline: promptDeadline(bootstrap, prompt) ?? turnDeadline,
+      deadline: promptDeadline(bootstrap, prompt) ?? {
+        deadlineAt: game.deadlineAt,
+        durationMs: game.turnTimerDurationMs,
+        owner: "self",
+        subject: "you",
+        expiryNote: SERVER_ANSWERS_FOR_YOU,
+      },
     };
   }
+
+  return restingNotice(bootstrap);
+}
+
+/**
+ * The band with nothing being asked of anybody: whose turn it is, and their
+ * clock.
+ *
+ * This is the state the band spends most of a match in, which is why it gets a
+ * real answer rather than a placeholder. It is deliberately ONE line and one
+ * answer — not a second activity feed. The rail's Activity panel is the feed; the
+ * band says who the table is waiting for and nothing else.
+ *
+ * Own versus opponent is carried three ways, none of them a name label alone
+ * (§12.1): the label word, the tone (caution when it is on you, info when it is
+ * not), and the deadline's `owner`, which tones the bar itself.
+ */
+function restingNotice(bootstrap: GameBootstrap): AttentionNoticeDescriptor {
+  const game = bootstrap.publicProjection;
+
   if (game.status === "paused") {
     return { label: "Paused", detail: "The match is paused.", tone: "info", deadline: null };
   }
+  if (game.status === "ended") {
+    return { label: "Result", detail: matchResultDetail(bootstrap), tone: "info", deadline: null };
+  }
+  if (game.status === "setup") {
+    return {
+      label: "Standing by",
+      detail: "The match has not started yet.",
+      tone: "info",
+      deadline: null,
+    };
+  }
 
-  return null;
+  const activePlayerId = game.activePlayerId;
+  if (activePlayerId === null) {
+    /* Between turns: the server holds the move and no seat's clock is armed, so
+       a bar here would be a proportion of nothing. */
+    return {
+      label: "Standing by",
+      detail: "Nobody is on the clock.",
+      tone: "info",
+      deadline: null,
+    };
+  }
+
+  const seat = seatSlot(game, activePlayerId);
+  if (activePlayerId === bootstrap.self.playerId) {
+    return {
+      label: "Your turn",
+      detail: "The table is waiting on you.",
+      tone: "caution",
+      deadline: {
+        deadlineAt: game.deadlineAt,
+        durationMs: game.turnTimerDurationMs,
+        owner: "self",
+        subject: "you",
+        expiryNote: SERVER_ROLLS_FOR_YOU,
+      },
+    };
+  }
+
+  return {
+    label: "Turn",
+    detail: `${memberName(bootstrap, activePlayerId, seat)} is taking their turn.`,
+    tone: "info",
+    deadline: {
+      deadlineAt: game.deadlineAt,
+      durationMs: game.turnTimerDurationMs,
+      owner: "opponent",
+      subject: `seat ${seat}`,
+      expiryNote: SERVER_ROLLS_FOR_THEM,
+    },
+  };
+}
+
+/**
+ * The one sentence a finished match owes the band.
+ *
+ * `winnerPlayerIds` is plural because the ruleset allows a shared result; the
+ * band is one row, so anything other than a single winner reports the fact and
+ * leaves the detail to the result screen.
+ */
+function matchResultDetail(bootstrap: GameBootstrap): string {
+  const game = bootstrap.publicProjection;
+  const winners = game.winnerPlayerIds;
+  if (winners.includes(bootstrap.self.playerId)) return "You took the match.";
+
+  const [winner] = winners;
+  if (winners.length === 1 && winner !== undefined) {
+    return `${memberName(bootstrap, winner, seatSlot(game, winner))} took the match.`;
+  }
+
+  return "The match is over.";
 }
 
 /**
@@ -324,6 +462,12 @@ function promptDeadline(
   return {
     deadlineAt: row.deadlineAt,
     durationMs: bootstrap.publicProjection.turnTimerDurationMs,
+    /* A prompt in the band is by definition addressed to this viewer —
+       `findPromptAction` reads their own legal actions — so this clock is
+       always theirs. */
+    owner: "self",
+    subject: "you",
+    expiryNote: SERVER_ANSWERS_FOR_YOU,
   };
 }
 

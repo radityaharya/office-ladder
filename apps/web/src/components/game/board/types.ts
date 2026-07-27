@@ -198,6 +198,35 @@ export type BoardPlateMarker = {
   readonly label: string;
 };
 
+/**
+ * The fiscal calendar, as the board states it (spec §5.7).
+ *
+ * §5.7 announces an office-wide event **one quarter ahead** so players can
+ * position for it — "a known-in-advance shock that players can prepare for is a
+ * decision; an unannounced one is just variance". Today that announcement lives
+ * in the footer of the `quarter` panel, which is one tab away and therefore
+ * invisible most of the time, and an announcement nobody sees is not an
+ * announcement. The ring's interior is the most prominent region on the screen
+ * and had 44% of itself blank, so this is what it is for.
+ *
+ * Every field has a resting form (`"—"` / "nothing scheduled") rather than being
+ * omitted, because the strip is rendered as a fixed three-cell rail: a quarter
+ * gaining an event changes text inside a cell and never the strip's height
+ * (§12.1 — "nothing that appears or disappears may move the board").
+ */
+export type BoardScheduleView = {
+  /** `"Q2"` — the mode names its own periods, so this is authored by the caller. */
+  readonly quarterLabel: string;
+  /** The rounds this quarter spans, pre-formatted: `"R13–24"`. */
+  readonly span: string;
+  /** The office-wide event landing in the CURRENT quarter, or `null`. */
+  readonly currentEventLabel: string | null;
+  /** The quarter the announcement below is for: `"Q3"`. */
+  readonly nextQuarterLabel: string | null;
+  /** The §5.7 announcement itself — the point of the whole strip. */
+  readonly nextEventLabel: string | null;
+};
+
 export type BoardIncidentView = {
   readonly title: string;
   readonly status?: string;
@@ -205,4 +234,9 @@ export type BoardIncidentView = {
   readonly detail?: ReactNode;
   readonly readouts?: readonly BoardPlateReadout[];
   readonly marker?: BoardPlateMarker;
+  /**
+   * Omit entirely for a mode that runs no quarters. Once supplied it is supplied
+   * for the whole match, so the strip appears at match start and never mid-play.
+   */
+  readonly schedule?: BoardScheduleView | null;
 };

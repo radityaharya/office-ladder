@@ -581,7 +581,10 @@
   display: grid;
   grid-row: 2 / 12;
   grid-column: 2 / 12;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* head · quarter strip · body · readout rail. The quarter row is `auto` and
+     collapses to nothing for a mode that runs no quarters; a mode that does runs
+     them for the whole match, so the row never appears mid-play. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -620,6 +623,91 @@
   color: var(--muted-foreground);
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------- quarter strip */
+
+/*
+ * The fiscal calendar and the §5.7 announcement, on the board.
+ *
+ * Same grammar as the readout rail below it (§6.4: uppercase label over a mono
+ * value, cells divided by 1px vertical rules, flush to the panel's own edges) so
+ * the interior reads as one instrument rather than as three unrelated widgets.
+ * Every cell has a resting value, which is what makes this safe to put here:
+ * a quarter turning over or an event being announced changes text inside a fixed
+ * cell and cannot move the board (§12.1).
+ */
+.board-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--surface-sunken);
+}
+
+.board-schedule-cell {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--border);
+}
+
+.board-schedule-cell:first-child {
+  border-left: 0;
+}
+
+.board-schedule-label {
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+}
+
+.board-schedule-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-schedule-cell:first-child .board-schedule-value {
+  font-weight: 500;
+  font-size: 0.875rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+/* The announcement's own light (§6.4: a 6px square, never a dot), always in the
+   markup so arming it cannot reflow the row, and never the only carrier — the
+   value beside it says it in words. */
+.board-schedule-led {
+  display: block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background-color: var(--taupe);
+}
+
+.board-schedule-cell[data-board-announced="true"] .board-schedule-led {
+  background-color: var(--status-caution);
+}
+
+.board-schedule-cell[data-board-announced="true"] .board-schedule-value {
+  color: var(--foreground);
 }
 
 /*
@@ -698,22 +786,33 @@
 /*
  * Movement reach — six columns, one per die face, showing what a roll lands on
  * from where the active player stands. Table grammar (§6.3): a mono die value, a
- * facility code, a room name, 1px hairlines between columns, no chips. It is the
- * ring interior's own content and it is the reason the wide panel is not empty
- * space with a paragraph in it.
+ * zone swatch, a facility code, a room name, the zone in words, and — in a
+ * territory match — who owns the destination and what is sitting on it. 1px
+ * hairlines between columns, no chips.
+ *
+ * IT TAKES THE WHOLE REMAINING COLUMN, on purpose. Measured in a live campaign
+ * match, this strip was 78.1px tall inside a 552.7px interior and the block
+ * directly beneath it was 254.7 x 825.3px of nothing — the most decision-relevant
+ * readout in the shell set at 11px above a hole four times its size. `flex: 1`
+ * plus a stretched list means the column rules now run the full height, so the
+ * space that was blank is read as the body of a table rather than as an
+ * abandoned region: the eye gets structure, and the ring is still the only thing
+ * in the view carrying weight.
  */
 .board-reach {
   display: flex;
-  flex: none;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
   margin-top: 8px;
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
 
 .board-reach-head {
+  flex: none;
   font-family: var(--font-geist-sans);
   font-size: 0.6875rem;
   font-weight: 600;
@@ -723,10 +822,19 @@
   text-transform: uppercase;
 }
 
+/*
+ * `align-items: stretch` is the load-bearing declaration: it is what makes every
+ * column's hairline run to the foot of the region instead of stopping under the
+ * last line of text. Six columns of unequal content then read as one table with
+ * room in it rather than as six ragged stacks over a void.
+ */
 .board-reach-list {
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
+  align-items: stretch;
   min-width: 0;
+  min-height: 0;
   list-style: none;
 }
 
@@ -734,8 +842,8 @@
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
-  gap: 4px;
-  min-width: 88px;
+  gap: 6px;
+  min-width: 96px;
   padding: 0 8px;
   border-left: 1px solid var(--border);
 }
@@ -745,16 +853,38 @@
   padding-left: 0;
 }
 
+/*
+ * The die face, at the `data-lg` scale rather than `body` — it is the only thing
+ * in this table a player navigates BY, so it is the one thing that has to be
+ * findable without reading. It stays a step below the plate title, which is the
+ * interior's own heading, so the hierarchy inside the panel is still title first.
+ */
 .board-reach-roll {
+  flex: none;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 1.25rem;
   font-weight: 500;
-  line-height: 1;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
 
+/* Swatch + code. The swatch is the zone key's own swatch, reused rather than
+   re-invented, so a column is scannable by pattern before a word is read and the
+   key at the right of the plate is what decodes it. */
+.board-reach-facility {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .board-reach-code {
+  overflow: hidden;
   font-family: var(--font-geist-sans);
   font-size: 0.6875rem;
   font-weight: 600;
@@ -762,17 +892,80 @@
   letter-spacing: 0.08em;
   color: var(--muted-foreground);
   text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .board-reach-name {
+  flex: none;
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--foreground);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.board-reach-zone {
+  flex: none;
   overflow: hidden;
   font-family: var(--font-geist-sans);
   font-size: 0.6875rem;
   font-weight: 400;
-  line-height: 1.2;
-  color: var(--foreground);
+  line-height: 1.4;
+  color: var(--muted-foreground);
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/*
+ * Whose the destination is. Always rendered in a territory match — "Unclaimed" is
+ * its resting form — so a claim landing changes a word, never a height. The seat
+ * rule is 2px of the owner's seat colour and pattern, the same identity the piece
+ * and the tile's own gutter draw; the text beside it is what actually carries the
+ * meaning (§8).
+ */
+.board-reach-claim {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 6px;
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.board-reach-claim-rule {
+  display: block;
+  flex: none;
+  width: 2px;
+  height: 12px;
+  background-color: var(--border-strong);
+}
+
+.board-reach-claim[data-board-owner-seat] .board-reach-claim-rule {
+  background-color: var(--board-seat, var(--sand));
+  background-image: var(--board-seat-pattern, none);
+}
+
+/* Own versus opponent, structurally (§12.1): your own destinations read at full
+   contrast with a solid 3px rule, everyone else's stay quiet. */
+.board-reach-claim[data-board-claim-self="true"] {
+  color: var(--foreground);
+}
+
+.board-reach-claim[data-board-claim-self="true"] .board-reach-claim-rule {
+  width: 3px;
+  background-image: none;
 }
 
 .board-plate-detail {
@@ -991,6 +1184,65 @@
   line-height: 1;
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------- claim ledger */
+
+/*
+ * Who is winning the territory race. One row per seated player, always, from turn
+ * 0 — a first claim changes a digit and never the row count, which is what makes
+ * a live standing safe to draw inside the ring (§12.1).
+ *
+ * The seat glyph is the tile gutter's own owner mark (12px, seat colour, seat
+ * pattern, seat numeral), reused rather than re-invented, so the row and the
+ * mark on the 44 tiles it is summarising are visibly the same seat.
+ */
+.board-ledger-seat {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-inverse, oklch(0 0 0 / 22%));
+  background-color: var(--board-seat, var(--sand));
+  background-image: var(--board-seat-pattern, none);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--background);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-ledger-name {
+  overflow: hidden;
+  font-family: var(--font-geist-sans);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Own versus opponent (§12.1) — a structural difference, not just a name to
+   read: the viewer's row steps up a tone and its seat glyph takes the foreground
+   border, exactly as their own tile's owner mark does. */
+.board-legend-item[data-board-claim-self="true"] {
+  margin: 0 -12px;
+  padding-right: 12px;
+  padding-left: 12px;
+  background-color: var(--surface-raised);
+}
+
+.board-legend-item[data-board-claim-self="true"] .board-ledger-seat {
+  border-color: var(--foreground);
+}
+
+.board-legend-item[data-board-claim-self="true"] .board-ledger-name,
+.board-legend-item[data-board-claim-self="true"] .board-legend-count {
+  color: var(--foreground);
 }
 
 /* Wide panel: status on the left, zone key as its own column on the right,
@@ -1288,6 +1540,31 @@
   .board-plate-title {
     font-size: 1rem;
     letter-spacing: 0.02em;
+  }
+
+  /*
+   * Six reach columns cannot share ~400px, so they wrap — and a wrapped list
+   * that is still told to fill the column would hand each of its two or three
+   * lines a third of the height, which is stretched whitespace rather than
+   * structure. Narrow gets a content-sized table instead; the space it would
+   * have claimed is not there to claim.
+   */
+  .board-reach,
+  .board-reach-list {
+    flex: none;
+  }
+
+  .board-reach-item {
+    padding-bottom: 8px;
+  }
+
+  .board-reach-roll {
+    font-size: 0.875rem;
+    line-height: 1.3;
+  }
+
+  .board-reach-claim {
+    margin-top: 0;
   }
 }
 
